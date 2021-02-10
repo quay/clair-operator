@@ -1,0 +1,35 @@
+digraph Clair {
+	//rankdir = LR;
+	Empty [shape=doublecircle];
+	DatabaseAvailable;
+	ServicesAvailable;
+	RoutingAvailable;
+	Steady;
+	DatabaseCreated;
+	BackendRedeploying;
+	subgraph cluster_Service {
+		label="ServiceCRD";
+		labeljust="l";
+		ServiceEmpty [label="Empty"];
+		ServiceCreated [label="ServiceCreated"];
+		ServiceDeploymentCreated [label="DeploymentCreated"];
+		ServiceSteady [label="Steady"];
+		ServiceRedeploying [label="Redeploying"];
+
+		ServiceEmpty -> ServiceCreated [label="create service"];
+		ServiceCreated -> ServiceDeploymentCreated [label="create deployment"];
+		ServiceDeploymentCreated -> ServiceSteady [label="config exists"];
+		ServiceSteady -> ServiceRedeploying [label="config/operator change"];
+		ServiceRedeploying -> ServiceSteady [label="update deployment"];
+	};
+
+	Empty -> DatabaseAvailable [label="external databases provided"];
+	Empty -> DatabaseCreated [label="create database deployment+service"];
+	DatabaseCreated -> DatabaseAvailable [label="database ready"];
+	DatabaseAvailable -> ServiceEmpty [label="create service CRDs"];
+	ServiceSteady -> ServicesAvailable [label="service CRDs steady"];
+	ServicesAvailable -> RoutingAvailable [label="create routing objects"];
+	RoutingAvailable -> Steady [label="routing objects created"];
+	Steady -> BackendRedeploying [label="config/operator change"];
+	BackendRedeploying -> Steady [label="update deployment"];
+}

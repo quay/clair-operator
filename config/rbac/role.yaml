@@ -1,0 +1,112 @@
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  creationTimestamp: null
+  name: manager-role
+rules:
+- apiGroups:
+  - clair.projectquay.io
+  resources:
+  - clairs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - clair.projectquay.io
+  resources:
+  - clairs/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - clair.projectquay.io
+  resources:
+  - clairs/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - clair.projectquay.io
+  resources:
+  - indexers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - clair.projectquay.io
+  resources:
+  - indexers/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - clair.projectquay.io
+  resources:
+  - indexers/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - clair.projectquay.io
+  resources:
+  - matchers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - clair.projectquay.io
+  resources:
+  - matchers/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - clair.projectquay.io
+  resources:
+  - matchers/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - clair.projectquay.io
+  resources:
+  - notifiers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - clair.projectquay.io
+  resources:
+  - notifiers/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - clair.projectquay.io
+  resources:
+  - notifiers/status
+  verbs:
+  - get
+  - patch
+  - update

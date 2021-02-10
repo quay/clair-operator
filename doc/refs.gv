@@ -1,0 +1,21 @@
+digraph Refs {
+label="References";
+
+Deployment, Service;
+Config [label="ConfigMap/Secret"];
+Ingress [label="Route/Ingress"];
+Clair [shape=box3d]; 
+Srv [shape=box3d;label="Indexer/Matcher/Notifier"];
+node [shape=diamond];
+Autoscaler, ServiceMonitor; Database;
+
+Clair -> Config, Ingress, Database, Srv;
+Config -> Deployment, Service;
+Srv -> Config;
+subgraph cluster_Service {
+	label="";
+	Srv -> Deployment;
+	Srv -> Service;
+	Srv -> Autoscaler;
+}
+}

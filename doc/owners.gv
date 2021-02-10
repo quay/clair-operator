@@ -1,0 +1,39 @@
+digraph Owners {
+label="Owners";
+edge [dir="back"];
+/*
+subgraph cluster_01 {
+    label = "Legend";
+    {
+        rank=same
+		node [shape=point;style=invis]
+		n0, n1 c0, c1;
+		node [style=""];
+		Optional [shape=diamond];
+		CRD [shape=box3d];
+    }
+    n0 -> n1 [label="non-controller" style=dotted]
+    c0 -> c1 [label=controller]
+}
+*/
+
+Deployment, Service;
+Config [label="ConfigMap/Secret"];
+Ingress [label="Route/Ingress"];
+Clair [shape=box3d]; 
+Srv [shape=box3d;label="Indexer/Matcher/Notifier"];
+node [shape=diamond];
+Autoscaler, ServiceMonitor;
+
+Clair -> Config;
+Clair -> Ingress;
+Clair -> Srv;
+Srv -> Config [style=dotted];
+subgraph cluster_Service {
+	label="";
+	Srv -> Deployment;
+	Srv -> Service;
+	Srv -> ServiceMonitor;
+	Srv -> Autoscaler;
+}
+}

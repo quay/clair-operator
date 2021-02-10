@@ -1,0 +1,7 @@
+apiVersion: clair.projectquay.io/v1alpha1
+kind: Notifier
+metadata:
+  name: notifier-sample
+spec:
+  # Add fields here
+  foo: bar
