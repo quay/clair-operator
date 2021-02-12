@@ -56,6 +56,12 @@ type ClairReconciler struct {
 // +kubebuilder:rbac:groups=clair.projectquay.io,resources=clairs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=clair.projectquay.io,resources=clairs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=clair.projectquay.io,resources=clairs/finalizers,verbs=update
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list
+// +kubebuilder:rbac:groups=core,resources=service,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=secret,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=configmap,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingress,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
