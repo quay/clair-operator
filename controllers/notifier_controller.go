@@ -19,19 +19,14 @@ package controllers
 import (
 	"context"
 
-	"github.com/go-logr/logr"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	clairv1alpha1 "github.com/quay/clair-operator/api/v1alpha1"
 )
 
 // NotifierReconciler reconciles a Notifier object
 type NotifierReconciler struct {
-	client.Client
-	Log    logr.Logger
-	Scheme *runtime.Scheme
+	ServiceReconciler
 }
 
 // +kubebuilder:rbac:groups=clair.projectquay.io,resources=notifiers,verbs=get;list;watch;create;update;patch;delete
@@ -62,7 +57,9 @@ func (r *NotifierReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *NotifierReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&clairv1alpha1.Notifier{}).
-		Complete(r)
+	b, err := r.SetupService(mgr, &clairv1alpha1.Notifier{})
+	if err != nil {
+		return err
+	}
+	return b.Complete(r)
 }

@@ -18,37 +18,26 @@ package controllers
 
 import (
 	"context"
-	"fmt"
 	"path/filepath"
 	"time"
 
-	"github.com/go-logr/logr"
 	monitorv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	scalev2 "k8s.io/api/autoscaling/v2beta2"
 	corev1 "k8s.io/api/core/v1"
 	k8serr "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	clairv1alpha1 "github.com/quay/clair-operator/api/v1alpha1"
 )
 
 // IndexerReconciler reconciles a Indexer object
 type IndexerReconciler struct {
-	client.Client
-	Log     logr.Logger
-	Scheme  *runtime.Scheme
-	options optionalTypes
+	ServiceReconciler
 }
 
 // +kubebuilder:rbac:groups=clair.projectquay.io,resources=indexers,verbs=get;list;watch;create;update;patch;delete
@@ -106,7 +95,7 @@ func (r *IndexerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		// Mess with the deployment
 	}
 	if checkConfig {
-		cfg, err := r.config(ctx, &cur)
+		cfg, err := r.config(ctx, cur.Namespace, cur.Spec.Config)
 		if err != nil {
 			return res, err
 		}
@@ -138,25 +127,6 @@ func (r *IndexerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return res, nil
 }
 
-func (r *IndexerReconciler) config(ctx context.Context, cur *clairv1alpha1.Indexer) (*unstructured.Unstructured, error) {
-	var cfg unstructured.Unstructured
-	name := types.NamespacedName{
-		Namespace: cur.Namespace,
-		Name:      cur.Spec.Config.Name,
-	}
-	if err := r.Client.Get(ctx, name, &cfg); err != nil {
-		return nil, err
-	}
-	kind := cfg.GroupVersionKind().Kind
-	if want := cur.Spec.Config.Kind; kind != want {
-		return nil, fmt.Errorf("unknown type pointed to by configReference: %q; wanted %q", kind, want)
-	}
-	if kind != "Secret" && kind != "ConfigMap" {
-		return nil, fmt.Errorf("incorrect type pointed to by configReference: %q", kind)
-	}
-	return &cfg, nil
-}
-
 func (r *IndexerReconciler) indexerTemplates(ctx context.Context, cur, next *clairv1alpha1.Indexer) error {
 	const (
 		serviceName  = `indexer`
@@ -179,7 +149,7 @@ func (r *IndexerReconciler) indexerTemplates(ctx context.Context, cur, next *cla
 	)
 
 	// Populate the config source for our container volume.
-	cfg, err := r.config(ctx, cur)
+	cfg, err := r.config(ctx, cur.Namespace, cur.Spec.Config)
 	if err != nil {
 		return err
 	}
@@ -350,36 +320,9 @@ func (r *IndexerReconciler) indexerTemplates(ctx context.Context, cur, next *cla
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *IndexerReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	apiType := &clairv1alpha1.Indexer{}
-	b := ctrl.NewControllerManagedBy(mgr).
-		For(apiType).
-		Owns(&appsv1.Deployment{}).
-		Owns(&corev1.Service{}).
-		// Do this manually for Secrets and ConfigMaps, because otherwise we
-		// won't get events, as we're not the sole controller.
-		Watches(&source.Kind{Type: &corev1.Secret{}},
-			&handler.EnqueueRequestForOwner{OwnerType: apiType, IsController: false},
-			builder.WithPredicates(&predicate.GenerationChangedPredicate{})).
-		Watches(&source.Kind{Type: &corev1.ConfigMap{}},
-			&handler.EnqueueRequestForOwner{OwnerType: apiType, IsController: false},
-			builder.WithPredicates(&predicate.GenerationChangedPredicate{}))
-
-	// Attempt to resolve some GVKs. If we can, this means they're installed and
-	// we can use them.
-	mapper := mgr.GetRESTMapper()
-	for _, obj := range []client.Object{
-		&scalev2.HorizontalPodAutoscaler{},
-		&monitorv1.ServiceMonitor{},
-	} {
-		gvk := obj.GetObjectKind().GroupVersionKind()
-		_, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
-		if err != nil {
-			r.Log.Error(err, "missing optionally supported resource", "gvk", gvk.String())
-			continue
-		}
-		b = b.Owns(obj)
-		r.Log.Info("found optional kind", "gvk", gvk.String())
-		r.options.Set(gvk)
+	b, err := r.SetupService(mgr, &clairv1alpha1.Indexer{})
+	if err != nil {
+		return err
 	}
 	return b.Complete(r)
 }

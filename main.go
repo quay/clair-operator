@@ -90,27 +90,27 @@ func main() {
 		setupLog.Error(err, "unable to create webhook", "webhook", "ConfigValidator")
 		os.Exit(1)
 	}
-	if err = (&controllers.IndexerReconciler{
-		Client: mgr.GetClient(),
-		Log:    ctrl.Log.WithName("controllers").WithName("Indexer"),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	ir := &controllers.IndexerReconciler{}
+	ir.Client = mgr.GetClient()
+	ir.Log = ctrl.Log.WithName("controllers").WithName("Indexer")
+	ir.Scheme = mgr.GetScheme()
+	if err = ir.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Indexer")
 		os.Exit(1)
 	}
-	if err = (&controllers.MatcherReconciler{
-		Client: mgr.GetClient(),
-		Log:    ctrl.Log.WithName("controllers").WithName("Matcher"),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	mr := &controllers.MatcherReconciler{}
+	mr.Client = mgr.GetClient()
+	mr.Log = ctrl.Log.WithName("controllers").WithName("Matcher")
+	mr.Scheme = mgr.GetScheme()
+	if err = (mr).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Matcher")
 		os.Exit(1)
 	}
-	if err = (&controllers.NotifierReconciler{
-		Client: mgr.GetClient(),
-		Log:    ctrl.Log.WithName("controllers").WithName("Notifier"),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	nr := &controllers.NotifierReconciler{}
+	nr.Client = mgr.GetClient()
+	nr.Log = ctrl.Log.WithName("controllers").WithName("Notifier")
+	nr.Scheme = mgr.GetScheme()
+	if err = (nr).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Notifier")
 		os.Exit(1)
 	}
