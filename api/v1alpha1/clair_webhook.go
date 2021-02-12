@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/go-logr/logr"
 	"github.com/quay/clair/v4/config"
 	"gomodules.xyz/jsonpatch/v2"
 	"gopkg.in/yaml.v3"
@@ -94,7 +95,7 @@ func (m *ConfigMutator) Handle(ctx context.Context, req admission.Request) admis
 	if !ok {
 		return admission.Denied(fmt.Sprintf("key does not exist: %s", inKey))
 	}
-	out, err := m.template(ctx, d.annotations, version, in)
+	out, err := m.template(ctx, log, d.annotations, version, in)
 	if err != nil {
 		return admission.Errored(http.StatusPreconditionFailed, err)
 	}
@@ -106,15 +107,16 @@ func (m *ConfigMutator) Handle(ctx context.Context, req admission.Request) admis
 	})
 }
 
-func (m *ConfigMutator) template(ctx context.Context, a map[string]string, v string, in []byte) ([]byte, error) {
+func (m *ConfigMutator) template(ctx context.Context, log logr.Logger, a map[string]string, v string, in []byte) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	var buf bytes.Buffer
 
+	log.Info("templating configuration", "version", v)
 	switch v {
 	case ConfigLabelV1:
-		ports := map[int32]struct{}{}
+		portCt := map[int32]struct{}{}
 		var c config.Config
 		if err := yaml.Unmarshal(in, &c); err != nil {
 			return nil, err
@@ -122,6 +124,7 @@ func (m *ConfigMutator) template(ctx context.Context, a map[string]string, v str
 		for key, name := range a {
 			switch key {
 			case TemplateIndexerService, TemplateMatcherService, TemplateNotifierService:
+				log.V(1).Info("examining service", "annotation", key, "name", name)
 				var srv corev1.Service
 				if err := m.client.Get(ctx, toName(name), &srv); err != nil {
 					return nil, err
@@ -133,8 +136,8 @@ func (m *ConfigMutator) template(ctx context.Context, a map[string]string, v str
 						break
 					}
 				}
-				if port == nil { // ???
-					return nil, errors.New("missing expected port")
+				if port == nil {
+					return nil, fmt.Errorf("missing expected port %q", PortAPI)
 				}
 				u := url.URL{
 					Scheme: `http`,
@@ -143,17 +146,21 @@ func (m *ConfigMutator) template(ctx context.Context, a map[string]string, v str
 				if port.Port != 80 {
 					u.Host = net.JoinHostPort(u.Host, strconv.Itoa(int(port.Port)))
 				}
+				log.V(1).Info("resolved service", "uri", u.String(), "name", name)
 
 				switch key {
 				case TemplateIndexerService:
 					if c.Matcher.IndexerAddr == `indexer://` {
+						log.V(1).Info(`replacing matcher's "IndexerAddr"`, "uri", u.String(), "name", name)
 						c.Matcher.IndexerAddr = u.String()
 					}
 					if c.Notifier.IndexerAddr == `indexer://` {
+						log.V(1).Info(`replacing notifier's "IndexerAddr"`, "uri", u.String(), "name", name)
 						c.Notifier.IndexerAddr = u.String()
 					}
 				case TemplateMatcherService:
 					if c.Notifier.MatcherAddr == `matcher://` {
+						log.V(1).Info(`replacing notifier's "MatcherAddr"`, "uri", u.String(), "name", name)
 						c.Notifier.MatcherAddr = u.String()
 					}
 				case TemplateNotifierService:
@@ -161,6 +168,7 @@ func (m *ConfigMutator) template(ctx context.Context, a map[string]string, v str
 				}
 			case TemplateIndexerDeployment, TemplateMatcherDeployment, TemplateNotifierDeployment:
 				var d appsv1.Deployment
+				log.V(1).Info("examining deployment", "annotation", key, "name", name)
 				if err := m.client.Get(ctx, toName(name), &d); err != nil {
 					return nil, err
 				}
@@ -172,16 +180,19 @@ func (m *ConfigMutator) template(ctx context.Context, a map[string]string, v str
 						break
 					}
 				}
-				if cr != nil {
-					for _, p := range cr.Ports {
-						switch p.Name {
-						case PortAPI:
-							ports[p.ContainerPort] = struct{}{}
-							c.HTTPListenAddr = fmt.Sprintf(":%d", p.ContainerPort)
-						case PortIntrospection:
-							ports[p.ContainerPort] = struct{}{}
-							c.IntrospectionAddr = fmt.Sprintf(":%d", p.ContainerPort)
-						}
+				if cr == nil {
+					return nil, fmt.Errorf("missing expected container %q", `clair`)
+				}
+				for _, p := range cr.Ports {
+					switch p.Name {
+					case PortAPI:
+						log.V(1).Info(`replacing config's "HTTPListenAddr"`, "port", p.ContainerPort)
+						portCt[p.ContainerPort] = struct{}{}
+						c.HTTPListenAddr = fmt.Sprintf(":%d", p.ContainerPort)
+					case PortIntrospection:
+						log.V(1).Info(`replacing config's "IntrospectionAddr"`, "port", p.ContainerPort)
+						portCt[p.ContainerPort] = struct{}{}
+						c.IntrospectionAddr = fmt.Sprintf(":%d", p.ContainerPort)
 					}
 				}
 			}
@@ -189,6 +200,7 @@ func (m *ConfigMutator) template(ctx context.Context, a map[string]string, v str
 
 		// Look for secrets and dereference them.
 		if u, err := url.Parse(c.Indexer.ConnString); err == nil && u.Scheme == `secret` {
+			log.V(1).Info(`found secret reference`, "key", "/indexer/conn_string")
 			var s corev1.Secret
 			if err := m.client.Get(ctx, toName(u.Opaque), &s); err != nil {
 				return nil, err
@@ -197,9 +209,11 @@ func (m *ConfigMutator) template(ctx context.Context, a map[string]string, v str
 			if err != nil {
 				return nil, err
 			}
+			log.V(1).Info(`replacing secret reference`, "key", "/indexer/conn_string")
 			c.Indexer.ConnString = u.String()
 		}
 		if u, err := url.Parse(c.Matcher.ConnString); err == nil && u.Scheme == `secret` {
+			log.V(1).Info(`found secret reference`, "key", "/matcher/conn_string")
 			var s corev1.Secret
 			if err := m.client.Get(ctx, toName(u.Opaque), &s); err != nil {
 				return nil, err
@@ -208,9 +222,11 @@ func (m *ConfigMutator) template(ctx context.Context, a map[string]string, v str
 			if err != nil {
 				return nil, err
 			}
+			log.V(1).Info(`replacing secret reference`, "key", "/matcher/conn_string")
 			c.Matcher.ConnString = u.String()
 		}
 		if u, err := url.Parse(c.Notifier.ConnString); err == nil && u.Scheme == `secret` {
+			log.V(1).Info(`found secret reference`, "key", "/notifier/conn_string")
 			var s corev1.Secret
 			if err := m.client.Get(ctx, toName(u.Opaque), &s); err != nil {
 				return nil, err
@@ -219,12 +235,13 @@ func (m *ConfigMutator) template(ctx context.Context, a map[string]string, v str
 			if err != nil {
 				return nil, err
 			}
+			log.V(1).Info(`replacing secret reference`, "key", "/notifier/conn_string")
 			c.Notifier.ConnString = u.String()
 		}
 
-		if len(ports) > 2 {
-			ps := make([]int32, 0, len(ports))
-			for p := range ports {
+		if len(portCt) > 2 {
+			ps := make([]int32, 0, len(portCt))
+			for p := range portCt {
 				ps = append(ps, p)
 			}
 			// The deployments are configured for multiple different ports,
