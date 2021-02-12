@@ -1,7 +1,9 @@
+---
 apiVersion: clair.projectquay.io/v1alpha1
 kind: Matcher
 metadata:
   name: matcher-sample
 spec:
-  # Add fields here
-  foo: bar
+  configRef:
+    kind: Secret
+    name: clair-config

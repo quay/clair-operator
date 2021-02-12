@@ -1,0 +1,64 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: '[]'
+    capabilities: Basic Install
+  name: clair-operator.v0.0.0
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: Clair is the Schema for the clairs API
+      displayName: Clair
+      kind: Clair
+      name: clairs.clair.projectquay.io
+      version: v1alpha1
+    - description: Indexer is the Schema for the indexers API
+      displayName: Indexer
+      kind: Indexer
+      name: indexers.clair.projectquay.io
+      version: v1alpha1
+    - description: Matcher is the Schema for the matchers API
+      displayName: Matcher
+      kind: Matcher
+      name: matchers.clair.projectquay.io
+      version: v1alpha1
+    - description: Notifier is the Schema for the notifiers API
+      displayName: Notifier
+      kind: Notifier
+      name: notifiers.clair.projectquay.io
+      version: v1alpha1
+  description: The Clair security scanner operator.
+  displayName: Clair
+  icon:
+  - base64data: ""
+    mediatype: ""
+  install:
+    spec:
+      deployments: null
+    strategy: ""
+  installModes:
+  - supported: false
+    type: OwnNamespace
+  - supported: false
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: true
+    type: AllNamespaces
+  keywords:
+  - clair
+  - security
+  links:
+  - name: Clair Operator
+    url: https://projectquay.io
+  maintainers:
+  - email: hdonnay@redhat.com
+    name: Hank Donnay
+  maturity: alpha
+  provider:
+    name: The Clair Authors
+    url: https://quay.github.io/clair
+  version: 0.0.0

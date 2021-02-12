@@ -1,0 +1,20 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  creationTimestamp: null
+  name: matcher-viewer-role
+rules:
+- apiGroups:
+  - clair.projectquay.io
+  resources:
+  - matchers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - clair.projectquay.io
+  resources:
+  - matchers/status
+  verbs:
+  - get

@@ -1,0 +1,6 @@
+---
+apiVersion: clair.projectquay.io/v1alpha1
+kind: Clair
+metadata:
+  name: clair-sample
+spec: {}

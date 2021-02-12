@@ -1,0 +1,24 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  creationTimestamp: null
+  name: clair-indexer-editor-role
+rules:
+- apiGroups:
+  - clair.projectquay.io
+  resources:
+  - indexers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - clair.projectquay.io
+  resources:
+  - indexers/status
+  verbs:
+  - get

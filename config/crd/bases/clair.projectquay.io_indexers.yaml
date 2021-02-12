@@ -37,8 +37,7 @@ spec:
             description: IndexerSpec defines the desired state of Indexer
             properties:
               configRef:
-                description: ConfigReference is a reference to a ConfigMap or Secret
-                  resource with the `clair.projectquay.io/config` label.
+                description: Config ...
                 properties:
                   apiGroup:
                     description: APIGroup is the group for the resource being referenced.

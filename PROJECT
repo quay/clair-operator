@@ -7,7 +7,6 @@ resources:
   group: clair
   kind: Clair
   version: v1alpha1
-  webhookVersion: v1
 - crdVersion: v1
   group: clair
   kind: Indexer
@@ -15,6 +14,10 @@ resources:
 - crdVersion: v1
   group: clair
   kind: Matcher
+  version: v1alpha1
+- crdVersion: v1
+  group: clair
+  kind: Notifier
   version: v1alpha1
 version: 3-alpha
 plugins:

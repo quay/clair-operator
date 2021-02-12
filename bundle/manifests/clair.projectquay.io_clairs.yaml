@@ -30,21 +30,72 @@ spec:
           spec:
             description: ClairSpec defines the desired state of Clair
             properties:
-              databaseURIs:
+              databases:
                 description: "DatabaseURIs indicates the unmanaged databases that services should connect to. \n If not provided, a database engine will be started and used."
                 properties:
                   indexer:
                     description: Indexer ...
-                    minLength: 7
-                    type: string
+                    properties:
+                      secretRef:
+                        description: SecretKeySelector selects a key of a Secret.
+                        properties:
+                          key:
+                            description: The key of the secret to select from.  Must be a valid secret key.
+                            type: string
+                          name:
+                            description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names TODO: Add other useful fields. apiVersion, kind, uid?'
+                            type: string
+                          optional:
+                            description: Specify whether the Secret or its key must be defined
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                      uri:
+                        type: string
+                    type: object
                   matcher:
                     description: Matcher ...
-                    minLength: 7
-                    type: string
+                    properties:
+                      secretRef:
+                        description: SecretKeySelector selects a key of a Secret.
+                        properties:
+                          key:
+                            description: The key of the secret to select from.  Must be a valid secret key.
+                            type: string
+                          name:
+                            description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names TODO: Add other useful fields. apiVersion, kind, uid?'
+                            type: string
+                          optional:
+                            description: Specify whether the Secret or its key must be defined
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                      uri:
+                        type: string
+                    type: object
                   notifier:
                     description: Notifier ...
-                    minLength: 7
-                    type: string
+                    properties:
+                      secretRef:
+                        description: SecretKeySelector selects a key of a Secret.
+                        properties:
+                          key:
+                            description: The key of the secret to select from.  Must be a valid secret key.
+                            type: string
+                          name:
+                            description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names TODO: Add other useful fields. apiVersion, kind, uid?'
+                            type: string
+                          optional:
+                            description: Specify whether the Secret or its key must be defined
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                      uri:
+                        type: string
+                    type: object
                 required:
                 - indexer
                 - matcher
@@ -59,13 +110,11 @@ spec:
                         description: ClientCert ...
                         properties:
                           name:
-                            description: Name ... Required
+                            description: Name is unique within a namespace to reference a secret resource.
                             type: string
                           namespace:
-                            description: Namespace ...
+                            description: Namespace defines the space within which the secret name must be unique.
                             type: string
-                        required:
-                        - name
                         type: object
                       exchange:
                         properties:
@@ -109,13 +158,11 @@ spec:
                         description: ClientCert ...
                         properties:
                           name:
-                            description: Name ... Required
+                            description: Name is unique within a namespace to reference a secret resource.
                             type: string
                           namespace:
-                            description: Namespace ...
+                            description: Namespace defines the space within which the secret name must be unique.
                             type: string
-                        required:
-                        - name
                         type: object
                       destination:
                         type: string
@@ -198,9 +245,113 @@ spec:
                   - type
                   type: object
                 type: array
+              config:
+                description: Config ...
+                properties:
+                  apiGroup:
+                    description: APIGroup is the group for the resource being referenced. If APIGroup is not specified, the specified Kind must be in the core API group. For any other third-party types, APIGroup is required.
+                    type: string
+                  kind:
+                    description: Kind is the type of resource being referenced
+                    type: string
+                  name:
+                    description: Name is the name of resource being referenced
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              database:
+                description: Database ...
+                properties:
+                  deployment:
+                    description: LocalObjectReference contains enough information to let you locate the referenced object inside the same namespace.
+                    properties:
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names TODO: Add other useful fields. apiVersion, kind, uid?'
+                        type: string
+                    type: object
+                  service:
+                    description: "ServiceReference is a reference to a Service. \n If given a choice of arbitrary URI or a ServiceReference in an API, the latter should be preferred."
+                    properties:
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names TODO: Add other useful fields. apiVersion, kind, uid?'
+                        type: string
+                      port:
+                        description: Port ... Defaults to 443.
+                        format: int32
+                        type: integer
+                    type: object
+                type: object
               endpoint:
                 description: Endpoint ...
                 type: string
+              indexer:
+                description: Indexer ...
+                properties:
+                  deployment:
+                    description: LocalObjectReference contains enough information to let you locate the referenced object inside the same namespace.
+                    properties:
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names TODO: Add other useful fields. apiVersion, kind, uid?'
+                        type: string
+                    type: object
+                  service:
+                    description: "ServiceReference is a reference to a Service. \n If given a choice of arbitrary URI or a ServiceReference in an API, the latter should be preferred."
+                    properties:
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names TODO: Add other useful fields. apiVersion, kind, uid?'
+                        type: string
+                      port:
+                        description: Port ... Defaults to 443.
+                        format: int32
+                        type: integer
+                    type: object
+                type: object
+              matcher:
+                description: Matcher ...
+                properties:
+                  deployment:
+                    description: LocalObjectReference contains enough information to let you locate the referenced object inside the same namespace.
+                    properties:
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names TODO: Add other useful fields. apiVersion, kind, uid?'
+                        type: string
+                    type: object
+                  service:
+                    description: "ServiceReference is a reference to a Service. \n If given a choice of arbitrary URI or a ServiceReference in an API, the latter should be preferred."
+                    properties:
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names TODO: Add other useful fields. apiVersion, kind, uid?'
+                        type: string
+                      port:
+                        description: Port ... Defaults to 443.
+                        format: int32
+                        type: integer
+                    type: object
+                type: object
+              notifier:
+                description: Notifier ...
+                properties:
+                  deployment:
+                    description: LocalObjectReference contains enough information to let you locate the referenced object inside the same namespace.
+                    properties:
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names TODO: Add other useful fields. apiVersion, kind, uid?'
+                        type: string
+                    type: object
+                  service:
+                    description: "ServiceReference is a reference to a Service. \n If given a choice of arbitrary URI or a ServiceReference in an API, the latter should be preferred."
+                    properties:
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names TODO: Add other useful fields. apiVersion, kind, uid?'
+                        type: string
+                      port:
+                        description: Port ... Defaults to 443.
+                        format: int32
+                        type: integer
+                    type: object
+                type: object
             type: object
         type: object
     served: true

@@ -10,13 +10,50 @@ metadata:
           "metadata": {
             "name": "clair-sample"
           },
+          "spec": {}
+        },
+        {
+          "apiVersion": "clair.projectquay.io/v1alpha1",
+          "kind": "Indexer",
+          "metadata": {
+            "name": "indexer-sample"
+          },
           "spec": {
-            "foo": "bar"
+            "configRef": {
+              "kind": "Secret",
+              "name": "clair-config"
+            }
+          }
+        },
+        {
+          "apiVersion": "clair.projectquay.io/v1alpha1",
+          "kind": "Matcher",
+          "metadata": {
+            "name": "matcher-sample"
+          },
+          "spec": {
+            "configRef": {
+              "kind": "Secret",
+              "name": "clair-config"
+            }
+          }
+        },
+        {
+          "apiVersion": "clair.projectquay.io/v1alpha1",
+          "kind": "Notifier",
+          "metadata": {
+            "name": "notifier-sample"
+          },
+          "spec": {
+            "configRef": {
+              "kind": "Secret",
+              "name": "clair-config"
+            }
           }
         }
       ]
     capabilities: Basic Install
-    operators.operatorframework.io/builder: operator-sdk-v1.3.0
+    operators.operatorframework.io/builder: operator-sdk-v1.4.0
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v3
   name: clair-operator.v0.0.1
   namespace: placeholder
@@ -29,56 +66,30 @@ spec:
       kind: Clair
       name: clairs.clair.projectquay.io
       version: v1alpha1
-  description: Operator for the Clair container vulnerability scanner.
+    - description: Indexer is the Schema for the indexers API
+      displayName: Indexer
+      kind: Indexer
+      name: indexers.clair.projectquay.io
+      version: v1alpha1
+    - description: Matcher is the Schema for the matchers API
+      displayName: Matcher
+      kind: Matcher
+      name: matchers.clair.projectquay.io
+      version: v1alpha1
+    - description: Notifier is the Schema for the notifiers API
+      displayName: Notifier
+      kind: Notifier
+      name: notifiers.clair.projectquay.io
+      version: v1alpha1
+  description: The Clair security scanner operator.
   displayName: Clair
   icon:
   - base64data: ""
     mediatype: ""
   install:
     spec:
-      clusterPermissions:
-      - rules:
-        - apiGroups:
-          - clair.projectquay.io
-          resources:
-          - clairs
-          verbs:
-          - create
-          - delete
-          - get
-          - list
-          - patch
-          - update
-          - watch
-        - apiGroups:
-          - clair.projectquay.io
-          resources:
-          - clairs/finalizers
-          verbs:
-          - update
-        - apiGroups:
-          - clair.projectquay.io
-          resources:
-          - clairs/status
-          verbs:
-          - get
-          - patch
-          - update
-        - apiGroups:
-          - authentication.k8s.io
-          resources:
-          - tokenreviews
-          verbs:
-          - create
-        - apiGroups:
-          - authorization.k8s.io
-          resources:
-          - subjectaccessreviews
-          verbs:
-          - create
-        serviceAccountName: default
       deployments:
-      - name: clair-operator-controller-manager
+      - name: clair-controller-manager
         spec:
           replicas: 1
           selector:
@@ -134,30 +145,6 @@ spec:
               securityContext:
                 runAsUser: 65532
               terminationGracePeriodSeconds: 10
-      permissions:
-      - rules:
-        - apiGroups:
-          - ""
-          - coordination.k8s.io
-          resources:
-          - configmaps
-          - leases
-          verbs:
-          - get
-          - list
-          - watch
-          - create
-          - update
-          - patch
-          - delete
-        - apiGroups:
-          - ""
-          resources:
-          - events
-          verbs:
-          - create
-          - patch
-        serviceAccountName: default
     strategy: deployment
   installModes:
   - supported: false
@@ -171,15 +158,14 @@ spec:
   keywords:
   - clair
   - security
-  - vulnerability
   links:
   - name: Clair Operator
-    url: https://clair-operator.domain
+    url: https://projectquay.io
   maintainers:
   - email: hdonnay@redhat.com
     name: Hank Donnay
   maturity: alpha
   provider:
-    name: projectquay.io
-    url: https://quay.github.io/clair/
+    name: The Clair Authors
+    url: https://quay.github.io/clair
   version: 0.0.1

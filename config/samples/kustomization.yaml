@@ -1,5 +1,8 @@
+---
 ## Append samples you want in your CSV to this file as resources ##
 resources:
-- clair_v1alpha1_indexer.yaml
-- clair_v1alpha1_matcher.yaml
+  - clair_v1alpha1_indexer.yaml
+  - clair_v1alpha1_matcher.yaml
+  - clair_v1alpha1_notifier.yaml
+  - clair_v1alpha1_clair.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

@@ -1,0 +1,9 @@
+---
+resources:
+  - indexer_editor_role.yaml
+  - indexer_viewer_role.yaml
+  - matcher_editor_role.yaml
+  - matcher_viewer_role.yaml
+  - notifier_editor_role.yaml
+  - notifier_viewer_role.yaml
+  - role.yaml
