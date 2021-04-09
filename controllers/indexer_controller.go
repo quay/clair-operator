@@ -40,6 +40,36 @@ type IndexerReconciler struct {
 	ServiceReconciler
 }
 
+func indexerState(cs []metav1.Condition) (string, error) {
+	var states = []string{
+		`Empty`,
+		`clair.projectquay.io/ServiceCreated`,
+		`clair.projectquay.io/DeploymentCreated`,
+		`clair.projectquay.io/Steady`,
+		`clair.projectquay.io/Redeploying`,
+	}
+	m := conditionMap(cs, states[1:])
+	for i, s := range states[1:3] {
+		// For these states, if not True (so, False or Unknown), return the
+		// previous state. Note the reslicing.
+		if m[s] != metav1.ConditionTrue {
+			return states[i], nil
+		}
+	}
+	steady, redeploy := m[states[3]] == metav1.ConditionTrue, m[states[4]] == metav1.ConditionTrue
+	switch {
+	case !steady, !redeploy:
+		// In a failure state
+	case !steady, redeploy:
+		// Redeploying, check
+	case steady, !redeploy:
+		// Steady
+	case steady, redeploy:
+		// redeploy check
+	}
+	return "", nil
+}
+
 // +kubebuilder:rbac:groups=clair.projectquay.io,resources=indexers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=clair.projectquay.io,resources=indexers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=clair.projectquay.io,resources=indexers/finalizers,verbs=update

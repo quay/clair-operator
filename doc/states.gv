@@ -18,9 +18,9 @@ digraph Clair {
 
 		ServiceEmpty -> ServiceCreated [label="create service"];
 		ServiceCreated -> ServiceDeploymentCreated [label="create deployment"];
-		ServiceDeploymentCreated -> ServiceSteady [label="config exists"];
-		ServiceSteady -> ServiceRedeploying [label="config/operator change"];
+		ServiceDeploymentCreated -> ServiceRedeploying [label="config exists"];
 		ServiceRedeploying -> ServiceSteady [label="update deployment"];
+		ServiceSteady -> ServiceRedeploying [label="config/operator change"];
 	};
 
 	Empty -> DatabaseAvailable [label="external databases provided"];

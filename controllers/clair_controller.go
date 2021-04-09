@@ -23,12 +23,14 @@ import (
 
 	"github.com/go-logr/logr"
 	routev1 "github.com/openshift/api/route/v1"
+	monitorv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
+	scalev2 "k8s.io/api/autoscaling/v2beta2"
 	corev1 "k8s.io/api/core/v1"
+	netv1 "k8s.io/api/networking/v1"
 	k8serr "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -49,8 +51,9 @@ func Key(s string) string {
 // ClairReconciler reconciles a Clair object
 type ClairReconciler struct {
 	client.Client
-	Log    logr.Logger
-	Scheme *runtime.Scheme
+	Log     logr.Logger
+	Scheme  *runtime.Scheme
+	options optionalTypes
 }
 
 // +kubebuilder:rbac:groups=clair.projectquay.io,resources=clairs,verbs=get;list;watch;create;update;patch;delete
@@ -140,9 +143,6 @@ func (r *ClairReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 func (r *ClairReconciler) initialize(ctx context.Context, cur, next *clairv1alpha1.Clair) (ctrl.Result, error) {
 	var res ctrl.Result
-	if err := r.rangefind(ctx, cur, next); err != nil {
-		return res, err
-	}
 
 	managedDB := cur.Spec.Databases == nil
 	if !cur.Status.Indexer.Populated() {
@@ -185,110 +185,32 @@ func makeDNS(obj metav1.Object, srv *corev1.Service) string {
 	return fmt.Sprintf(`%s.%s.svc.%s`, srv.Name, srv.Namespace, obj.GetClusterName())
 }
 
-const (
-	routeAnnotation = `clair.projectquay.io/has-route`
-	aTrue           = string(metav1.ConditionTrue)
-	aFalse          = string(metav1.ConditionFalse)
-)
-
-var (
-	gvkMap = map[string]schema.GroupVersionKind{
-		routeAnnotation: (&routev1.Route{}).GroupVersionKind(),
-	}
-	needAnnotations = []struct {
-		Group       string
-		Annotations []string
-	}{
-		{"routing", []string{routeAnnotation}},
-	}
-)
-
-type availableKinds struct {
-	Routing schema.GroupVersionKind
-}
-
-func (ak *availableKinds) check(as map[string]string) error {
-	// See what we're missing, if anything, and figure out what to use.
-CheckGroup:
-	for _, s := range needAnnotations {
-		for _, k := range s.Annotations {
-			if val, ok := as[k]; ok && val == aTrue {
-				switch s.Group {
-				case "routing":
-					ak.Routing = gvkMap[k]
-				}
-				continue CheckGroup
-			}
-		}
-	}
-	return nil
-}
-
-// Rangefind tests for all the capabilities we'd like to make use of and adds
-// annotations to the resource.
-//
-// If any updates are made, the objects pointed to by cur and next will be
-// updated accordingly.
-func (r *ClairReconciler) rangefind(ctx context.Context, cur, next *clairv1alpha1.Clair) error {
-	var missing []string
-	changed := false
-	mapper := r.Client.RESTMapper()
-	as := cur.GetAnnotations()
-
-	// First, check for the existence of all of the resources we could use.
-	for key, gvk := range gvkMap {
-		if _, ok := as[key]; ok {
-			continue
-		}
-		_, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
-		if err != nil {
-			as[key] = aFalse
-		} else {
-			as[key] = aTrue
-		}
-		changed = true
-	}
-
-	// See what we're missing, if anything, and figure out what to use.
-CheckGroup:
-	for _, s := range needAnnotations {
-		for _, k := range s.Annotations {
-			if val, ok := as[k]; ok && val == aTrue {
-				continue CheckGroup
-			}
-		}
-		missing = append(missing, s.Group)
-	}
-
-	if changed {
-		// Update our annotations.
-		next.SetAnnotations(as)
-		// Set the condition appropriately.
-		if missing != nil {
-			next.SetCondition(clairv1alpha1.ClairConfigBlocked, metav1.ConditionTrue,
-				clairv1alpha1.ClairReasonMissingDeps, fmt.Sprintf("missing needed types: %v", missing))
-		} else {
-			next.SetCondition(clairv1alpha1.ClairConfigBlocked, metav1.ConditionFalse, "", "")
-		}
-		if err := r.Client.Update(ctx, next); err != nil {
-			return err
-		}
-		next.DeepCopyInto(cur)
-	}
-
-	if missing != nil {
-		return fmt.Errorf("missing needed types: %v", missing)
-	}
-	return nil
-}
-
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClairReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&clairv1alpha1.Clair{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.Secret{}).
-		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.ConfigMap{})
+
+	// Attempt to resolve some GVKs. If we can, this means they're installed and
+	// we can use them.
+	for _, obj := range []client.Object{
+		&scalev2.HorizontalPodAutoscaler{},
+		&monitorv1.ServiceMonitor{},
+		&netv1.Ingress{},
+		&routev1.Route{},
+	} {
+		gvk := obj.GetObjectKind().GroupVersionKind()
+		if !r.Scheme.Recognizes(gvk) {
+			r.Log.Info("missing optionally supported resource", "gvk", gvk.String())
+			continue
+		}
+		b = b.Owns(obj)
+		r.Log.Info("found optional kind", "gvk", gvk.String())
+		r.options.Set(gvk)
+	}
+	return b.
 		Complete(r)
 }

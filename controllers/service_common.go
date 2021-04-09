@@ -9,6 +9,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	scalev2 "k8s.io/api/autoscaling/v2beta2"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -80,4 +81,17 @@ func (r *ServiceReconciler) config(ctx context.Context, ns string, ref *clairv1a
 		return nil, fmt.Errorf("incorrect type pointed to by configReference: %q", kind)
 	}
 	return &cfg, nil
+}
+
+func conditionMap(cs []metav1.Condition, ts []string) map[string]metav1.ConditionStatus {
+	m := make(map[string]metav1.ConditionStatus, len(ts))
+	for _, t := range ts {
+		m[t] = metav1.ConditionUnknown
+	}
+	for _, c := range cs {
+		if _, ok := m[c.Type]; ok {
+			m[c.Type] = c.Status
+		}
+	}
+	return m
 }
