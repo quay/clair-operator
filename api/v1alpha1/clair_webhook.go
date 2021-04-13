@@ -56,7 +56,6 @@ func SetupConfigWebhooks(mgr ctrl.Manager) error {
 }
 
 // +kubebuilder:object:generate=false
-
 type ConfigMutator struct {
 	configCommon
 }
@@ -322,10 +321,12 @@ func toName(s string) types.NamespacedName {
 	}
 }
 
-// +kubebuilder:object:generate=false
+// +kubebuilder:webhook:path=/validate-clair-config,mutating=false,failurePolicy=fail,groups="",resources=configmaps;secrets,verbs=create;update,versions=v1,name=vconfig.c.pq.io
 
 // ConfigValidator is a validating webhook that disallows updates or creations
 // of labelled ConfigMaps or Secrets with malformed Clair configurations.
+//
+// +kubebuilder:object:generate=false
 type ConfigValidator struct {
 	configCommon
 }
