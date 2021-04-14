@@ -84,13 +84,13 @@ docker-push:
 # Download controller-gen locally if necessary
 CONTROLLER_GEN = $(shell pwd)/bin/controller-gen
 controller-gen: bin/controller-gen
-bin/controller-gen:
+bin/controller-gen: go.mod
 	GOBIN=$(shell git rev-parse --show-toplevel)/bin go install sigs.k8s.io/controller-tools/cmd/controller-gen
 
 # Download kustomize locally if necessary
 KUSTOMIZE = $(shell pwd)/bin/kustomize
 kustomize: bin/kustomize
-bin/kustomize:
+bin/kustomize: go.mod
 	GOBIN=$(shell git rev-parse --show-toplevel)/bin go install sigs.k8s.io/kustomize/kustomize/v3
 
 # Generate bundle manifests and metadata, then validate generated files.
