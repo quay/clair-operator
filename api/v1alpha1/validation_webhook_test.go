@@ -7,10 +7,11 @@ import (
 )
 
 const (
-	invalidConfig = `{
-not legal
-	yaml
-at: all
+	invalidConfig = `---
+missing: everything
+`
+	invalidYAML = `	{
+		:
 `
 	validConfig = `---
 indexer:
@@ -72,38 +73,90 @@ var _ = Describe("config validation webhook", func() {
 	})
 
 	Context("should reject", func() {
-		Specify("an invalid ConfigMap with valid metadata", func() {
-			cm := &corev1.ConfigMap{}
-			cm.Name = "invalid-valid"
-			cm.Namespace = "default"
-			cm.Data = map[string]string{key: invalidConfig}
-			cm.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
-			cm.Annotations = map[string]string{ConfigAnnotation: key}
+		Context("invalid YAML", func() {
+			Specify("in a valid ConfigMap", func() {
+				cm := &corev1.ConfigMap{}
+				cm.Name = "malformed-valid"
+				cm.Namespace = "default"
+				cm.Data = map[string]string{key: invalidYAML}
+				cm.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
+				cm.Annotations = map[string]string{ConfigAnnotation: key}
 
-			err := k8sClient.Create(ctx, cm)
-			Expect(err).Should(HaveOccurred())
+				err := k8sClient.Create(ctx, cm)
+				Expect(err).Should(HaveOccurred())
+			})
+			Specify("in a valid Secret", func() {
+				s := &corev1.Secret{}
+				s.Name = "malformed-valid"
+				s.Namespace = "default"
+				s.StringData = map[string]string{key: invalidYAML}
+				s.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
+				s.Annotations = map[string]string{ConfigAnnotation: key}
+
+				err := k8sClient.Create(ctx, s)
+				Expect(err).Should(HaveOccurred())
+			})
 		})
-		Specify("an invalid Secret with valid metadata", func() {
-			s := &corev1.Secret{}
-			s.Name = "invalid-valid"
-			s.Namespace = "default"
-			s.StringData = map[string]string{key: invalidConfig}
-			s.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
-			s.Annotations = map[string]string{ConfigAnnotation: key}
 
-			err := k8sClient.Create(ctx, s)
-			Expect(err).Should(HaveOccurred())
+		Context("invalid config", func() {
+			Specify("in a valid ConfigMap", func() {
+				cm := &corev1.ConfigMap{}
+				cm.Name = "invalid-valid"
+				cm.Namespace = "default"
+				cm.Data = map[string]string{key: invalidConfig}
+				cm.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
+				cm.Annotations = map[string]string{ConfigAnnotation: key}
+
+				err := k8sClient.Create(ctx, cm)
+				Expect(err).Should(HaveOccurred())
+			})
+			Specify("in a valid Secret", func() {
+				s := &corev1.Secret{}
+				s.Name = "invalid-valid"
+				s.Namespace = "default"
+				s.StringData = map[string]string{key: invalidConfig}
+				s.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
+				s.Annotations = map[string]string{ConfigAnnotation: key}
+
+				err := k8sClient.Create(ctx, s)
+				Expect(err).Should(HaveOccurred())
+			})
 		})
 
-		Specify("a valid ConfigMap with the label, but no annotation", func() {
-			cm := &corev1.ConfigMap{}
-			cm.Name = "valid-labeled-unannotated"
-			cm.Namespace = "default"
-			cm.Data = map[string]string{key: validConfig}
-			cm.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
+		Context("a valid ConfigMap with", func() {
+			Specify("the label, but no annotation", func() {
+				cm := &corev1.ConfigMap{}
+				cm.Name = "valid-labeled-unannotated"
+				cm.Namespace = "default"
+				cm.Data = map[string]string{key: validConfig}
+				cm.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
 
-			err := k8sClient.Create(ctx, cm)
-			Expect(err).Should(HaveOccurred())
+				err := k8sClient.Create(ctx, cm)
+				Expect(err).Should(HaveOccurred())
+			})
+			Specify("the label, but incorrect annotation", func() {
+				cm := &corev1.ConfigMap{}
+				cm.Name = "valid-labeled-bad-annotation"
+				cm.Namespace = "default"
+				cm.Data = map[string]string{key: validConfig}
+				cm.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
+				cm.Annotations = map[string]string{ConfigAnnotation: key + `.missing`}
+
+				err := k8sClient.Create(ctx, cm)
+				Expect(err).Should(HaveOccurred())
+			})
+
+			Specify("a bad version", func() {
+				cm := &corev1.ConfigMap{}
+				cm.Name = "valid-bad-version"
+				cm.Namespace = "default"
+				cm.Data = map[string]string{key: validConfig}
+				cm.Labels = map[string]string{ConfigLabel: `v666`}
+				cm.Annotations = map[string]string{ConfigAnnotation: key}
+
+				err := k8sClient.Create(ctx, cm)
+				Expect(err).Should(HaveOccurred())
+			})
 		})
 	})
 })

@@ -10,5 +10,4 @@ webhooks:
     objectSelector:
       matchExpressions:
         - key: 'clair.projectquay.io/config'
-          operator: In
-          values: [v1]
+          operator: Exists
