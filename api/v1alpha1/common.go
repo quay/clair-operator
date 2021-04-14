@@ -30,6 +30,8 @@ const ()
 
 // Annotations ...
 const (
+	// ConfigKey is the annotation used to indicate which key contains
+	// the config blob.
 	ConfigKey   = `clair.projectquay.io/config-key`
 	TemplateKey = `clair.projectquay.io/config-template-key`
 

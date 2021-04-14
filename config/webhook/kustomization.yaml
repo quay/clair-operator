@@ -8,6 +8,7 @@ resources:
 
 patchesStrategicMerge:
   - validatingwebhook_selector.yaml
+  - mutatingwebhook_selector.yaml
 
 configurations:
   - kustomizeconfig.yaml

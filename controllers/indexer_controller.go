@@ -185,7 +185,7 @@ func (r *IndexerReconciler) indexerTemplates(ctx context.Context, cur, next *cla
 	}
 	cfgkey := configFile
 	cfgAnno := cfg.GetAnnotations()
-	if val, ok := cfgAnno[clairv1alpha1.ConfigAnnotation]; ok {
+	if val, ok := cfgAnno[clairv1alpha1.ConfigKey]; ok {
 		cfgkey = val
 	}
 	items := []corev1.KeyToPath{{Key: cfgkey, Path: configFile}}

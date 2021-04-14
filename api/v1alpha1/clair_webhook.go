@@ -19,11 +19,13 @@ package v1alpha1
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 
@@ -55,6 +57,12 @@ func SetupConfigWebhooks(mgr ctrl.Manager) error {
 	return nil
 }
 
+var opPath = strings.NewReplacer("~", "~0", "/", "~1")
+
+// +kubebuilder:webhook:path=/mutate-clair-config,mutating=true,sideEffects=none,failurePolicy=fail,groups="",resources=configmaps;secrets,verbs=create;update,versions=v1,name=mconfig.c.pq.io,admissionReviewVersions=v1;v1beta1
+
+// ConfigMutator ...
+//
 // +kubebuilder:object:generate=false
 type ConfigMutator struct {
 	configCommon
@@ -71,6 +79,12 @@ func (m *ConfigMutator) Handle(ctx context.Context, req admission.Request) admis
 	if err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
+	ops := []jsonpatch.Operation{
+		jsonpatch.Operation{Path: `/data/`, Operation: `add`},
+	}
+	annot := map[string]string{}
+	var warn []string
+
 	version, ok := d.labels[ConfigLabel]
 	if !ok {
 		return admission.Errored(http.StatusBadRequest, errMissingLabel)
@@ -83,33 +97,47 @@ func (m *ConfigMutator) Handle(ctx context.Context, req admission.Request) admis
 	}
 	outKey, ok := d.annotations[ConfigKey]
 	if !ok {
-		return admission.Allowed("config key not provided")
+		outKey = strings.TrimSuffix(inKey, path.Ext(inKey))
+		if outKey == inKey { // If it didn't have an extension suffix
+			outKey += ".yaml"
+		}
+		ops = append(ops, jsonpatch.Operation{
+			Path:      `/metadata/annotations/` + opPath.Replace(ConfigKey),
+			Operation: `add`,
+			Value:     outKey})
+		log.V(1).Info("creating an output file")
+		annot[`output-guessed`] = outKey
 	}
-	switch req.Kind.Kind {
-	case "Secret":
-		outKey = `binaryData/` + outKey
-	case "ConfigMap":
-		outKey = `data/` + outKey
-	default:
-		panic("unreachable")
-	}
-	in, ok := d.data[inKey]
+	ops[0].Path += outKey
+	in, ok := d.item(inKey)
 	if !ok {
 		return admission.Denied(fmt.Sprintf("key does not exist: %s", inKey))
 	}
-	out, err := m.template(ctx, log, d.annotations, version, in)
+
+	log.V(1).Info("attempting templating", "input_key", inKey, "output_key", outKey)
+	b, err := m.template(ctx, log, d.annotations, version, in)
 	if err != nil {
 		return admission.Errored(http.StatusPreconditionFailed, err)
 	}
+	switch req.Kind.Kind {
+	case "Secret":
+		ops[0].Value = base64.StdEncoding.EncodeToString(b)
+	case "ConfigMap":
+		ops[0].Value = string(b)
+	default:
+		panic("unreachable")
+	}
 
-	return admission.Patched("template ok", jsonpatch.Operation{
-		Path:      outKey,
-		Operation: `replace`,
-		Value:     out,
-	})
+	res := admission.Patched("template ok", ops...)
+	res.Warnings = warn
+	res.AuditAnnotations = annot
+	return res
 }
 
+// Template does the templating.
 func (m *ConfigMutator) template(ctx context.Context, log logr.Logger, a map[string]string, v string, in []byte) ([]byte, error) {
+	// TODO(hank) This should return warnings that can be propagated to the
+	// response.
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -201,8 +229,12 @@ func (m *ConfigMutator) template(ctx context.Context, log logr.Logger, a map[str
 		}
 
 		// Look for secrets and dereference them.
-		if u, err := url.Parse(c.Indexer.ConnString); err == nil && u.Scheme == `secret` {
-			log.V(1).Info(`found secret reference`, "key", "/indexer/conn_string")
+		if u, err := url.Parse(c.Indexer.ConnString); err == nil &&
+			u.Scheme == `secret` &&
+			u.Opaque != "" {
+			log.V(1).Info(`found secret reference`,
+				"key", "/indexer/conn_string",
+				"ref", u.Opaque)
 			var s corev1.Secret
 			if err := m.client.Get(ctx, toName(u.Opaque), &s); err != nil {
 				return nil, err
@@ -214,8 +246,12 @@ func (m *ConfigMutator) template(ctx context.Context, log logr.Logger, a map[str
 			log.V(1).Info(`replacing secret reference`, "key", "/indexer/conn_string")
 			c.Indexer.ConnString = u.String()
 		}
-		if u, err := url.Parse(c.Matcher.ConnString); err == nil && u.Scheme == `secret` {
-			log.V(1).Info(`found secret reference`, "key", "/matcher/conn_string")
+		if u, err := url.Parse(c.Matcher.ConnString); err == nil &&
+			u.Scheme == `secret` &&
+			u.Opaque != "" {
+			log.V(1).Info(`found secret reference`,
+				"key", "/matcher/conn_string",
+				"ref", u.Opaque)
 			var s corev1.Secret
 			if err := m.client.Get(ctx, toName(u.Opaque), &s); err != nil {
 				return nil, err
@@ -227,8 +263,12 @@ func (m *ConfigMutator) template(ctx context.Context, log logr.Logger, a map[str
 			log.V(1).Info(`replacing secret reference`, "key", "/matcher/conn_string")
 			c.Matcher.ConnString = u.String()
 		}
-		if u, err := url.Parse(c.Notifier.ConnString); err == nil && u.Scheme == `secret` {
-			log.V(1).Info(`found secret reference`, "key", "/notifier/conn_string")
+		if u, err := url.Parse(c.Notifier.ConnString); err == nil &&
+			u.Scheme == `secret` &&
+			u.Opaque != "" {
+			log.V(1).Info(`found secret reference`,
+				"key", "/notifier/conn_string",
+				"ref", u.Opaque)
 			var s corev1.Secret
 			if err := m.client.Get(ctx, toName(u.Opaque), &s); err != nil {
 				return nil, err
@@ -318,10 +358,13 @@ func resolveDatabaseSecret(s *corev1.Secret) (*url.URL, error) {
 
 func toName(s string) types.NamespacedName {
 	i := strings.IndexByte(s, '/')
-	return types.NamespacedName{
-		Namespace: s[:i],
-		Name:      s[i+1:],
+	t := types.NamespacedName{
+		Name: s[i+1:],
 	}
+	if i != -1 {
+		t.Namespace = s[:i]
+	}
+	return t
 }
 
 // +kubebuilder:webhook:path=/validate-clair-config,mutating=false,sideEffects=none,failurePolicy=fail,groups="",resources=configmaps;secrets,verbs=create;update,versions=v1,name=vconfig.c.pq.io,admissionReviewVersions=v1;v1beta1
@@ -367,9 +410,6 @@ func validateConfig(ctx context.Context, v string, b []byte) error {
 const (
 	// ConfigLabel is label needed to trigger the validating webhook.
 	ConfigLabel = `clair.projectquay.io/config`
-	// ConfigAnnotation is the annotation used to indicate which key contains
-	// the config blob.
-	ConfigAnnotation = `clair.projectquay.io/config`
 
 	// ConfigLabelV1 and friends indicate the valid values for the ConfigLabel.
 	ConfigLabelV1 = `v1`
@@ -402,14 +442,14 @@ func (v *ConfigValidator) Handle(ctx context.Context, req admission.Request) adm
 	log.V(1).Info("labelled as", "version", version)
 
 	// Find the key containing the configuration blob.
-	key, ok := d.annotations[ConfigAnnotation]
+	key, ok := d.annotations[ConfigKey]
 	if !ok {
 		return admission.Denied("missing required annotation: indicate key containing config")
 	}
 	log.V(1).Info("config at", "key", key)
 
 	// Grab the blob.
-	cfg, ok := d.data[key]
+	cfg, ok := d.item(key)
 	if !ok {
 		return admission.Denied(fmt.Sprintf("missing value: indicated key %q does not exist", key))
 	}
@@ -424,6 +464,19 @@ type configDetails struct {
 	labels      map[string]string
 	annotations map[string]string
 	data        map[string][]byte
+	strData     map[string]string
+}
+
+func (d *configDetails) item(k string) (v []byte, ok bool) {
+	v, ok = d.data[k]
+	if ok {
+		return v, true
+	}
+	s, ok := d.strData[k]
+	if ok {
+		return []byte(s), true
+	}
+	return nil, false
 }
 
 type configCommon struct {
@@ -456,6 +509,7 @@ func (c *configCommon) details(ctx context.Context, req admission.Request) (conf
 		cfg.labels = secret.Labels
 		cfg.annotations = secret.Annotations
 		cfg.data = secret.Data
+		cfg.strData = secret.StringData
 	case "ConfigMap":
 		config := corev1.ConfigMap{}
 		if err := c.decoder.Decode(req, &config); err != nil {
@@ -463,13 +517,8 @@ func (c *configCommon) details(ctx context.Context, req admission.Request) (conf
 		}
 		cfg.labels = config.Labels
 		cfg.annotations = config.Annotations
-		cfg.data = make(map[string][]byte)
-		for k, b := range config.BinaryData {
-			cfg.data[k] = b
-		}
-		for k, s := range config.Data {
-			cfg.data[k] = []byte(s)
-		}
+		cfg.data = config.BinaryData
+		cfg.strData = config.Data
 	default:
 		return cfg, errBadKind
 	}

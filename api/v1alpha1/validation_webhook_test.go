@@ -6,14 +6,15 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-const (
-	invalidConfig = `---
+var _ = Describe("config validation webhook", func() {
+	const (
+		invalidConfig = `---
 missing: everything
 `
-	invalidYAML = `	{
+		invalidYAML = `	{
 		:
 `
-	validConfig = `---
+		validConfig = `---
 indexer:
   connstring: veryrealdatabase
 matcher:
@@ -24,10 +25,9 @@ notifier:
   indexer_addr: "http://clair"
   matcher_addr: "http://clair"
 `
-)
+		key = `config.yaml`
+	)
 
-var _ = Describe("config validation webhook", func() {
-	const key = `config.yaml`
 	Context("should not reject", func() {
 		Specify("an invalid ConfigMap without the label", func() {
 			cm := &corev1.ConfigMap{}
@@ -54,7 +54,7 @@ var _ = Describe("config validation webhook", func() {
 			cm.Namespace = "default"
 			cm.Data = map[string]string{key: validConfig}
 			cm.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
-			cm.Annotations = map[string]string{ConfigAnnotation: key}
+			cm.Annotations = map[string]string{ConfigKey: key}
 
 			err := k8sClient.Create(ctx, cm)
 			Expect(err).ShouldNot(HaveOccurred())
@@ -65,7 +65,7 @@ var _ = Describe("config validation webhook", func() {
 			s.Namespace = "default"
 			s.StringData = map[string]string{key: validConfig}
 			s.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
-			s.Annotations = map[string]string{ConfigAnnotation: key}
+			s.Annotations = map[string]string{ConfigKey: key}
 
 			err := k8sClient.Create(ctx, s)
 			Expect(err).ShouldNot(HaveOccurred())
@@ -80,7 +80,7 @@ var _ = Describe("config validation webhook", func() {
 				cm.Namespace = "default"
 				cm.Data = map[string]string{key: invalidYAML}
 				cm.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
-				cm.Annotations = map[string]string{ConfigAnnotation: key}
+				cm.Annotations = map[string]string{ConfigKey: key}
 
 				err := k8sClient.Create(ctx, cm)
 				Expect(err).Should(HaveOccurred())
@@ -91,7 +91,7 @@ var _ = Describe("config validation webhook", func() {
 				s.Namespace = "default"
 				s.StringData = map[string]string{key: invalidYAML}
 				s.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
-				s.Annotations = map[string]string{ConfigAnnotation: key}
+				s.Annotations = map[string]string{ConfigKey: key}
 
 				err := k8sClient.Create(ctx, s)
 				Expect(err).Should(HaveOccurred())
@@ -105,7 +105,7 @@ var _ = Describe("config validation webhook", func() {
 				cm.Namespace = "default"
 				cm.Data = map[string]string{key: invalidConfig}
 				cm.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
-				cm.Annotations = map[string]string{ConfigAnnotation: key}
+				cm.Annotations = map[string]string{ConfigKey: key}
 
 				err := k8sClient.Create(ctx, cm)
 				Expect(err).Should(HaveOccurred())
@@ -116,7 +116,7 @@ var _ = Describe("config validation webhook", func() {
 				s.Namespace = "default"
 				s.StringData = map[string]string{key: invalidConfig}
 				s.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
-				s.Annotations = map[string]string{ConfigAnnotation: key}
+				s.Annotations = map[string]string{ConfigKey: key}
 
 				err := k8sClient.Create(ctx, s)
 				Expect(err).Should(HaveOccurred())
@@ -140,7 +140,7 @@ var _ = Describe("config validation webhook", func() {
 				cm.Namespace = "default"
 				cm.Data = map[string]string{key: validConfig}
 				cm.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
-				cm.Annotations = map[string]string{ConfigAnnotation: key + `.missing`}
+				cm.Annotations = map[string]string{ConfigKey: key + `.missing`}
 
 				err := k8sClient.Create(ctx, cm)
 				Expect(err).Should(HaveOccurred())
@@ -152,7 +152,7 @@ var _ = Describe("config validation webhook", func() {
 				cm.Namespace = "default"
 				cm.Data = map[string]string{key: validConfig}
 				cm.Labels = map[string]string{ConfigLabel: `v666`}
-				cm.Annotations = map[string]string{ConfigAnnotation: key}
+				cm.Annotations = map[string]string{ConfigKey: key}
 
 				err := k8sClient.Create(ctx, cm)
 				Expect(err).Should(HaveOccurred())
