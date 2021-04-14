@@ -1,0 +1,14 @@
+# This is the important bit that makes sure the webhook doesn't get sent
+# every ConfigMap or Secret on the cluster.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+  - name: vconfig.c.pq.io
+    objectSelector:
+      matchExpressions:
+        - key: 'clair.projectquay.io/config'
+          operator: In
+          values: [v1]

@@ -62,7 +62,10 @@ type ConfigMutator struct {
 
 func (m *ConfigMutator) Handle(ctx context.Context, req admission.Request) admission.Response {
 	log := configlog.WithValues("uid", req.UID)
-	log.V(1).Info("examining object: %s/%s(%v)", req.Namespace, req.Name, req.Kind)
+	log.V(1).Info("examining object",
+		"namespace", req.Namespace,
+		"name", req.Name,
+		"kind", req.Kind)
 
 	d, err := m.details(ctx, req)
 	if err != nil {
@@ -72,7 +75,7 @@ func (m *ConfigMutator) Handle(ctx context.Context, req admission.Request) admis
 	if !ok {
 		return admission.Errored(http.StatusBadRequest, errMissingLabel)
 	}
-	log.V(1).Info("labelled as %q", version)
+	log.V(1).Info("labelled as", "version", version)
 
 	inKey, ok := d.annotations[TemplateKey]
 	if !ok {
@@ -321,7 +324,7 @@ func toName(s string) types.NamespacedName {
 	}
 }
 
-// +kubebuilder:webhook:path=/validate-clair-config,mutating=false,failurePolicy=fail,groups="",resources=configmaps;secrets,verbs=create;update,versions=v1,name=vconfig.c.pq.io
+// +kubebuilder:webhook:path=/validate-clair-config,mutating=false,sideEffects=none,failurePolicy=fail,groups="",resources=configmaps;secrets,verbs=create;update,versions=v1,name=vconfig.c.pq.io,admissionReviewVersions=v1;v1beta1
 
 // ConfigValidator is a validating webhook that disallows updates or creations
 // of labelled ConfigMaps or Secrets with malformed Clair configurations.
@@ -347,8 +350,11 @@ func validateConfig(ctx context.Context, v string, b []byte) error {
 		if err := yaml.Unmarshal(b, &c); err != nil {
 			return err
 		}
-		if err := config.Validate(c); err != nil {
-			return err
+		for _, m := range []string{"indexer", "matcher", "notifier"} {
+			c.Mode = m
+			if err := config.Validate(c); err != nil {
+				return err
+			}
 		}
 	default:
 		return fmt.Errorf("unknown config version: %q", v)
@@ -376,7 +382,10 @@ var (
 
 func (v *ConfigValidator) Handle(ctx context.Context, req admission.Request) admission.Response {
 	log := configlog.WithValues("uid", req.UID)
-	log.V(1).Info("examining object: %s/%s(%v)", req.Namespace, req.Name, req.Kind)
+	log.V(1).Info("examining object",
+		"namespace", req.Namespace,
+		"name", req.Name,
+		"kind", req.Kind)
 
 	// Populate the labels, annotations, and data.
 	// Errors reported here are errors in the request.
@@ -390,14 +399,14 @@ func (v *ConfigValidator) Handle(ctx context.Context, req admission.Request) adm
 	if !ok {
 		return admission.Errored(http.StatusBadRequest, errMissingLabel)
 	}
-	log.V(1).Info("labelled as %q", version)
+	log.V(1).Info("labelled as", "version", version)
 
 	// Find the key containing the configuration blob.
 	key, ok := d.annotations[ConfigAnnotation]
 	if !ok {
 		return admission.Denied("missing required annotation: indicate key containing config")
 	}
-	log.V(1).Info("config at %q", key)
+	log.V(1).Info("config at", "key", key)
 
 	// Grab the blob.
 	cfg, ok := d.data[key]
@@ -454,7 +463,13 @@ func (c *configCommon) details(ctx context.Context, req admission.Request) (conf
 		}
 		cfg.labels = config.Labels
 		cfg.annotations = config.Annotations
-		cfg.data = config.BinaryData
+		cfg.data = make(map[string][]byte)
+		for k, b := range config.BinaryData {
+			cfg.data[k] = b
+		}
+		for k, s := range config.Data {
+			cfg.data[k] = []byte(s)
+		}
 	default:
 		return cfg, errBadKind
 	}

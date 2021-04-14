@@ -6,5 +6,8 @@ resources:
   - manifests.yaml
   - service.yaml
 
+patchesStrategicMerge:
+  - validatingwebhook_selector.yaml
+
 configurations:
   - kustomizeconfig.yaml

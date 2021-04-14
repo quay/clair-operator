@@ -17,10 +17,14 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -38,6 +42,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest/printer"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/kustomize/api/filesys"
+	"sigs.k8s.io/kustomize/api/krusty"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -63,11 +69,29 @@ var _ = BeforeSuite(func() {
 
 	ctx, cancel = context.WithCancel(context.TODO())
 
+	By("writing kustomize object files")
+	kopts := krusty.MakeDefaultOptions()
+	res, err := krusty.MakeKustomizer(kopts).Run(
+		filesys.MakeFsOnDisk(),
+		filepath.Join("..", "..", "config", "webhook"))
+	Expect(err).NotTo(HaveOccurred())
+	Expect(res).NotTo(BeNil())
+	for _, r := range res.Resources() {
+		f, err := ioutil.TempFile("testdata", "*.json")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(f).NotTo(BeNil())
+		b, err := r.MarshalJSON()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = io.Copy(f, bytes.NewReader(b))
+		Expect(err).NotTo(HaveOccurred())
+		f.Close()
+	}
+
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths: []string{filepath.Join("..", "..", "config", "crd", "bases")},
 		WebhookInstallOptions: envtest.WebhookInstallOptions{
-			Paths: []string{filepath.Join("..", "..", "config", "webhook")},
+			Paths: []string{"testdata"},
 		},
 	}
 
@@ -133,4 +157,10 @@ var _ = AfterSuite(func() {
 	By("tearing down the test environment")
 	err := testEnv.Stop()
 	Expect(err).NotTo(HaveOccurred())
+	By("removing kustomize object files")
+	fs, err := filepath.Glob(filepath.Join("testdata", "*.json"))
+	Expect(err).NotTo(HaveOccurred())
+	for _, f := range fs {
+		Expect(os.Remove(f)).NotTo(HaveOccurred())
+	}
 })
