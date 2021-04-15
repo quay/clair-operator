@@ -12,6 +12,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
+var (
+	errMissingLabel = errors.New("missing required label (how?)")
+	errBadKind      = errors.New("request object is neither Secret nor ConfigMap")
+)
+
 // +kubebuilder:webhook:path=/validate-clair-config,mutating=false,sideEffects=none,failurePolicy=fail,groups="",resources=configmaps;secrets,verbs=create;update,versions=v1,name=vconfig.c.pq.io,admissionReviewVersions=v1;v1beta1
 
 // ConfigValidator is a validating webhook that disallows updates or creations
@@ -22,53 +27,13 @@ type ConfigValidator struct {
 	configCommon
 }
 
-// ValidateConfig is the workhorse function that takes raw bytes and is
-// responsible for checking correctness. A nil error is reported if the config
-// is valid.
-//
-// A version string is passed for forwards compatibility.
-func validateConfig(ctx context.Context, v string, b []byte) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	switch v {
-	case ConfigLabelV1:
-		var c config.Config
-		if err := yaml.Unmarshal(b, &c); err != nil {
-			return err
-		}
-		for _, m := range []string{"indexer", "matcher", "notifier"} {
-			c.Mode = m
-			if err := config.Validate(c); err != nil {
-				return err
-			}
-		}
-	default:
-		return fmt.Errorf("unknown config version: %q", v)
-	}
-
-	// Additional Validation?
-	return nil
-}
-
-const (
-	// ConfigLabel is label needed to trigger the validating webhook.
-	ConfigLabel = `clair.projectquay.io/config`
-
-	// ConfigLabelV1 and friends indicate the valid values for the ConfigLabel.
-	ConfigLabelV1 = `v1`
-)
-
-var (
-	errMissingLabel = errors.New("missing required label (how?)")
-	errBadKind      = errors.New("request object is neither Secret nor ConfigMap")
-)
-
+// Handle implements admission.Handler.
 func (v *ConfigValidator) Handle(ctx context.Context, req admission.Request) admission.Response {
-	log := configlog.WithValues("uid", req.UID)
+	log := configlog.
+		WithName("validator").
+		WithValues("uid", req.UID)
 	ctx = logr.NewContext(ctx, log)
-	log.V(2).Info("examining object",
+	log.Info("examining object",
 		"namespace", req.Namespace,
 		"name", req.Name,
 		"kind", req.Kind)
@@ -104,4 +69,34 @@ func (v *ConfigValidator) Handle(ctx context.Context, req admission.Request) adm
 		return admission.Denied(fmt.Sprintf("config validation failed: %v", err))
 	}
 	return admission.Allowed("")
+}
+
+// ValidateConfig is the workhorse function that takes raw bytes and is
+// responsible for checking correctness. A nil error is reported if the config
+// is valid.
+//
+// A version string is passed for forwards compatibility.
+func validateConfig(ctx context.Context, v string, b []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	switch v {
+	case ConfigLabelV1:
+		var c config.Config
+		if err := yaml.Unmarshal(b, &c); err != nil {
+			return err
+		}
+		for _, m := range []string{"indexer", "matcher", "notifier"} {
+			c.Mode = m
+			if err := config.Validate(c); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("unknown config version: %q", v)
+	}
+
+	// Additional Validation?
+	return nil
 }

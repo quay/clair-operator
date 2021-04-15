@@ -30,8 +30,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-// Configlog is for logging in the config validator.
-var configlog = logf.Log.WithName("clair-config-validator")
+// Configlog is for logging in the config webhooks.
+var configlog = logf.Log.WithName("clair-config")
 
 func SetupConfigWebhooks(mgr ctrl.Manager) error {
 	hookServer := mgr.GetWebhookServer()

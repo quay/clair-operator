@@ -26,7 +26,13 @@ import (
 )
 
 // Labels ...
-const ()
+const (
+	// ConfigLabel is label needed to trigger the validating webhook.
+	ConfigLabel = `clair.projectquay.io/config`
+
+	// ConfigLabelV1 and friends indicate the valid values for the ConfigLabel.
+	ConfigLabelV1 = `v1`
+)
 
 // Annotations ...
 const (

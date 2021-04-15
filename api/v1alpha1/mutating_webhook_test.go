@@ -114,10 +114,7 @@ notifier:
 			err := k8sClient.Create(ctx, cm)
 			Expect(err).Should(HaveOccurred())
 		})
-	})
-
-	Context("should render", func() {
-		It("needs to construct the database", func() {
+		Specify("ConfigMap referencing Secret", func() {
 			db := &corev1.Secret{}
 			db.Name = "mutation-database-creds"
 			db.Namespace = "default"
@@ -127,9 +124,46 @@ notifier:
 				`PGUSER`:     `clair`,
 				`PGPASSWORD`: `verysecret`,
 			}
+			k8sClient.Create(ctx, db)
+			const inConfig = `---
+indexer:
+  connstring: database+postgres:secret:default/mutation-database-creds
+matcher:
+  connstring: veryrealdatabase
+  indexer_addr: "http://clair"
+notifier:
+  connstring: veryrealdatabase
+  indexer_addr: "http://clair"
+  matcher_addr: "http://clair"
+`
 
-			err := k8sClient.Create(ctx, db)
-			Expect(err).ShouldNot(HaveOccurred())
+			cm := &corev1.ConfigMap{}
+			cm.GenerateName = "mut-test"
+			cm.Namespace = "default"
+			cm.Data = map[string]string{inKey: inConfig}
+			cm.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
+			cm.Annotations = map[string]string{
+				TemplateKey: inKey,
+				ConfigKey:   outKey,
+			}
+
+			err := k8sClient.Create(ctx, cm)
+			Expect(err).Should(HaveOccurred())
+		})
+	})
+
+	Context("should render", func() {
+		It("needs to construct the secret", func() {
+			db := &corev1.Secret{}
+			db.Name = "mutation-database-creds"
+			db.Namespace = "default"
+			db.StringData = map[string]string{
+				`PGHOST`:     `localhost`,
+				`PGDATABASE`: `clair`,
+				`PGUSER`:     `clair`,
+				`PGPASSWORD`: `verysecret`,
+			}
+			k8sClient.Create(ctx, db)
 		})
 
 		Specify("indexer secret", func() {

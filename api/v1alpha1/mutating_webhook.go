@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -28,12 +29,13 @@ type ConfigMutator struct {
 	configCommon
 }
 
+// Handle implements admission.Handler.
 func (m *ConfigMutator) Handle(ctx context.Context, req admission.Request) admission.Response {
 	log := configlog.
 		WithName("mutator").
 		WithValues("uid", req.UID)
 	ctx = logr.NewContext(ctx, log)
-	log.V(1).Info("examining object",
+	log.Info("examining object",
 		"namespace", req.Namespace,
 		"name", req.Name,
 		"kind", req.Kind)
@@ -121,6 +123,10 @@ func (m *ConfigMutator) template(ctx context.Context, v string, d *configDetails
 	return &out, nil
 }
 
+// Tmpl is output and a list of warnings.
+//
+// This can be used to flag migration issues or differences in generation. Not
+// fully plumbed through, though.
 type tmpl struct {
 	bytes.Buffer
 	ws []string
@@ -130,6 +136,7 @@ func (t *tmpl) warn(msg string) {
 	t.ws = append(t.ws, msg)
 }
 
+// TemplateV1 does the templating for V1 configs.
 func (m *ConfigMutator) templateV1(ctx context.Context, out *tmpl, in []byte, d *configDetails) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -150,7 +157,7 @@ func (m *ConfigMutator) templateV1(ctx context.Context, out *tmpl, in []byte, d 
 		if n.Kind == yaml.ScalarNode && n.ShortTag() == `!!str` {
 			out, err := resolve(n.Value)
 			if err != nil {
-				log.Error(err, "errored templating string")
+				log.Info("errored templating string", "error", err, "in", n.Value)
 				return err
 			}
 			if out != n.Value {
@@ -179,6 +186,10 @@ func (m *ConfigMutator) templateV1(ctx context.Context, out *tmpl, in []byte, d 
 	return nil
 }
 
+// ResolveURIs looks for our special URIs and then attempts to resolve them in
+// the current context.
+//
+// TODO(hank) This all needs to be documented.
 func (m *ConfigMutator) resolveURIs(ctx context.Context, d *configDetails, in string) (string, error) {
 	const (
 		asDB = 1 << iota
@@ -224,8 +235,7 @@ Scheme:
 	switch u.Scheme {
 	case `secret`:
 		if !d.isSecret {
-			log.Info(`cannot reference secret from config in non-secret`, "scheme", u.Scheme)
-			break
+			return in, errors.New(`cannot reference secret from config in non-secret`)
 		}
 		if u.Opaque == "" {
 			log.Info(`found malformed service URI, skipping`, "url", u.String())
@@ -366,21 +376,8 @@ Scheme:
 	return out, nil
 }
 
-var pgSecrets = map[string]string{
-	"PGHOST":               "",
-	"PGPORT":               "",
-	"PGDATABASE":           "",
-	"PGUSER":               "",
-	"PGPASSWORD":           "",
-	"PGSSLMODE":            "sslmode",
-	"PGSSLCERT":            "sslcert",
-	"PGSSLKEY":             "sslkey",
-	"PGSSLROOTCERT":        "sslrootcert",
-	"PGAPPNAME":            "application_name",
-	"PGCONNECT_TIMEOUT":    "connect_timeout",
-	"PGTARGETSESSIONATTRS": "target_session_attrs",
-}
-
+// ResolvePostgres looks at the keys in the provided maps and interprets them as
+// a bunch of libpq environment variables.
 func resolvePostgres(d map[string]string, b map[string][]byte) *url.URL {
 	out := struct {
 		Host, Port, Database, User, Password string
@@ -418,4 +415,19 @@ func resolvePostgres(d map[string]string, b map[string][]byte) *url.URL {
 		RawQuery: vs.Encode(),
 	}
 	return &ou
+}
+
+var pgSecrets = map[string]string{
+	"PGHOST":               "",
+	"PGPORT":               "",
+	"PGDATABASE":           "",
+	"PGUSER":               "",
+	"PGPASSWORD":           "",
+	"PGSSLMODE":            "sslmode",
+	"PGSSLCERT":            "sslcert",
+	"PGSSLKEY":             "sslkey",
+	"PGSSLROOTCERT":        "sslrootcert",
+	"PGAPPNAME":            "application_name",
+	"PGCONNECT_TIMEOUT":    "connect_timeout",
+	"PGTARGETSESSIONATTRS": "target_session_attrs",
 }
