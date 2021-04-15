@@ -133,9 +133,10 @@ notifier:
 		})
 
 		Specify("indexer secret", func() {
-			const config = `---
+			const (
+				inConfig = `---
 indexer:
-  connstring: secret:default/mutation-database-creds
+  connstring: database+postgres:secret:default/mutation-database-creds
 matcher:
   connstring: veryrealdatabase
   indexer_addr: "http://clair"
@@ -144,11 +145,22 @@ notifier:
   indexer_addr: "http://clair"
   matcher_addr: "http://clair"
 `
+				outConfig = `indexer:
+  connstring: postgresql://clair:verysecret@localhost:/clair
+matcher:
+  connstring: veryrealdatabase
+  indexer_addr: "http://clair"
+notifier:
+  connstring: veryrealdatabase
+  indexer_addr: "http://clair"
+  matcher_addr: "http://clair"
+`
+			)
 
 			s := &corev1.Secret{}
 			s.GenerateName = "mut-test"
 			s.Namespace = "default"
-			s.StringData = map[string]string{inKey: config}
+			s.StringData = map[string]string{inKey: inConfig}
 			s.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
 			s.Annotations = map[string]string{
 				TemplateKey: inKey,
@@ -157,6 +169,7 @@ notifier:
 
 			err := k8sClient.Create(ctx, s)
 			Expect(err).ShouldNot(HaveOccurred())
+			Expect(string(s.Data[outKey])).Should(Equal(outConfig))
 		})
 	})
 })

@@ -17,23 +17,10 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
-	"errors"
 	"fmt"
-	"net"
-	"net/http"
-	"net/url"
-	"path"
-	"strconv"
 	"strings"
 
-	"github.com/go-logr/logr"
-	"github.com/quay/clair/v4/config"
-	"gomodules.xyz/jsonpatch/v2"
-	"gopkg.in/yaml.v3"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -57,304 +44,8 @@ func SetupConfigWebhooks(mgr ctrl.Manager) error {
 	return nil
 }
 
+// OpPath is a Replacer for escaping the paths in jsonpatch operation paths.
 var opPath = strings.NewReplacer("~", "~0", "/", "~1")
-
-// +kubebuilder:webhook:path=/mutate-clair-config,mutating=true,sideEffects=none,failurePolicy=fail,groups="",resources=configmaps;secrets,verbs=create;update,versions=v1,name=mconfig.c.pq.io,admissionReviewVersions=v1;v1beta1
-
-// ConfigMutator ...
-//
-// +kubebuilder:object:generate=false
-type ConfigMutator struct {
-	configCommon
-}
-
-func (m *ConfigMutator) Handle(ctx context.Context, req admission.Request) admission.Response {
-	log := configlog.WithValues("uid", req.UID)
-	log.V(1).Info("examining object",
-		"namespace", req.Namespace,
-		"name", req.Name,
-		"kind", req.Kind)
-
-	d, err := m.details(ctx, req)
-	if err != nil {
-		return admission.Errored(http.StatusBadRequest, err)
-	}
-	ops := []jsonpatch.Operation{
-		jsonpatch.Operation{Path: `/data/`, Operation: `add`},
-	}
-	annot := map[string]string{}
-	var warn []string
-
-	version, ok := d.labels[ConfigLabel]
-	if !ok {
-		return admission.Errored(http.StatusBadRequest, errMissingLabel)
-	}
-	log.V(1).Info("labelled as", "version", version)
-
-	inKey, ok := d.annotations[TemplateKey]
-	if !ok {
-		return admission.Allowed("template key not provided")
-	}
-	outKey, ok := d.annotations[ConfigKey]
-	if !ok {
-		outKey = strings.TrimSuffix(inKey, path.Ext(inKey))
-		if outKey == inKey { // If it didn't have an extension suffix
-			outKey += ".yaml"
-		}
-		ops = append(ops, jsonpatch.Operation{
-			Path:      `/metadata/annotations/` + opPath.Replace(ConfigKey),
-			Operation: `add`,
-			Value:     outKey})
-		log.V(1).Info("creating an output file")
-		annot[`output-guessed`] = outKey
-	}
-	ops[0].Path += outKey
-	in, ok := d.item(inKey)
-	if !ok {
-		return admission.Denied(fmt.Sprintf("key does not exist: %s", inKey))
-	}
-
-	log.V(1).Info("attempting templating", "input_key", inKey, "output_key", outKey)
-	b, err := m.template(ctx, log, d.annotations, version, in)
-	if err != nil {
-		return admission.Errored(http.StatusPreconditionFailed, err)
-	}
-	switch req.Kind.Kind {
-	case "Secret":
-		ops[0].Value = base64.StdEncoding.EncodeToString(b)
-	case "ConfigMap":
-		ops[0].Value = string(b)
-	default:
-		panic("unreachable")
-	}
-
-	res := admission.Patched("template ok", ops...)
-	res.Warnings = warn
-	res.AuditAnnotations = annot
-	return res
-}
-
-// Template does the templating.
-func (m *ConfigMutator) template(ctx context.Context, log logr.Logger, a map[string]string, v string, in []byte) ([]byte, error) {
-	// TODO(hank) This should return warnings that can be propagated to the
-	// response.
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	var buf bytes.Buffer
-
-	log.Info("templating configuration", "version", v)
-	switch v {
-	case ConfigLabelV1:
-		portCt := map[int32]struct{}{}
-		var c config.Config
-		if err := yaml.Unmarshal(in, &c); err != nil {
-			return nil, err
-		}
-		for key, name := range a {
-			switch key {
-			case TemplateIndexerService, TemplateMatcherService, TemplateNotifierService:
-				log.V(1).Info("examining service", "annotation", key, "name", name)
-				var srv corev1.Service
-				if err := m.client.Get(ctx, toName(name), &srv); err != nil {
-					return nil, err
-				}
-				var port *corev1.ServicePort
-				for i, p := range srv.Spec.Ports {
-					if p.Name == PortAPI {
-						port = &srv.Spec.Ports[i]
-						break
-					}
-				}
-				if port == nil {
-					return nil, fmt.Errorf("missing expected port %q", PortAPI)
-				}
-				u := url.URL{
-					Scheme: `http`,
-					Host:   fmt.Sprintf("%s.%s.srv", srv.Name, srv.Namespace),
-				}
-				if port.Port != 80 {
-					u.Host = net.JoinHostPort(u.Host, strconv.Itoa(int(port.Port)))
-				}
-				log.V(1).Info("resolved service", "uri", u.String(), "name", name)
-
-				switch key {
-				case TemplateIndexerService:
-					if c.Matcher.IndexerAddr == `indexer://` {
-						log.V(1).Info(`replacing matcher's "IndexerAddr"`, "uri", u.String(), "name", name)
-						c.Matcher.IndexerAddr = u.String()
-					}
-					if c.Notifier.IndexerAddr == `indexer://` {
-						log.V(1).Info(`replacing notifier's "IndexerAddr"`, "uri", u.String(), "name", name)
-						c.Notifier.IndexerAddr = u.String()
-					}
-				case TemplateMatcherService:
-					if c.Notifier.MatcherAddr == `matcher://` {
-						log.V(1).Info(`replacing notifier's "MatcherAddr"`, "uri", u.String(), "name", name)
-						c.Notifier.MatcherAddr = u.String()
-					}
-				case TemplateNotifierService:
-					// Nothing in the system makes requests to the notifier.
-				}
-			case TemplateIndexerDeployment, TemplateMatcherDeployment, TemplateNotifierDeployment:
-				var d appsv1.Deployment
-				log.V(1).Info("examining deployment", "annotation", key, "name", name)
-				if err := m.client.Get(ctx, toName(name), &d); err != nil {
-					return nil, err
-				}
-				var cr *corev1.Container
-				for i := range d.Spec.Template.Spec.Containers {
-					sc := &d.Spec.Template.Spec.Containers[i]
-					if sc.Name == `clair` {
-						cr = sc
-						break
-					}
-				}
-				if cr == nil {
-					return nil, fmt.Errorf("missing expected container %q", `clair`)
-				}
-				for _, p := range cr.Ports {
-					switch p.Name {
-					case PortAPI:
-						log.V(1).Info(`replacing config's "HTTPListenAddr"`, "port", p.ContainerPort)
-						portCt[p.ContainerPort] = struct{}{}
-						c.HTTPListenAddr = fmt.Sprintf(":%d", p.ContainerPort)
-					case PortIntrospection:
-						log.V(1).Info(`replacing config's "IntrospectionAddr"`, "port", p.ContainerPort)
-						portCt[p.ContainerPort] = struct{}{}
-						c.IntrospectionAddr = fmt.Sprintf(":%d", p.ContainerPort)
-					}
-				}
-			}
-		}
-
-		// Look for secrets and dereference them.
-		if u, err := url.Parse(c.Indexer.ConnString); err == nil &&
-			u.Scheme == `secret` &&
-			u.Opaque != "" {
-			log.V(1).Info(`found secret reference`,
-				"key", "/indexer/conn_string",
-				"ref", u.Opaque)
-			var s corev1.Secret
-			if err := m.client.Get(ctx, toName(u.Opaque), &s); err != nil {
-				return nil, err
-			}
-			u, err := resolveDatabaseSecret(&s)
-			if err != nil {
-				return nil, err
-			}
-			log.V(1).Info(`replacing secret reference`, "key", "/indexer/conn_string")
-			c.Indexer.ConnString = u.String()
-		}
-		if u, err := url.Parse(c.Matcher.ConnString); err == nil &&
-			u.Scheme == `secret` &&
-			u.Opaque != "" {
-			log.V(1).Info(`found secret reference`,
-				"key", "/matcher/conn_string",
-				"ref", u.Opaque)
-			var s corev1.Secret
-			if err := m.client.Get(ctx, toName(u.Opaque), &s); err != nil {
-				return nil, err
-			}
-			u, err := resolveDatabaseSecret(&s)
-			if err != nil {
-				return nil, err
-			}
-			log.V(1).Info(`replacing secret reference`, "key", "/matcher/conn_string")
-			c.Matcher.ConnString = u.String()
-		}
-		if u, err := url.Parse(c.Notifier.ConnString); err == nil &&
-			u.Scheme == `secret` &&
-			u.Opaque != "" {
-			log.V(1).Info(`found secret reference`,
-				"key", "/notifier/conn_string",
-				"ref", u.Opaque)
-			var s corev1.Secret
-			if err := m.client.Get(ctx, toName(u.Opaque), &s); err != nil {
-				return nil, err
-			}
-			u, err := resolveDatabaseSecret(&s)
-			if err != nil {
-				return nil, err
-			}
-			log.V(1).Info(`replacing secret reference`, "key", "/notifier/conn_string")
-			c.Notifier.ConnString = u.String()
-		}
-
-		if len(portCt) > 2 {
-			ps := make([]int32, 0, len(portCt))
-			for p := range portCt {
-				ps = append(ps, p)
-			}
-			// The deployments are configured for multiple different ports,
-			// which shouldn't have happened.
-			//
-			// Some rectify loop could fix this, but I don't think this is the
-			// place.
-			return nil, fmt.Errorf("deployments are configured for multiple different ports: %v", ps)
-		}
-		if err := yaml.NewEncoder(&buf).Encode(&c); err != nil {
-			return nil, err
-		}
-	default:
-		return nil, fmt.Errorf("unknown config version: %q", v)
-	}
-
-	return buf.Bytes(), nil
-}
-
-var pgSecrets = map[string]string{
-	"PGHOST":               "",
-	"PGPORT":               "",
-	"PGDATABASE":           "",
-	"PGUSER":               "",
-	"PGPASSWORD":           "",
-	"PGSSLMODE":            "sslmode",
-	"PGSSLCERT":            "sslcert",
-	"PGSSLKEY":             "sslkey",
-	"PGSSLROOTCERT":        "sslrootcert",
-	"PGAPPNAME":            "application_name",
-	"PGCONNECT_TIMEOUT":    "connect_timeout",
-	"PGTARGETSESSIONATTRS": "target_session_attrs",
-}
-
-func resolveDatabaseSecret(s *corev1.Secret) (*url.URL, error) {
-	out := struct {
-		Host, Port, Database, User, Password string
-	}{}
-	vs := url.Values{}
-	for k, q := range pgSecrets {
-		x := s.StringData[k]
-		if v := string(s.Data[k]); x == "" && v != "" {
-			x = v
-		}
-		if x == "" {
-			continue
-		}
-		switch k {
-		case "PGHOST":
-			out.Host = x
-		case "PGPORT":
-			out.Port = x
-		case "PGDATABASE":
-			out.Database = x
-		case "PGUSER":
-			out.User = x
-		case "PGPASSWORD":
-			out.Password = x
-		default:
-			vs.Set(q, x)
-		}
-	}
-	ou := url.URL{
-		Scheme:   `postgresql`,
-		Host:     net.JoinHostPort(out.Host, out.Port),
-		User:     url.UserPassword(out.User, out.Password),
-		Path:     "/" + out.Database,
-		RawQuery: vs.Encode(),
-	}
-	return &ou, nil
-}
 
 func toName(s string) types.NamespacedName {
 	i := strings.IndexByte(s, '/')
@@ -367,100 +58,8 @@ func toName(s string) types.NamespacedName {
 	return t
 }
 
-// +kubebuilder:webhook:path=/validate-clair-config,mutating=false,sideEffects=none,failurePolicy=fail,groups="",resources=configmaps;secrets,verbs=create;update,versions=v1,name=vconfig.c.pq.io,admissionReviewVersions=v1;v1beta1
-
-// ConfigValidator is a validating webhook that disallows updates or creations
-// of labelled ConfigMaps or Secrets with malformed Clair configurations.
-//
-// +kubebuilder:object:generate=false
-type ConfigValidator struct {
-	configCommon
-}
-
-// ValidateConfig is the workhorse function that takes raw bytes and is
-// responsible for checking correctness. A nil error is reported if the config
-// is valid.
-//
-// A version string is passed for forwards compatibility.
-func validateConfig(ctx context.Context, v string, b []byte) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	switch v {
-	case ConfigLabelV1:
-		var c config.Config
-		if err := yaml.Unmarshal(b, &c); err != nil {
-			return err
-		}
-		for _, m := range []string{"indexer", "matcher", "notifier"} {
-			c.Mode = m
-			if err := config.Validate(c); err != nil {
-				return err
-			}
-		}
-	default:
-		return fmt.Errorf("unknown config version: %q", v)
-	}
-
-	// Additional Validation?
-	return nil
-}
-
-const (
-	// ConfigLabel is label needed to trigger the validating webhook.
-	ConfigLabel = `clair.projectquay.io/config`
-
-	// ConfigLabelV1 and friends indicate the valid values for the ConfigLabel.
-	ConfigLabelV1 = `v1`
-)
-
-var (
-	errMissingLabel = errors.New("missing required label (how?)")
-	errBadKind      = errors.New("request object is neither Secret nor ConfigMap")
-)
-
-func (v *ConfigValidator) Handle(ctx context.Context, req admission.Request) admission.Response {
-	log := configlog.WithValues("uid", req.UID)
-	log.V(1).Info("examining object",
-		"namespace", req.Namespace,
-		"name", req.Name,
-		"kind", req.Kind)
-
-	// Populate the labels, annotations, and data.
-	// Errors reported here are errors in the request.
-	d, err := v.details(ctx, req)
-	if err != nil {
-		return admission.Errored(http.StatusBadRequest, err)
-	}
-	// Grab the config version from the label. If the label doesn't exist, how
-	// did this validator even get called?
-	version, ok := d.labels[ConfigLabel]
-	if !ok {
-		return admission.Errored(http.StatusBadRequest, errMissingLabel)
-	}
-	log.V(1).Info("labelled as", "version", version)
-
-	// Find the key containing the configuration blob.
-	key, ok := d.annotations[ConfigKey]
-	if !ok {
-		return admission.Denied("missing required annotation: indicate key containing config")
-	}
-	log.V(1).Info("config at", "key", key)
-
-	// Grab the blob.
-	cfg, ok := d.item(key)
-	if !ok {
-		return admission.Denied(fmt.Sprintf("missing value: indicated key %q does not exist", key))
-	}
-
-	if err := validateConfig(ctx, version, cfg); err != nil {
-		return admission.Denied(fmt.Sprintf("config validation failed: %v", err))
-	}
-	return admission.Allowed("")
-}
-
 type configDetails struct {
+	isSecret    bool
 	labels      map[string]string
 	annotations map[string]string
 	data        map[string][]byte
@@ -477,6 +76,24 @@ func (d *configDetails) item(k string) (v []byte, ok bool) {
 		return []byte(s), true
 	}
 	return nil, false
+}
+
+func (d *configDetails) fromSecret(s *corev1.Secret) error {
+	d.isSecret = true
+	d.labels = s.Labels
+	d.annotations = s.Annotations
+	d.data = s.Data
+	d.strData = s.StringData
+	return nil
+}
+
+func (d *configDetails) fromConfigMap(c *corev1.ConfigMap) error {
+	d.isSecret = false
+	d.labels = c.Labels
+	d.annotations = c.Annotations
+	d.data = c.BinaryData
+	d.strData = c.Data
+	return nil
 }
 
 type configCommon struct {
@@ -502,23 +119,21 @@ func (c *configCommon) details(ctx context.Context, req admission.Request) (conf
 	// Errors reported here are errors in the request.
 	switch req.Kind.Kind {
 	case "Secret":
-		secret := corev1.Secret{}
-		if err := c.decoder.Decode(req, &secret); err != nil {
+		s := corev1.Secret{}
+		if err := c.decoder.Decode(req, &s); err != nil {
 			return cfg, fmt.Errorf("unable to decode request: %v", err)
 		}
-		cfg.labels = secret.Labels
-		cfg.annotations = secret.Annotations
-		cfg.data = secret.Data
-		cfg.strData = secret.StringData
+		if err := cfg.fromSecret(&s); err != nil {
+			return cfg, fmt.Errorf("unable to make sense of request: %v", err)
+		}
 	case "ConfigMap":
-		config := corev1.ConfigMap{}
-		if err := c.decoder.Decode(req, &config); err != nil {
+		cm := corev1.ConfigMap{}
+		if err := c.decoder.Decode(req, &cm); err != nil {
 			return cfg, fmt.Errorf("unable to decode request: %v", err)
 		}
-		cfg.labels = config.Labels
-		cfg.annotations = config.Annotations
-		cfg.data = config.BinaryData
-		cfg.strData = config.Data
+		if err := cfg.fromConfigMap(&cm); err != nil {
+			return cfg, fmt.Errorf("unable to make sense of request: %v", err)
+		}
 	default:
 		return cfg, errBadKind
 	}
