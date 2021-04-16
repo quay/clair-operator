@@ -5,7 +5,8 @@ go 1.16
 require (
 	github.com/go-logr/logr v0.3.0
 	github.com/go-logr/zapr v0.2.0
-	github.com/google/go-cmp v0.5.5 // indirect
+	github.com/google/go-cmp v0.5.5
+	github.com/imdario/mergo v0.3.12 // indirect
 	github.com/onsi/ginkgo v1.14.1
 	github.com/onsi/gomega v1.10.2
 	github.com/openshift/api v3.9.0+incompatible
@@ -20,6 +21,6 @@ require (
 	k8s.io/client-go v0.20.2
 	sigs.k8s.io/controller-runtime v0.8.3
 	sigs.k8s.io/controller-tools v0.4.1
-	sigs.k8s.io/kustomize/api v0.8.6
-	sigs.k8s.io/kustomize/kustomize/v3 v3.10.0
+	sigs.k8s.io/kustomize/api v0.8.8
+	sigs.k8s.io/kustomize/kustomize/v4 v4.1.2
 )

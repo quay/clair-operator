@@ -27,6 +27,7 @@ all: manager
 
 # Run tests
 ENVTEST_ASSETS_DIR=$(shell pwd)/testbin
+.PHONY: test
 test: generate fmt vet manifests $(ENVTEST_ASSETS_DIR)/setup-envtest.sh
 	source ${ENVTEST_ASSETS_DIR}/setup-envtest.sh;\
 		fetch_envtest_tools $(ENVTEST_ASSETS_DIR);\
@@ -65,6 +66,7 @@ undeploy:
 	$(KUSTOMIZE) build config/default | kubectl delete -f -
 
 # Generate manifests e.g. CRD, RBAC etc.
+.PHONY: manifests
 manifests: controller-gen
 	$(CONTROLLER_GEN)\
 		$(CRD_OPTIONS)\
@@ -73,14 +75,17 @@ manifests: controller-gen
 		output:crd:artifacts:config=config/crd/bases
 
 # Run go fmt against code
+.PHONY: fmt
 fmt:
 	go fmt ./...
 
 # Run go vet against code
+.PHONY: vet
 vet:
 	go vet ./...
 
 # Generate code
+.PHONY: generate
 generate: controller-gen
 	$(CONTROLLER_GEN)\
 		object:headerFile="hack/boilerplate.go.txt"\

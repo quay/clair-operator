@@ -169,3 +169,56 @@ spec:
     name: The Clair Authors
     url: https://quay.github.io/clair
   version: 0.0.1
+  webhookdefinitions:
+  - admissionReviewVersions:
+    - v1
+    - v1beta1
+    containerPort: 443
+    deploymentName: clair-controller-manager
+    failurePolicy: Fail
+    generateName: vconfig.c.pq.io
+    objectSelector:
+      matchExpressions:
+      - key: clair.projectquay.io/config
+        operator: Exists
+    rules:
+    - apiGroups:
+      - ""
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      resources:
+      - configmaps
+      - secrets
+    sideEffects: None
+    targetPort: 9443
+    type: ValidatingAdmissionWebhook
+    webhookPath: /validate-clair-config
+  - admissionReviewVersions:
+    - v1
+    - v1beta1
+    containerPort: 443
+    deploymentName: clair-controller-manager
+    failurePolicy: Fail
+    generateName: mconfig.c.pq.io
+    objectSelector:
+      matchExpressions:
+      - key: clair.projectquay.io/config
+        operator: Exists
+    rules:
+    - apiGroups:
+      - ""
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      resources:
+      - configmaps
+      - secrets
+    sideEffects: None
+    targetPort: 9443
+    type: MutatingAdmissionWebhook
+    webhookPath: /mutate-clair-config
