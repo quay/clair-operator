@@ -29,9 +29,9 @@ all: manager
 ENVTEST_ASSETS_DIR=$(shell pwd)/testbin
 test: generate fmt vet manifests $(ENVTEST_ASSETS_DIR)/setup-envtest.sh
 	source ${ENVTEST_ASSETS_DIR}/setup-envtest.sh;\
-	   fetch_envtest_tools $(ENVTEST_ASSETS_DIR);\
-	   setup_envtest_env $(ENVTEST_ASSETS_DIR);\
-	   go test ./... -coverprofile cover.out
+		fetch_envtest_tools $(ENVTEST_ASSETS_DIR);\
+		setup_envtest_env $(ENVTEST_ASSETS_DIR);\
+		go test ./... -coverprofile cover.out
 
 $(ENVTEST_ASSETS_DIR):
 	mkdir $(ENVTEST_ASSETS_DIR)

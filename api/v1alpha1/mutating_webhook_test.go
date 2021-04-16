@@ -11,21 +11,51 @@ import (
 
 func testMutating(ctx context.Context, c client.Client) func(*testing.T) {
 	const (
-		inKey      = `config.yaml.in`
-		outKey     = `config.yaml`
-		noext      = `config`
-		noopConfig = `---
-indexer:
-  connstring: veryrealdatabase
-matcher:
-  connstring: veryrealdatabase
-  indexer_addr: "http://clair"
-notifier:
-  connstring: veryrealdatabase
-  indexer_addr: "http://clair"
-  matcher_addr: "http://clair"
-`
+		inKey  = `config.yaml.in`
+		outKey = `config.yaml`
+		noext  = `config`
 	)
+	noopConfig := simpleConfig
+
+	dbData := map[string]string{
+		`PGHOST`:     `localhost`,
+		`PGDATABASE`: `clair`,
+		`PGUSER`:     `clair`,
+		`PGPASSWORD`: `verysecret`,
+		`PGSSLMODE`:  `disable`,
+	}
+	deps := []client.Object{
+		func() client.Object {
+			o := &corev1.Secret{}
+			o.Name = "mutation-database-creds"
+			o.Namespace = "default"
+			o.StringData = dbData
+			return o
+		}(),
+		func() client.Object {
+			o := &corev1.ConfigMap{}
+			o.Name = "mutation-database-creds"
+			o.Namespace = "default"
+			o.Data = dbData
+			return o
+		}(),
+		func() client.Object {
+			o := &corev1.Service{}
+			o.Name = "other-clair"
+			o.Namespace = "default"
+			o.Spec.Ports = []corev1.ServicePort{
+				{
+					Name: PortAPI,
+					Port: 6060,
+				},
+				{
+					Name: PortIntrospection,
+					Port: 8080,
+				},
+			}
+			return o
+		}(),
+	}
 
 	tt := []webhookTestcase{
 		{
@@ -99,57 +129,81 @@ notifier:
 			},
 			Check: CheckErr,
 		},
+		{
+			Name: "ValidConfigBadVersion",
+			Setup: func(_ testing.TB, o ConfigObject) {
+				o.SetItem(inKey, noopConfig)
+				o.SetLabels(map[string]string{ConfigLabel: `v666`})
+				o.SetAnnotations(map[string]string{
+					TemplateKey: inKey,
+					ConfigKey:   outKey,
+				})
+			},
+			Check: CheckErr,
+		},
+		{
+			Name: "Rendering",
+			Setup: func(_ testing.TB, o ConfigObject) {
+				o.SetItem(inKey, allRefConfig)
+				o.SetLabels(map[string]string{ConfigLabel: ConfigLabelV1})
+				o.SetAnnotations(map[string]string{
+					TemplateKey: inKey,
+					ConfigKey:   outKey,
+				})
+			},
+			Check: func(t testing.TB, o ConfigObject, err error) {
+				if err != nil {
+					t.Error(err)
+				}
+				got, want := o.GetItem(outKey), allRefConfigRendered
+				if !cmp.Equal(got, want) {
+					t.Error(cmp.Diff(got, want))
+				}
+			},
+		},
+		{
+			Name: "RenderingBadRefs",
+			Setup: func(_ testing.TB, o ConfigObject) {
+				o.SetItem(inKey, allRefIncorrect)
+				o.SetLabels(map[string]string{ConfigLabel: ConfigLabelV1})
+				o.SetAnnotations(map[string]string{
+					TemplateKey: inKey,
+					ConfigKey:   outKey,
+				})
+			},
+			Check: func(t testing.TB, o ConfigObject, err error) {
+				if err != nil {
+					t.Error(err)
+				}
+				got, want := o.GetItem(outKey), allRefIncorrect
+				if !cmp.Equal(got, want) {
+					t.Error(cmp.Diff(got, want))
+				}
+			},
+		},
 	}
 
 	return func(t *testing.T) {
 		// Do some common setup
-		dbsec := &corev1.Secret{}
-		dbsec.Name = "mutation-database-creds"
-		dbsec.Namespace = "default"
-		dbsec.StringData = map[string]string{
-			`PGHOST`:     `localhost`,
-			`PGDATABASE`: `clair`,
-			`PGUSER`:     `clair`,
-			`PGPASSWORD`: `verysecret`,
-		}
-		if err := c.Create(ctx, dbsec); err != nil {
-			t.Fatal(err)
+		for i := range deps {
+			if err := c.Create(ctx, deps[i]); err != nil {
+				t.Fatal(err)
+			}
 		}
 		t.Cleanup(func() {
-			if err := c.Delete(ctx, dbsec); err != nil {
-				t.Error(err)
+			for i := range deps {
+				if err := c.Delete(ctx, deps[i]); err != nil {
+					t.Error(err)
+				}
 			}
 		})
-		const (
-			secretConfig = `---
-indexer:
-  connstring: database+postgres:secret:default/mutation-database-creds
-matcher:
-  connstring: veryrealdatabase
-  indexer_addr: "http://clair"
-notifier:
-  connstring: veryrealdatabase
-  indexer_addr: "http://clair"
-  matcher_addr: "http://clair"
-`
-			renderedSecretConfig = `indexer:
-  connstring: postgresql://clair:verysecret@localhost:/clair
-matcher:
-  connstring: veryrealdatabase
-  indexer_addr: "http://clair"
-notifier:
-  connstring: veryrealdatabase
-  indexer_addr: "http://clair"
-  matcher_addr: "http://clair"
-`
-		)
 
 		t.Run("ConfigMap", func(t *testing.T) {
 			var lt = []webhookTestcase{
 				{
 					Name: "ConfigWithSecret",
 					Setup: func(_ testing.TB, o ConfigObject) {
-						o.SetItem(inKey, secretConfig)
+						o.SetItem(inKey, secretRefConfig)
 						o.SetLabels(map[string]string{ConfigLabel: ConfigLabelV1})
 						o.SetAnnotations(map[string]string{
 							TemplateKey: inKey,
@@ -168,7 +222,7 @@ notifier:
 				{
 					Name: "ConfigWithSecret",
 					Setup: func(_ testing.TB, o ConfigObject) {
-						o.SetItem(inKey, secretConfig)
+						o.SetItem(inKey, secretRefConfig)
 						o.SetLabels(map[string]string{ConfigLabel: ConfigLabelV1})
 						o.SetAnnotations(map[string]string{
 							TemplateKey: inKey,
@@ -179,7 +233,7 @@ notifier:
 						if err != nil {
 							t.Error(err)
 						}
-						got, want := o.GetItem(outKey), renderedSecretConfig
+						got, want := o.GetItem(outKey), secretRefConfigRendered
 						if !cmp.Equal(got, want) {
 							t.Error(cmp.Diff(got, want))
 						}

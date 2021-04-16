@@ -1,0 +1,10 @@
+---
+indexer:
+  connstring: veryrealdatabase
+matcher:
+  connstring: veryrealdatabase
+  indexer_addr: "http://clair"
+notifier:
+  connstring: veryrealdatabase
+  indexer_addr: "http://clair"
+  matcher_addr: "http://clair"

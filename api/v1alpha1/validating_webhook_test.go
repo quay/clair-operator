@@ -9,23 +9,6 @@ import (
 
 func testValidating(ctx context.Context, c client.Client) func(*testing.T) {
 	const (
-		invalidConfig = `---
-missing: everything
-`
-		invalidYAML = `	{
-		:
-`
-		validConfig = `---
-indexer:
-  connstring: veryrealdatabase
-matcher:
-  connstring: veryrealdatabase
-  indexer_addr: "http://clair"
-notifier:
-  connstring: veryrealdatabase
-  indexer_addr: "http://clair"
-  matcher_addr: "http://clair"
-`
 		key = `config.yaml`
 	)
 
@@ -39,7 +22,7 @@ notifier:
 		{
 			Name: "ValidConfigWithMetadata",
 			Setup: func(_ testing.TB, o ConfigObject) {
-				o.SetItem(key, validConfig)
+				o.SetItem(key, simpleConfig)
 				o.SetLabels(map[string]string{ConfigLabel: ConfigLabelV1})
 				o.SetAnnotations(map[string]string{ConfigKey: key})
 			},
@@ -65,7 +48,7 @@ notifier:
 		{
 			Name: "ValidConfigWithoutMetadata",
 			Setup: func(_ testing.TB, o ConfigObject) {
-				o.SetItem(key, validConfig)
+				o.SetItem(key, simpleConfig)
 				o.SetLabels(map[string]string{ConfigLabel: ConfigLabelV1})
 			},
 			Check: CheckErr,
@@ -81,7 +64,7 @@ notifier:
 		{
 			Name: "ValidConfigBadVersion",
 			Setup: func(_ testing.TB, o ConfigObject) {
-				o.SetItem(key, validConfig)
+				o.SetItem(key, simpleConfig)
 				o.SetLabels(map[string]string{ConfigLabel: `v666`})
 				o.SetAnnotations(map[string]string{ConfigKey: key})
 			},

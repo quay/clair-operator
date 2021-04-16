@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	_ "embed"
 	"io"
 	"io/ioutil"
 	"net"
@@ -272,3 +273,24 @@ func (s *secretConfig) GetItem(key string) string {
 func (s *secretConfig) SetItem(key, val string) {
 	s.StringData[key] = val
 }
+
+var (
+	//go:embed testdata/notyaml.yaml
+	invalidYAML string
+	//go:embed testdata/invalid.yaml
+	invalidConfig string
+	//go:embed testdata/simple.yaml
+	simpleConfig string
+	//go:embed testdata/missing_service.yaml
+	missingServiceConfig string
+	//go:embed testdata/with_secret.yaml
+	secretRefConfig string
+	//go:embed testdata/with_secret.rendered.yaml
+	secretRefConfigRendered string
+	//go:embed testdata/templating.yaml
+	allRefConfig string
+	//go:embed testdata/templating.rendered.yaml
+	allRefConfigRendered string
+	//go:embed testdata/bad_templating.yaml
+	allRefIncorrect string
+)

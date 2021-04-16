@@ -1,0 +1,15 @@
+indexer:
+  connstring: database+postgres:configmap://default/mutation-database-creds
+matcher:
+  connstring: configmap://default/mutation-database-creds?key=PGHOST
+  indexer_addr: service://default/other-clair?scheme=http
+notifier:
+  connstring: veryrealdatabase
+  indexer_addr: "http://clair"
+  matcher_addr: "http://clair"
+key0: database:invalid
+key1: database+postgres://
+key2: 'database+postgres: http://example.com'
+key3: configmap:default/mutation-database-creds
+key4: service:default/other-clair?scheme=http&portname=missing
+key5: ' not:a URL'

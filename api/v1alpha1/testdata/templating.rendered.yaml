@@ -1,0 +1,9 @@
+indexer:
+  connstring: postgresql://clair:verysecret@localhost/clair?sslmode=disable
+matcher:
+  connstring: localhost
+  indexer_addr: http://other-clair.default.srv:6060
+notifier:
+  connstring: veryrealdatabase
+  indexer_addr: "http://clair"
+  matcher_addr: "http://clair"

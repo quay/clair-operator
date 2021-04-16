@@ -60,7 +60,7 @@ func (m *ConfigMutator) Handle(ctx context.Context, req admission.Request) admis
 
 	inKey, ok := d.annotations[TemplateKey]
 	if !ok {
-		log.Info("SKIP", "reason", "martian request")
+		log.Info("SKIP", "reason", "missing input annotation")
 		return admission.Allowed("template key not provided")
 	}
 	outKey, ok := d.annotations[ConfigKey]
@@ -99,6 +99,9 @@ func (m *ConfigMutator) Handle(ctx context.Context, req admission.Request) admis
 
 	res := admission.Patched("template ok", ops...)
 	res.Warnings = append(res.Warnings, t.ws...)
+	if w := res.Warnings; len(w) != 0 {
+		log.V(1).Info("returned warnings", "warnings", w)
+	}
 	res.AuditAnnotations = annot
 	log.Info("OK")
 	return res
@@ -106,8 +109,6 @@ func (m *ConfigMutator) Handle(ctx context.Context, req admission.Request) admis
 
 // Template does the templating.
 func (m *ConfigMutator) template(ctx context.Context, v string, d *configDetails, in []byte) (*tmpl, error) {
-	// TODO(hank) This should return warnings that can be propagated to the
-	// response.
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -121,7 +122,7 @@ func (m *ConfigMutator) template(ctx context.Context, v string, d *configDetails
 			return nil, err
 		}
 	default:
-		return nil, fmt.Errorf("unknown config version: %q", v)
+		return nil, fmt.Errorf("unknown config version: %#q", v)
 	}
 
 	return &out, nil
@@ -189,13 +190,11 @@ func (m *ConfigMutator) templateV1(ctx context.Context, tmpl *tmpl, in []byte, d
 
 	examine = func(n *yaml.Node) error {
 		if n.Kind == yaml.ScalarNode && n.ShortTag() == `!!str` {
-			var w *warnErr
 			out, err := resolve(n.Value)
 			switch {
 			case errors.Is(err, nil):
-			case errors.As(err, &w):
-				tmpl.warn(w.Warning())
-				return w.next
+			case errors.Is(err, warning):
+				tmpl.warn(err.Error())
 			default:
 				log.Info("errored templating string", "error", err, "in", n.Value)
 				return err
@@ -278,7 +277,7 @@ Scheme:
 			return in, errors.New(`cannot reference secret from config in non-secret`)
 		}
 		if u.Opaque == "" {
-			return in, oops("found malformed secret URI %q", u.String())
+			return in, oops("found malformed secret URI %#q", u.String())
 		}
 
 		var sec corev1.Secret
@@ -291,12 +290,12 @@ Scheme:
 		}
 		res, ok := resolveFromKeys(&rd, u.Query())
 		if !ok {
-			return in, oops("missing %q parameter in secret URI %q", "key", u.String())
+			return in, oops("missing %#q parameter in secret URI %#q", "key", u.String())
 		}
 		return res, nil
 	case `configmap`:
 		if u.Opaque == "" {
-			return in, oops("found malformed configmap URI %q", u.String())
+			return in, oops("found malformed configmap URI %#q", u.String())
 		}
 
 		var cm corev1.ConfigMap
@@ -309,26 +308,26 @@ Scheme:
 		}
 		res, ok := resolveFromKeys(&rd, u.Query())
 		if !ok {
-			return in, oops("missing %q parameter in configmap URI %q", "key", u.String())
+			return in, oops("missing %#q parameter in configmap URI %#q", "key", u.String())
 		}
 		return res, nil
 	case `database`:
-		return in, oops("found malformed database URI %q, missing kind", u.String())
+		return in, oops("found malformed database URI %#q, missing kind", u.String())
 	case `database+postgres`:
 		if u.Opaque == "" {
-			return in, oops("found malformed database URI %q", u.String())
+			return in, oops("found malformed database URI %#q", u.String())
 		}
 
 		su, err := url.Parse(u.Opaque)
 		if err != nil {
-			return in, oops("found malformed database URI %q", u.String()).err(err)
+			return in, oops("found malformed database URI %#q", u.String()).err(err)
 		}
 		u = su
 		flags |= asDB | asPg
 		goto Scheme
 	case `service`:
 		if u.Opaque == "" {
-			return in, oops("found malformed service URI %q", u.String())
+			return in, oops("found malformed service URI %#q", u.String())
 		}
 
 		v := u.Query()
@@ -348,7 +347,7 @@ Scheme:
 			}
 		}
 		if port == nil {
-			return in, oops("unable to find expected port name %q in service %q", name, srv)
+			return in, oops("unable to find expected port name %#q in service %#q", name, srv.Name)
 		}
 		u := url.URL{
 			Scheme: `http`,
@@ -380,7 +379,7 @@ Scheme:
 		}
 		n, ok := d.annotations[key]
 		if !ok {
-			return in, oops(`scheme %q used, but annotation not present`, u.Scheme)
+			return in, oops(`scheme %#q used, but annotation not present`, u.Scheme)
 		}
 		su, err := url.Parse(`service:` + n)
 		if err != nil {
@@ -429,10 +428,13 @@ func resolvePostgres(d map[string]string, b map[string][]byte) *url.URL {
 	}
 	ou := url.URL{
 		Scheme:   `postgresql`,
-		Host:     net.JoinHostPort(out.Host, out.Port),
+		Host:     out.Host,
 		User:     url.UserPassword(out.User, out.Password),
 		Path:     "/" + out.Database,
 		RawQuery: vs.Encode(),
+	}
+	if out.Port != "" {
+		ou.Host = net.JoinHostPort(ou.Host, out.Port)
 	}
 	return &ou
 }
