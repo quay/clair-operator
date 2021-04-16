@@ -66,7 +66,11 @@ undeploy:
 
 # Generate manifests e.g. CRD, RBAC etc.
 manifests: controller-gen
-	$(CONTROLLER_GEN) $(CRD_OPTIONS) rbac:roleName=manager-role webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN)\
+		$(CRD_OPTIONS)\
+		rbac:roleName=manager-role webhook\
+		paths="./..."\
+		output:crd:artifacts:config=config/crd/bases
 
 # Run go fmt against code
 fmt:
@@ -78,7 +82,9 @@ vet:
 
 # Generate code
 generate: controller-gen
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	$(CONTROLLER_GEN)\
+		object:headerFile="hack/boilerplate.go.txt"\
+		paths="./..."
 
 # Build the docker image
 docker-build: test
