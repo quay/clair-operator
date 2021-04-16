@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/go-logr/logr"
 	"github.com/quay/clair/v4/config"
 	"gopkg.in/yaml.v3"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -29,10 +29,10 @@ type ConfigValidator struct {
 
 // Handle implements admission.Handler.
 func (v *ConfigValidator) Handle(ctx context.Context, req admission.Request) admission.Response {
-	log := configlog.
+	log := logf.FromContext(ctx).
 		WithName("validator").
 		WithValues("uid", req.UID)
-	ctx = logr.NewContext(ctx, log)
+	ctx = logf.IntoContext(ctx, log)
 	log.Info("examining object",
 		"namespace", req.Namespace,
 		"name", req.Name,
@@ -42,32 +42,38 @@ func (v *ConfigValidator) Handle(ctx context.Context, req admission.Request) adm
 	// Errors reported here are errors in the request.
 	d, err := v.details(ctx, req)
 	if err != nil {
+		log.Info("NO", "reason", "bad request", "error", err.Error())
 		return admission.Errored(http.StatusBadRequest, err)
 	}
 	// Grab the config version from the label. If the label doesn't exist, how
 	// did this validator even get called?
 	version, ok := d.labels[ConfigLabel]
 	if !ok {
+		log.Info("NO", "reason", "martian request")
 		return admission.Errored(http.StatusBadRequest, errMissingLabel)
 	}
-	log.V(2).Info("labelled as", "version", version)
+	log.V(1).Info("labelled as", "version", version)
 
 	// Find the key containing the configuration blob.
 	key, ok := d.annotations[ConfigKey]
 	if !ok {
+		log.Info("NO", "reason", "missing annotation")
 		return admission.Denied("missing required annotation: indicate key containing config")
 	}
-	log.V(2).Info("config at", "key", key)
+	log.V(1).Info("config at", "key", key)
 
 	// Grab the blob.
 	cfg, ok := d.item(key)
 	if !ok {
+		log.Info("NO", "reason", "missing config")
 		return admission.Denied(fmt.Sprintf("missing value: indicated key %q does not exist", key))
 	}
 
 	if err := validateConfig(ctx, version, cfg); err != nil {
+		log.Info("NO", "reason", "validation failed", "error", err.Error())
 		return admission.Denied(fmt.Sprintf("config validation failed: %v", err))
 	}
+	log.Info("OK")
 	return admission.Allowed("")
 }
 
@@ -80,6 +86,7 @@ func validateConfig(ctx context.Context, v string, b []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	log := logf.FromContext(ctx)
 
 	switch v {
 	case ConfigLabelV1:
@@ -92,11 +99,12 @@ func validateConfig(ctx context.Context, v string, b []byte) error {
 			if err := config.Validate(c); err != nil {
 				return err
 			}
+			log.V(1).Info("validated", "mode", m)
 		}
 	default:
 		return fmt.Errorf("unknown config version: %q", v)
 	}
 
-	// Additional Validation?
+	// Additional Validation? Lints here?
 	return nil
 }

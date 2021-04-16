@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -30,17 +31,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-// Configlog is for logging in the config webhooks.
-var configlog = logf.Log.WithName("clair-config")
-
 func SetupConfigWebhooks(mgr ctrl.Manager) error {
+	log := mgr.GetLogger().WithName("clair-config")
 	hookServer := mgr.GetWebhookServer()
-	configlog.Info("registering webhooks to webhook server")
-	v, m := &ConfigValidator{}, &ConfigMutator{}
-	v.client = mgr.GetClient()
-	m.client = mgr.GetClient()
-	hookServer.Register("/validate-clair-config", &webhook.Admission{Handler: v})
-	hookServer.Register("/mutate-clair-config", &webhook.Admission{Handler: m})
+	log.Info("registering webhooks")
+	injectLogger := func(ctx context.Context, _ *http.Request) context.Context {
+		return logf.IntoContext(ctx, log)
+	}
+	_ = injectLogger
+	hookServer.Register("/validate-clair-config", &webhook.Admission{
+		Handler:         &ConfigValidator{},
+		WithContextFunc: injectLogger,
+	})
+	hookServer.Register("/mutate-clair-config", &webhook.Admission{
+		Handler:         &ConfigMutator{},
+		WithContextFunc: injectLogger,
+	})
 	return nil
 }
 

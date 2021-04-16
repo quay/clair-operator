@@ -17,6 +17,7 @@ import (
 	"gomodules.xyz/jsonpatch/v2"
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -31,10 +32,10 @@ type ConfigMutator struct {
 
 // Handle implements admission.Handler.
 func (m *ConfigMutator) Handle(ctx context.Context, req admission.Request) admission.Response {
-	log := configlog.
+	log := logf.FromContext(ctx).
 		WithName("mutator").
 		WithValues("uid", req.UID)
-	ctx = logr.NewContext(ctx, log)
+	ctx = logf.IntoContext(ctx, log)
 	log.Info("examining object",
 		"namespace", req.Namespace,
 		"name", req.Name,
@@ -42,22 +43,24 @@ func (m *ConfigMutator) Handle(ctx context.Context, req admission.Request) admis
 
 	d, err := m.details(ctx, req)
 	if err != nil {
+		log.Info("NO", "reason", "bad request", "error", err.Error())
 		return admission.Errored(http.StatusBadRequest, err)
 	}
 	ops := []jsonpatch.Operation{
 		jsonpatch.Operation{Path: `/data/`, Operation: `add`},
 	}
 	annot := map[string]string{}
-	var warn []string
 
 	version, ok := d.labels[ConfigLabel]
 	if !ok {
+		log.Info("NO", "reason", "martian request")
 		return admission.Errored(http.StatusBadRequest, errMissingLabel)
 	}
 	log.V(1).Info("labelled as", "version", version)
 
 	inKey, ok := d.annotations[TemplateKey]
 	if !ok {
+		log.Info("SKIP", "reason", "martian request")
 		return admission.Allowed("template key not provided")
 	}
 	outKey, ok := d.annotations[ConfigKey]
@@ -70,12 +73,13 @@ func (m *ConfigMutator) Handle(ctx context.Context, req admission.Request) admis
 			Path:      `/metadata/annotations/` + opPath.Replace(ConfigKey),
 			Operation: `add`,
 			Value:     outKey})
-		log.V(1).Info("creating an output file")
+		log.Info("output key not specified, generated key", "key", outKey)
 		annot[`output-guessed`] = outKey
 	}
 	ops[0].Path += outKey
 	in, ok := d.item(inKey)
 	if !ok {
+		log.Info("NO", "reason", "input key missing", "key", inKey)
 		return admission.Denied(fmt.Sprintf("key does not exist: %s", inKey))
 	}
 
@@ -84,7 +88,6 @@ func (m *ConfigMutator) Handle(ctx context.Context, req admission.Request) admis
 	if err != nil {
 		return admission.Errored(http.StatusPreconditionFailed, err)
 	}
-	log.V(3).Info("templated", "out", t.String())
 	switch req.Kind.Kind {
 	case "Secret":
 		ops[0].Value = base64.StdEncoding.EncodeToString(t.Bytes())
@@ -95,8 +98,9 @@ func (m *ConfigMutator) Handle(ctx context.Context, req admission.Request) admis
 	}
 
 	res := admission.Patched("template ok", ops...)
-	res.Warnings = append(warn, t.ws...)
+	res.Warnings = append(res.Warnings, t.ws...)
 	res.AuditAnnotations = annot
+	log.Info("OK")
 	return res
 }
 
@@ -124,9 +128,6 @@ func (m *ConfigMutator) template(ctx context.Context, v string, d *configDetails
 }
 
 // Tmpl is output and a list of warnings.
-//
-// This can be used to flag migration issues or differences in generation. Not
-// fully plumbed through, though.
 type tmpl struct {
 	bytes.Buffer
 	ws []string
@@ -136,8 +137,41 @@ func (t *tmpl) warn(msg string) {
 	t.ws = append(t.ws, msg)
 }
 
+var (
+	_       error = (*warnErr)(nil)
+	warning       = errors.New("warning")
+)
+
+type warnErr struct {
+	warn string
+	next error
+}
+
+func newWarnErr(f string, v ...interface{}) *warnErr {
+	return &warnErr{warn: fmt.Sprintf(f, v...)}
+}
+func (w *warnErr) err(e error) *warnErr {
+	w.next = e
+	return w
+}
+func (w *warnErr) Error() string {
+	if w.next == nil {
+		return w.warn
+	}
+	return fmt.Sprintf("%s: %v", w.warn, w.next)
+}
+func (w *warnErr) Warning() string {
+	return w.warn
+}
+func (w *warnErr) Unwrap() error {
+	return w.next
+}
+func (w *warnErr) Is(e error) bool {
+	return w == e || e == warning
+}
+
 // TemplateV1 does the templating for V1 configs.
-func (m *ConfigMutator) templateV1(ctx context.Context, out *tmpl, in []byte, d *configDetails) error {
+func (m *ConfigMutator) templateV1(ctx context.Context, tmpl *tmpl, in []byte, d *configDetails) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -155,8 +189,14 @@ func (m *ConfigMutator) templateV1(ctx context.Context, out *tmpl, in []byte, d 
 
 	examine = func(n *yaml.Node) error {
 		if n.Kind == yaml.ScalarNode && n.ShortTag() == `!!str` {
+			var w *warnErr
 			out, err := resolve(n.Value)
-			if err != nil {
+			switch {
+			case errors.Is(err, nil):
+			case errors.As(err, &w):
+				tmpl.warn(w.Warning())
+				return w.next
+			default:
 				log.Info("errored templating string", "error", err, "in", n.Value)
 				return err
 			}
@@ -178,7 +218,7 @@ func (m *ConfigMutator) templateV1(ctx context.Context, out *tmpl, in []byte, d 
 		return err
 	}
 
-	enc := yaml.NewEncoder(out)
+	enc := yaml.NewEncoder(tmpl)
 	enc.SetIndent(2)
 	if err := enc.Encode(&n); err != nil {
 		return err
@@ -197,10 +237,11 @@ func (m *ConfigMutator) resolveURIs(ctx context.Context, d *configDetails, in st
 	)
 	var flags uint64
 	log := logr.FromContext(ctx)
+	oops := newWarnErr
 
 	u, err := url.Parse(in)
 	if err != nil {
-		log.V(3).Error(err, "not a URL")
+		log.V(2).Error(err, "not a URL")
 		return in, nil
 	}
 
@@ -230,7 +271,6 @@ func (m *ConfigMutator) resolveURIs(ctx context.Context, d *configDetails, in st
 		return out, true
 	}
 
-	var out string
 Scheme:
 	switch u.Scheme {
 	case `secret`:
@@ -238,8 +278,7 @@ Scheme:
 			return in, errors.New(`cannot reference secret from config in non-secret`)
 		}
 		if u.Opaque == "" {
-			log.Info(`found malformed service URI, skipping`, "url", u.String())
-			break
+			return in, oops("found malformed secret URI %q", u.String())
 		}
 
 		var sec corev1.Secret
@@ -252,15 +291,12 @@ Scheme:
 		}
 		res, ok := resolveFromKeys(&rd, u.Query())
 		if !ok {
-			log.Info(`URI missing "key" parameter`, "url", u.String())
-			return in, nil
+			return in, oops("missing %q parameter in secret URI %q", "key", u.String())
 		}
-
-		out = res
+		return res, nil
 	case `configmap`:
 		if u.Opaque == "" {
-			log.Info(`found malformed service URI, skipping`, "url", u.String())
-			break
+			return in, oops("found malformed configmap URI %q", u.String())
 		}
 
 		var cm corev1.ConfigMap
@@ -273,32 +309,26 @@ Scheme:
 		}
 		res, ok := resolveFromKeys(&rd, u.Query())
 		if !ok {
-			log.Info(`URI missing "key" parameter`, "url", u.String())
-			return in, nil
+			return in, oops("missing %q parameter in configmap URI %q", "key", u.String())
 		}
-
-		out = res
+		return res, nil
+	case `database`:
+		return in, oops("found malformed database URI %q, missing kind", u.String())
 	case `database+postgres`:
 		if u.Opaque == "" {
-			log.Info(`found malformed database URI, skipping`, "url", u.String())
-			break
+			return in, oops("found malformed database URI %q", u.String())
 		}
 
 		su, err := url.Parse(u.Opaque)
 		if err != nil {
-			log.Info(`found malformed database URI, skipping`,
-				"url", u.String(),
-				"err", err.Error(),
-			)
-			break
+			return in, oops("found malformed database URI %q", u.String()).err(err)
 		}
 		u = su
 		flags |= asDB | asPg
 		goto Scheme
 	case `service`:
 		if u.Opaque == "" {
-			log.Info(`found malformed service URI, skipping`, "url", u.String())
-			break
+			return in, oops("found malformed service URI %q", u.String())
 		}
 
 		v := u.Query()
@@ -318,11 +348,7 @@ Scheme:
 			}
 		}
 		if port == nil {
-			log.Info(`unable to find expected port name`,
-				"name", name,
-				"service", srv.String(),
-			)
-			return in, nil
+			return in, oops("unable to find expected port name %q in service %q", name, srv)
 		}
 		u := url.URL{
 			Scheme: `http`,
@@ -341,8 +367,7 @@ Scheme:
 				u.Host = net.JoinHostPort(u.Host, strconv.Itoa(int(port.Port)))
 			}
 		}
-		log.V(2).Info("resolved service", "uri", u.String(), "name", name)
-		out = u.String()
+		return u.String(), nil
 	case `indexer`, `matcher`, `notifier`:
 		var key string
 		switch u.Scheme {
@@ -355,11 +380,7 @@ Scheme:
 		}
 		n, ok := d.annotations[key]
 		if !ok {
-			log.Info(`scheme used, but annotation not present`,
-				"scheme", u.Scheme,
-				"annotation", key,
-			)
-			break
+			return in, oops(`scheme %q used, but annotation not present`, u.Scheme)
 		}
 		su, err := url.Parse(`service:` + n)
 		if err != nil {
@@ -370,10 +391,9 @@ Scheme:
 		goto Scheme
 	default:
 		log.V(2).Info(`ignoring unsupported scheme`, "scheme", u.Scheme)
-		out = in
 	}
 
-	return out, nil
+	return in, nil
 }
 
 // ResolvePostgres looks at the keys in the provided maps and interprets them as

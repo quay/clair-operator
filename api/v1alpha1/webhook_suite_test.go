@@ -20,147 +20,255 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"net"
-	"os"
+	"path"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
-
+	"github.com/go-logr/zapr"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest"
 	admissionv1beta1 "k8s.io/api/admission/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
-	"sigs.k8s.io/controller-runtime/pkg/envtest/printer"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/kustomize/api/filesys"
 	"sigs.k8s.io/kustomize/api/krusty"
 	// +kubebuilder:scaffold:imports
 )
 
-// These tests use Ginkgo (BDD-style Go testing framework). Refer to
-// http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
-
-var cfg *rest.Config
-var k8sClient client.Client
-var testEnv *envtest.Environment
-var ctx context.Context
-var cancel context.CancelFunc
-
-func TestAPIs(t *testing.T) {
-	RegisterFailHandler(Fail)
-
-	RunSpecsWithDefaultAndCustomReporters(t,
-		"Webhook Suite",
-		[]Reporter{printer.NewlineReporter{}})
+func TestWebhooks(t *testing.T) {
+	ctx, c := webhookSetup(context.Background(), t)
+	t.Log("webhooks set up")
+	t.Run("Validating", testValidating(ctx, c)) // see validating_webhook_test.go
+	t.Run("Mutating", testMutating(ctx, c))     // see mutating_webhook_test.go
 }
 
-var _ = BeforeSuite(func() {
-	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
+func webhookSetup(ctx context.Context, t testing.TB) (context.Context, client.Client) {
+	logger := zapr.NewLogger(zaptest.NewLogger(t, zaptest.Level(zapcore.DebugLevel)))
+	ctx = log.IntoContext(ctx, logger)
 
-	ctx, cancel = context.WithCancel(context.TODO())
+	ctx, done := context.WithCancel(ctx)
+	t.Cleanup(done)
 
-	By("writing kustomize object files")
 	kopts := krusty.MakeDefaultOptions()
 	res, err := krusty.MakeKustomizer(kopts).Run(
 		filesys.MakeFsOnDisk(),
 		filepath.Join("..", "..", "config", "webhook"))
-	Expect(err).NotTo(HaveOccurred())
-	Expect(res).NotTo(BeNil())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resDir := t.TempDir()
 	for _, r := range res.Resources() {
-		f, err := ioutil.TempFile("testdata", "*.json")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(f).NotTo(BeNil())
+		f, err := ioutil.TempFile(resDir, "*.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
 		b, err := r.MarshalJSON()
-		Expect(err).NotTo(HaveOccurred())
-		_, err = io.Copy(f, bytes.NewReader(b))
-		Expect(err).NotTo(HaveOccurred())
-		f.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = io.Copy(f, bytes.NewReader(b)); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	By("bootstrapping test environment")
-	testEnv = &envtest.Environment{
+	env := envtest.Environment{
 		CRDDirectoryPaths: []string{filepath.Join("..", "..", "config", "crd", "bases")},
 		WebhookInstallOptions: envtest.WebhookInstallOptions{
-			Paths: []string{"testdata"},
+			Paths: []string{resDir},
 		},
 	}
-
-	cfg, err := testEnv.Start()
-	Expect(err).NotTo(HaveOccurred())
-	Expect(cfg).NotTo(BeNil())
+	cfg, err := env.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := env.Stop(); err != nil {
+			t.Log(err)
+		}
+	})
 
 	scheme := runtime.NewScheme()
-	err = AddToScheme(scheme)
-	Expect(err).NotTo(HaveOccurred())
-
-	err = corev1.AddToScheme(scheme)
-	Expect(err).NotTo(HaveOccurred())
-	err = admissionv1beta1.AddToScheme(scheme)
-	Expect(err).NotTo(HaveOccurred())
+	for _, f := range []func(*runtime.Scheme) error{
+		AddToScheme,
+		corev1.AddToScheme,
+		admissionv1beta1.AddToScheme,
+	} {
+		if err := f(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	// +kubebuilder:scaffold:scheme
 
-	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
-	Expect(err).NotTo(HaveOccurred())
-	Expect(k8sClient).NotTo(BeNil())
+	cl, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// start webhook server using Manager
-	webhookInstallOptions := &testEnv.WebhookInstallOptions
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:             scheme,
-		Host:               webhookInstallOptions.LocalServingHost,
-		Port:               webhookInstallOptions.LocalServingPort,
-		CertDir:            webhookInstallOptions.LocalServingCertDir,
+		Host:               env.WebhookInstallOptions.LocalServingHost,
+		Port:               env.WebhookInstallOptions.LocalServingPort,
+		CertDir:            env.WebhookInstallOptions.LocalServingCertDir,
 		LeaderElection:     false,
 		MetricsBindAddress: "0",
+		Logger:             logger,
 	})
-	Expect(err).NotTo(HaveOccurred())
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	err = SetupConfigWebhooks(mgr)
-	Expect(err).NotTo(HaveOccurred())
+	if err := SetupConfigWebhooks(mgr); err != nil {
+		t.Fatal(err)
+	}
 
 	// +kubebuilder:scaffold:webhook
 
 	go func() {
-		err = mgr.Start(ctx)
-		if err != nil {
-			Expect(err).NotTo(HaveOccurred())
+		ctx, cancel := context.WithCancel(ctx)
+		t.Cleanup(cancel)
+		if err = mgr.Start(ctx); err != nil {
+			t.Error(err)
 		}
 	}()
-
 	// wait for the webhook server to get ready
 	dialer := &net.Dialer{Timeout: time.Second}
-	addrPort := fmt.Sprintf("%s:%d", webhookInstallOptions.LocalServingHost, webhookInstallOptions.LocalServingPort)
-	Eventually(func() error {
-		conn, err := tls.DialWithDialer(dialer, "tcp", addrPort, &tls.Config{InsecureSkipVerify: true})
-		if err != nil {
-			return err
+	addrPort := net.JoinHostPort(
+		env.WebhookInstallOptions.LocalServingHost,
+		strconv.Itoa(env.WebhookInstallOptions.LocalServingPort))
+	tctx, done := context.WithTimeout(ctx, time.Minute)
+	defer done()
+Wait:
+	for {
+		select {
+		case <-tctx.Done():
+			t.Fatal(tctx.Err())
+		default:
+			conn, err := tls.DialWithDialer(dialer, "tcp", addrPort, &tls.Config{InsecureSkipVerify: true})
+			if err == nil {
+				conn.Close()
+				break Wait
+			}
+			t.Log(err)
 		}
-		conn.Close()
-		return nil
-	}).Should(Succeed())
-
-}, 60)
-
-var _ = AfterSuite(func() {
-	cancel()
-	By("tearing down the test environment")
-	err := testEnv.Stop()
-	Expect(err).NotTo(HaveOccurred())
-	By("removing kustomize object files")
-	fs, err := filepath.Glob(filepath.Join("testdata", "*.json"))
-	Expect(err).NotTo(HaveOccurred())
-	for _, f := range fs {
-		Expect(os.Remove(f)).NotTo(HaveOccurred())
 	}
-})
+
+	return ctx, cl
+}
+
+type webhookTestcase struct {
+	Name  string
+	Setup func(testing.TB, ConfigObject)
+	Check func(testing.TB, ConfigObject, error)
+	Err   bool
+}
+
+func CheckErr(t testing.TB, _ ConfigObject, err error) {
+	if err == nil {
+		t.Error("expected error")
+	}
+}
+
+func (tc webhookTestcase) Run(ctx context.Context, c client.Client, in client.Object) func(t *testing.T) {
+	var o ConfigObject
+	switch t := in.(type) {
+	case *corev1.Secret:
+		o = &secretConfig{t}
+	case *corev1.ConfigMap:
+		o = &configmapConfig{t}
+	default:
+		panic("programmer error")
+	}
+	return func(t *testing.T) {
+		tc.Setup(t, o)
+		err := c.Create(ctx, in)
+		if err != nil {
+			t.Log(err)
+		} else {
+			t.Logf("created: %s", in.GetName())
+			t.Cleanup(func() {
+				if err := c.Delete(ctx, in); err != nil {
+					t.Log(err)
+				}
+			})
+		}
+		if tc.Check != nil {
+			tc.Check(t, o, err)
+		} else {
+			if err != nil {
+				t.Error(err)
+			}
+		}
+	}
+}
+
+func mkConfigMap(t testing.TB) *corev1.ConfigMap {
+	c := &corev1.ConfigMap{}
+	c.Namespace = "default"
+	c.GenerateName = strings.ToLower(path.Base(t.Name())) + `-`
+	c.Data = make(map[string]string)
+	c.Labels = make(map[string]string)
+	c.Annotations = make(map[string]string)
+	return c
+}
+
+func mkSecret(t testing.TB) *corev1.Secret {
+	c := &corev1.Secret{}
+	c.Namespace = "default"
+	c.GenerateName = strings.ToLower(path.Base(t.Name())) + `-`
+	c.StringData = make(map[string]string)
+	c.Labels = make(map[string]string)
+	c.Annotations = make(map[string]string)
+	return c
+}
+
+type ConfigObject interface {
+	GetLabels() map[string]string
+	SetLabels(map[string]string)
+	GetAnnotations() map[string]string
+	SetAnnotations(map[string]string)
+	GetItem(key string) string
+	SetItem(key, val string)
+}
+
+type configmapConfig struct{ *corev1.ConfigMap }
+type secretConfig struct{ *corev1.Secret }
+
+var (
+	_ ConfigObject = (*configmapConfig)(nil)
+	_ ConfigObject = (*secretConfig)(nil)
+)
+
+func (c *configmapConfig) GetItem(key string) string {
+	v, ok := c.Data[key]
+	if ok {
+		return v
+	}
+	b, ok := c.BinaryData[key]
+	if !ok {
+		return ""
+	}
+	return string(b)
+}
+func (c *configmapConfig) SetItem(key, val string) {
+	c.Data[key] = val
+}
+
+func (s *secretConfig) GetItem(key string) string {
+	return string(s.Data[key])
+}
+func (s *secretConfig) SetItem(key, val string) {
+	s.StringData[key] = val
+}

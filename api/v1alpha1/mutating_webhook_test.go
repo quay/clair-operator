@@ -1,131 +1,127 @@
 package v1alpha1
 
 import (
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
+	"context"
+	"testing"
+
+	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-var _ = Describe("config mutation webhook", func() {
+func testMutating(ctx context.Context, c client.Client) func(*testing.T) {
 	const (
-		inKey  = `config.yaml.in`
-		outKey = `config.yaml`
+		inKey      = `config.yaml.in`
+		outKey     = `config.yaml`
+		noext      = `config`
+		noopConfig = `---
+indexer:
+  connstring: veryrealdatabase
+matcher:
+  connstring: veryrealdatabase
+  indexer_addr: "http://clair"
+notifier:
+  connstring: veryrealdatabase
+  indexer_addr: "http://clair"
+  matcher_addr: "http://clair"
+`
 	)
-	Context("should not reject", func() {
-		const validConfig = `---
-indexer:
-  connstring: veryrealdatabase
-matcher:
-  connstring: veryrealdatabase
-  indexer_addr: "http://clair"
-notifier:
-  connstring: veryrealdatabase
-  indexer_addr: "http://clair"
-  matcher_addr: "http://clair"
-`
-		Context("a noop", func() {
-			Specify("ConfigMap", func() {
-				cm := &corev1.ConfigMap{}
-				cm.GenerateName = "mut-test"
-				cm.Namespace = "default"
-				cm.Data = map[string]string{inKey: validConfig}
-				cm.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
-				cm.Annotations = map[string]string{
+
+	tt := []webhookTestcase{
+		{
+			Name: "NoopConfigWithMetadata",
+			Setup: func(_ testing.TB, o ConfigObject) {
+				o.SetItem(inKey, noopConfig)
+				o.SetLabels(map[string]string{ConfigLabel: ConfigLabelV1})
+				o.SetAnnotations(map[string]string{
 					TemplateKey: inKey,
 					ConfigKey:   outKey,
-				}
-
-				err := k8sClient.Create(ctx, cm)
-				Expect(err).ShouldNot(HaveOccurred())
-			})
-			Specify("Secret", func() {
-				s := &corev1.Secret{}
-				s.GenerateName = "mut-test"
-				s.Namespace = "default"
-				s.StringData = map[string]string{inKey: validConfig}
-				s.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
-				s.Annotations = map[string]string{
+				})
+			},
+		},
+		{
+			Name: "NoopConfigWithGuessedOutput",
+			Setup: func(_ testing.TB, o ConfigObject) {
+				o.SetItem(inKey, noopConfig)
+				o.SetLabels(map[string]string{ConfigLabel: ConfigLabelV1})
+				o.SetAnnotations(map[string]string{
 					TemplateKey: inKey,
-					ConfigKey:   outKey,
+				})
+			},
+			Check: func(t testing.TB, o ConfigObject, err error) {
+				if err != nil {
+					t.Error(err)
 				}
-
-				err := k8sClient.Create(ctx, s)
-				Expect(err).ShouldNot(HaveOccurred())
-			})
-		})
-
-		Context("guessed template outputs", func() {
-			Specify(inKey, func() {
-				cm := &corev1.ConfigMap{}
-				cm.GenerateName = "mut-test"
-				cm.Namespace = "default"
-				cm.Data = map[string]string{inKey: validConfig}
-				cm.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
-				cm.Annotations = map[string]string{
-					TemplateKey: inKey,
+				if got := o.GetItem(outKey); got == "" {
+					t.Errorf("got: %q, wanted not-empty string", got)
 				}
-
-				err := k8sClient.Create(ctx, cm)
-				Expect(err).ShouldNot(HaveOccurred())
-			})
-			const noext = `config`
-			Specify(noext, func() {
-				cm := &corev1.ConfigMap{}
-				cm.GenerateName = "mut-test"
-				cm.Namespace = "default"
-				cm.Data = map[string]string{noext: validConfig}
-				cm.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
-				cm.Annotations = map[string]string{
+			},
+		},
+		{
+			Name: "NoopConfigWithGuessedOutputOddName",
+			// Same as previous, but with a dumb input name
+			Setup: func(_ testing.TB, o ConfigObject) {
+				o.SetItem(noext, noopConfig)
+				o.SetLabels(map[string]string{ConfigLabel: ConfigLabelV1})
+				o.SetAnnotations(map[string]string{
 					TemplateKey: noext,
+				})
+			},
+			Check: func(t testing.TB, o ConfigObject, err error) {
+				if err != nil {
+					t.Error(err)
 				}
+				if got := o.GetItem(outKey); got == "" {
+					t.Errorf("got: %q, wanted not-empty string", got)
+				}
+			},
+		},
+		{
+			Name: "MissingInputKey",
+			Setup: func(_ testing.TB, o ConfigObject) {
+				o.SetLabels(map[string]string{ConfigLabel: ConfigLabelV1})
+				o.SetAnnotations(map[string]string{
+					TemplateKey: inKey,
+					ConfigKey:   outKey,
+				})
+			},
+			Check: CheckErr,
+		},
+		{
+			Name: "InvalidYAML",
+			Setup: func(_ testing.TB, o ConfigObject) {
+				o.SetItem(inKey, "}\n\t\tbad:yaml\n")
+				o.SetLabels(map[string]string{ConfigLabel: ConfigLabelV1})
+				o.SetAnnotations(map[string]string{
+					TemplateKey: inKey,
+					ConfigKey:   outKey,
+				})
+			},
+			Check: CheckErr,
+		},
+	}
 
-				err := k8sClient.Create(ctx, cm)
-				Expect(err).ShouldNot(HaveOccurred())
-			})
-		})
-	})
-
-	Context("should reject", func() {
-		Specify("missing input key", func() {
-			cm := &corev1.ConfigMap{}
-			cm.GenerateName = "mut-test"
-			cm.Namespace = "default"
-			//cm.Data = map[string]string{inKey: validConfig}
-			cm.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
-			cm.Annotations = map[string]string{
-				TemplateKey: inKey,
-				ConfigKey:   outKey,
+	return func(t *testing.T) {
+		// Do some common setup
+		dbsec := &corev1.Secret{}
+		dbsec.Name = "mutation-database-creds"
+		dbsec.Namespace = "default"
+		dbsec.StringData = map[string]string{
+			`PGHOST`:     `localhost`,
+			`PGDATABASE`: `clair`,
+			`PGUSER`:     `clair`,
+			`PGPASSWORD`: `verysecret`,
+		}
+		if err := c.Create(ctx, dbsec); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := c.Delete(ctx, dbsec); err != nil {
+				t.Error(err)
 			}
-
-			err := k8sClient.Create(ctx, cm)
-			Expect(err).Should(HaveOccurred())
 		})
-		Specify("invalid YAML", func() {
-			cm := &corev1.ConfigMap{}
-			cm.GenerateName = "mut-test"
-			cm.Namespace = "default"
-			cm.Data = map[string]string{inKey: "}\n\t\tbad:yaml\n"}
-			cm.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
-			cm.Annotations = map[string]string{
-				TemplateKey: inKey,
-				ConfigKey:   outKey,
-			}
-
-			err := k8sClient.Create(ctx, cm)
-			Expect(err).Should(HaveOccurred())
-		})
-		Specify("ConfigMap referencing Secret", func() {
-			db := &corev1.Secret{}
-			db.Name = "mutation-database-creds"
-			db.Namespace = "default"
-			db.StringData = map[string]string{
-				`PGHOST`:     `localhost`,
-				`PGDATABASE`: `clair`,
-				`PGUSER`:     `clair`,
-				`PGPASSWORD`: `verysecret`,
-			}
-			k8sClient.Create(ctx, db)
-			const inConfig = `---
+		const (
+			secretConfig = `---
 indexer:
   connstring: database+postgres:secret:default/mutation-database-creds
 matcher:
@@ -136,50 +132,7 @@ notifier:
   indexer_addr: "http://clair"
   matcher_addr: "http://clair"
 `
-
-			cm := &corev1.ConfigMap{}
-			cm.GenerateName = "mut-test"
-			cm.Namespace = "default"
-			cm.Data = map[string]string{inKey: inConfig}
-			cm.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
-			cm.Annotations = map[string]string{
-				TemplateKey: inKey,
-				ConfigKey:   outKey,
-			}
-
-			err := k8sClient.Create(ctx, cm)
-			Expect(err).Should(HaveOccurred())
-		})
-	})
-
-	Context("should render", func() {
-		It("needs to construct the secret", func() {
-			db := &corev1.Secret{}
-			db.Name = "mutation-database-creds"
-			db.Namespace = "default"
-			db.StringData = map[string]string{
-				`PGHOST`:     `localhost`,
-				`PGDATABASE`: `clair`,
-				`PGUSER`:     `clair`,
-				`PGPASSWORD`: `verysecret`,
-			}
-			k8sClient.Create(ctx, db)
-		})
-
-		Specify("indexer secret", func() {
-			const (
-				inConfig = `---
-indexer:
-  connstring: database+postgres:secret:default/mutation-database-creds
-matcher:
-  connstring: veryrealdatabase
-  indexer_addr: "http://clair"
-notifier:
-  connstring: veryrealdatabase
-  indexer_addr: "http://clair"
-  matcher_addr: "http://clair"
-`
-				outConfig = `indexer:
+			renderedSecretConfig = `indexer:
   connstring: postgresql://clair:verysecret@localhost:/clair
 matcher:
   connstring: veryrealdatabase
@@ -189,21 +142,53 @@ notifier:
   indexer_addr: "http://clair"
   matcher_addr: "http://clair"
 `
-			)
+		)
 
-			s := &corev1.Secret{}
-			s.GenerateName = "mut-test"
-			s.Namespace = "default"
-			s.StringData = map[string]string{inKey: inConfig}
-			s.Labels = map[string]string{ConfigLabel: ConfigLabelV1}
-			s.Annotations = map[string]string{
-				TemplateKey: inKey,
-				ConfigKey:   outKey,
+		t.Run("ConfigMap", func(t *testing.T) {
+			var lt = []webhookTestcase{
+				{
+					Name: "ConfigWithSecret",
+					Setup: func(_ testing.TB, o ConfigObject) {
+						o.SetItem(inKey, secretConfig)
+						o.SetLabels(map[string]string{ConfigLabel: ConfigLabelV1})
+						o.SetAnnotations(map[string]string{
+							TemplateKey: inKey,
+							ConfigKey:   outKey,
+						})
+					},
+					Check: CheckErr,
+				},
 			}
-
-			err := k8sClient.Create(ctx, s)
-			Expect(err).ShouldNot(HaveOccurred())
-			Expect(string(s.Data[outKey])).Should(Equal(outConfig))
+			for _, tc := range append(tt, lt...) {
+				t.Run(tc.Name, tc.Run(ctx, c, mkConfigMap(t)))
+			}
 		})
-	})
-})
+		t.Run("Secret", func(t *testing.T) {
+			var lt = []webhookTestcase{
+				{
+					Name: "ConfigWithSecret",
+					Setup: func(_ testing.TB, o ConfigObject) {
+						o.SetItem(inKey, secretConfig)
+						o.SetLabels(map[string]string{ConfigLabel: ConfigLabelV1})
+						o.SetAnnotations(map[string]string{
+							TemplateKey: inKey,
+							ConfigKey:   outKey,
+						})
+					},
+					Check: func(t testing.TB, o ConfigObject, err error) {
+						if err != nil {
+							t.Error(err)
+						}
+						got, want := o.GetItem(outKey), renderedSecretConfig
+						if !cmp.Equal(got, want) {
+							t.Error(cmp.Diff(got, want))
+						}
+					},
+				},
+			}
+			for _, tc := range append(tt, lt...) {
+				t.Run(tc.Name, tc.Run(ctx, c, mkSecret(t)))
+			}
+		})
+	}
+}
