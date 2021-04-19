@@ -23,4 +23,5 @@ require (
 	sigs.k8s.io/controller-tools v0.4.1
 	sigs.k8s.io/kustomize/api v0.8.8
 	sigs.k8s.io/kustomize/kustomize/v4 v4.1.2
+	sigs.k8s.io/kustomize/kyaml v0.10.17
 )

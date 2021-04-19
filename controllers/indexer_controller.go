@@ -40,6 +40,15 @@ type IndexerReconciler struct {
 	ServiceReconciler
 }
 
+/*
+The basic logic for the Indexer reconciler is:
+
+1. Load the state of the world.
+2. Create any missing Objects.
+3. Check annotations.
+4. Restart anything needed.
+*/
+
 func indexerState(cs []metav1.Condition) (string, error) {
 	var states = []string{
 		`Empty`,
@@ -173,10 +182,20 @@ func (r *IndexerReconciler) indexerTemplates(ctx context.Context, cur, next *cla
 			ServiceSelectorKey: serviceName,
 			GroupSelectorKey:   cur.Name,
 		}
-		log = r.Log.WithValues("indexer", types.NamespacedName{Name: cur.Name, Namespace: cur.Namespace})
+		log = r.Log.WithValues("indexer", types.NamespacedName{Name: cur.Name, Namespace: cur.Namespace}.String())
 
 		configSource corev1.VolumeSource
 	)
+
+	/*
+		opts := krusty.MakeDefaultOptions()
+		k := krusty.MakeKustomizer(opts)
+		res, err := k.Run(templatesFS, "./templates/indexer/kustomize.yaml")
+		if err != nil {
+			return err
+		}
+		_ = res
+	*/
 
 	// Populate the config source for our container volume.
 	cfg, err := r.config(ctx, cur.Namespace, cur.Spec.Config)

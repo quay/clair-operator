@@ -1,0 +1,66 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clair
+      app.kubernetes.io/managed-by: clair-operator
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clair
+        app.kubernetes.io/managed-by: clair-operator
+    spec:
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsUser: 65532
+      volumes:
+        - name: run
+          emptyDir:
+            medium: ""
+            sizeLimit: 5Gi
+        - name: config
+      containers:
+        - name: clair
+          image: clair:latest
+          ports:
+            - name: api
+              containerPort: 6060
+            - name: introspection
+              containerPort: 8089
+          env:
+            - name: TMPDIR
+              value: /run/clair
+            - name: CLAIR_CONF
+              value: /etc/clair.yaml
+          volumeMounts:
+            - name: run
+              mountPath: /run/clair
+            - name: config
+              mountPath: /etc/clair.yaml
+              subPath: config.yaml
+          workingDir: /run/clair
+          securityContext:
+            allowPrivilegeEscalation: false
+          startupProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 1
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: introspection
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: introspection
+            initialDelaySeconds: 5
+            periodSeconds: 10

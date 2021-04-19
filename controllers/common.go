@@ -6,6 +6,7 @@ import (
 	scalev2 "k8s.io/api/autoscaling/v2beta2"
 	netv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
@@ -59,3 +60,5 @@ func mkMeta(srv string, cur *metav1.ObjectMeta) metav1.ObjectMeta {
 		},
 	}
 }
+
+type configObject *unstructured.Unstructured
