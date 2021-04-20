@@ -17,72 +17,98 @@ limitations under the License.
 package controllers
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
-	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
+	"github.com/go-logr/zapr"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
-	"sigs.k8s.io/controller-runtime/pkg/envtest/printer"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	clairv1alpha1 "github.com/quay/clair-operator/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
-// These tests use Ginkgo (BDD-style Go testing framework). Refer to
-// http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
+func envSetup(ctx context.Context, t testing.TB) (context.Context, client.Client) {
+	logger := zapr.NewLogger(zaptest.NewLogger(t, zaptest.Level(zapcore.DebugLevel))).
+		WithName("controllers")
+	ctx = log.IntoContext(ctx, logger)
 
-var cfg *rest.Config
-var k8sClient client.Client
-var testEnv *envtest.Environment
+	ctx, done := context.WithCancel(ctx)
+	t.Cleanup(done)
 
-func TestAPIs(t *testing.T) {
-	RegisterFailHandler(Fail)
-
-	RunSpecsWithDefaultAndCustomReporters(t,
-		"Controller Suite",
-		[]Reporter{printer.NewlineReporter{}})
-}
-
-var _ = BeforeSuite(func() {
-	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
-
-	By("bootstrapping test environment")
-	testEnv = &envtest.Environment{
+	env := envtest.Environment{
 		CRDDirectoryPaths: []string{filepath.Join("..", "config", "crd", "bases")},
 	}
+	cfg, err := env.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := env.Stop(); err != nil {
+			t.Log(err)
+		}
+	})
+	t.Log("environment started")
 
-	cfg, err := testEnv.Start()
-	Expect(err).NotTo(HaveOccurred())
-	Expect(cfg).NotTo(BeNil())
-
-	err = clairv1alpha1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
-
-	err = clairv1alpha1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
-
-	err = clairv1alpha1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
-
-	err = clairv1alpha1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
+	scheme := runtime.NewScheme()
+	for _, f := range []func(*runtime.Scheme) error{
+		clairv1alpha1.AddToScheme,
+		corev1.AddToScheme,
+		appsv1.AddToScheme,
+	} {
+		if err := f(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Log("schemes registered")
 
 	// +kubebuilder:scaffold:scheme
 
-	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
-	Expect(err).NotTo(HaveOccurred())
-	Expect(k8sClient).NotTo(BeNil())
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		Scheme: scheme,
+		Logger: logger,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&IndexerReconciler{}).SetupWithManager(mgr); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		if err := mgr.Start(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
 
-}, 60)
+	return ctx, mgr.GetClient()
+}
 
-var _ = AfterSuite(func() {
-	By("tearing down the test environment")
-	err := testEnv.Stop()
-	Expect(err).NotTo(HaveOccurred())
-})
+func configSetup(ctx context.Context, t testing.TB, c client.Client) *clairv1alpha1.ConfigReference {
+	cfg := corev1.ConfigMap{}
+	cfg.GenerateName = "test-config-"
+	cfg.Namespace = "default"
+	// Don't need extra annotations, because we're dodging the webhooks.
+	if err := c.Create(ctx, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := c.Delete(ctx, &cfg); err != nil {
+			t.Log(err)
+		}
+	})
+	t.Logf("created ConfigMap: %s", cfg.Name)
+
+	return &clairv1alpha1.ConfigReference{
+		Name:     cfg.GetName(),
+		APIGroup: new(string), // APIGroup is "core", e.g. empty
+		Kind:     cfg.TypeMeta.Kind,
+	}
+}

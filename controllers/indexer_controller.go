@@ -18,19 +18,18 @@ package controllers
 
 import (
 	"context"
-	"path/filepath"
+	"encoding/json"
 	"time"
 
-	monitorv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	scalev2 "k8s.io/api/autoscaling/v2beta2"
 	corev1 "k8s.io/api/core/v1"
 	k8serr "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	clairv1alpha1 "github.com/quay/clair-operator/api/v1alpha1"
 )
@@ -92,6 +91,7 @@ func indexerState(cs []metav1.Condition) (string, error) {
 // move the current state of the cluster closer to the desired state.
 func (r *IndexerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("indexer", req.NamespacedName)
+	ctx = logf.IntoContext(ctx, log)
 	log.Info("start")
 	defer log.Info("done")
 	var (
@@ -177,110 +177,86 @@ func (r *IndexerReconciler) indexerTemplates(ctx context.Context, cur, next *cla
 		img = `quay.io/projectquay/clair:4.0.0`
 	)
 	var (
-		now       = time.Now()
-		selectors = map[string]string{
-			ServiceSelectorKey: serviceName,
-			GroupSelectorKey:   cur.Name,
-		}
-		log = r.Log.WithValues("indexer", types.NamespacedName{Name: cur.Name, Namespace: cur.Namespace}.String())
-
-		configSource corev1.VolumeSource
+	//now       = time.Now()
+	//selectors = map[string]string{ServiceSelectorKey: serviceName, GroupSelectorKey: cur.Name}
 	)
-
-	/*
-		opts := krusty.MakeDefaultOptions()
-		k := krusty.MakeKustomizer(opts)
-		res, err := k.Run(templatesFS, "./templates/indexer/kustomize.yaml")
-		if err != nil {
-			return err
-		}
-		_ = res
-	*/
+	log := logf.FromContext(ctx)
 
 	// Populate the config source for our container volume.
 	cfg, err := r.config(ctx, cur.Namespace, cur.Spec.Config)
 	if err != nil {
 		return err
 	}
-	cfgkey := configFile
-	cfgAnno := cfg.GetAnnotations()
-	if val, ok := cfgAnno[clairv1alpha1.ConfigKey]; ok {
-		cfgkey = val
-	}
-	items := []corev1.KeyToPath{{Key: cfgkey, Path: configFile}}
-	switch cfg.GroupVersionKind().Kind {
-	case "Secret":
-		configSource.Secret = &corev1.SecretVolumeSource{
-			SecretName: cfg.GetName(),
-			Items:      items,
-		}
-	case "ConfigMap":
-		configSource.ConfigMap = &corev1.ConfigMapVolumeSource{
-			LocalObjectReference: corev1.LocalObjectReference{Name: cfg.GetName()},
-			Items:                items,
-		}
-	default:
-		panic("unreachable")
-	}
 	log.Info("found config", "ref", cur.Spec.Config)
+	cfgAnno := cfg.GetAnnotations()
 
-	srv := corev1.Service{
-		ObjectMeta: mkMeta(serviceName, &cur.ObjectMeta),
-		Spec: corev1.ServiceSpec{
-			Selector: selectors,
-			Type:     corev1.ServiceTypeClusterIP,
-			Ports: []corev1.ServicePort{
-				{
-					Name:       clairv1alpha1.PortAPI,
-					Port:       80,
-					TargetPort: intstr.FromString(clairv1alpha1.PortAPI),
-				},
-				{
-					Name:       clairv1alpha1.PortIntrospection,
-					Port:       8090,
-					TargetPort: intstr.FromString(clairv1alpha1.PortIntrospection),
-				},
-			},
-		},
+	k := newKustomize()
+	res, err := k.Indexer(cfg)
+	if err != nil {
+		return err
 	}
-	deploy := appsv1.Deployment{
-		ObjectMeta: mkMeta(serviceName, &cur.ObjectMeta),
-		Spec: appsv1.DeploymentSpec{
-			Selector: &metav1.LabelSelector{MatchLabels: selectors},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels:      selectors,
-					Annotations: map[string]string{deployRecreate: now.Format(time.RFC3339)},
+	var (
+		deploy appsv1.Deployment
+		srv    corev1.Service
+		hpa    scalev2.HorizontalPodAutoscaler
+	)
+	for _, r := range res.Resources() {
+		b, err := r.MarshalJSON()
+		if err != nil {
+			return err
+		}
+		switch r.GetKind() {
+		case "Deployment":
+			if err := json.Unmarshal(b, &deploy); err != nil {
+				return err
+			}
+			deploy.OwnerReferences = []metav1.OwnerReference{
+				metav1.OwnerReference{
+					APIVersion: cur.APIVersion,
+					Kind:       cur.Kind,
+					Name:       cur.Name,
+					UID:        cur.UID,
 				},
-				Spec: corev1.PodSpec{
-					// TODO(hank) Add resource estimates.
-					Containers: []corev1.Container{
-						{
-							Name:  "clair",
-							Image: img,
-							Env: []corev1.EnvVar{
-								{Name: "CLAIR_MODE", Value: serviceName},
-								{Name: "CLAIR_CONF", Value: filepath.Join(configMount, configFile)},
-							},
-							VolumeMounts: []corev1.VolumeMount{
-								{Name: configVolume, MountPath: configMount, SubPath: configFile, ReadOnly: true},
-							},
-							Ports: []corev1.ContainerPort{
-								{Name: clairv1alpha1.PortAPI, ContainerPort: 8080},
-								{Name: clairv1alpha1.PortIntrospection, ContainerPort: 8089},
-							},
-							// TODO(hank) Add container probes.
-						},
-					},
-					Volumes: []corev1.Volume{
-						{Name: configVolume, VolumeSource: configSource},
-					},
+			}
+			*deploy.OwnerReferences[0].Controller = true
+			name := deploy.Namespace + "/" + deploy.Name
+			cfgAnno[clairv1alpha1.TemplateIndexerDeployment] = name
+			log.Info("new deployment", "ref", name)
+		case "Service":
+			if err := json.Unmarshal(b, &srv); err != nil {
+				return err
+			}
+			srv.OwnerReferences = []metav1.OwnerReference{
+				metav1.OwnerReference{
+					APIVersion: cur.APIVersion,
+					Kind:       cur.Kind,
+					Name:       cur.Name,
+					UID:        cur.UID,
 				},
-			},
-		},
+			}
+			*srv.OwnerReferences[0].Controller = true
+			name := srv.Namespace + "/" + srv.Name
+			cfgAnno[clairv1alpha1.TemplateIndexerService] = name
+			log.Info("new service", "ref", name)
+		case "HorizontalPodAutoscaler":
+			if err := json.Unmarshal(b, &hpa); err != nil {
+				return err
+			}
+			hpa.OwnerReferences = []metav1.OwnerReference{
+				metav1.OwnerReference{
+					APIVersion: cur.APIVersion,
+					Kind:       cur.Kind,
+					Name:       cur.Name,
+					UID:        cur.UID,
+				},
+			}
+			*hpa.OwnerReferences[0].Controller = true
+			name := hpa.Namespace + "/" + hpa.Name
+			log.Info("new hpa", "ref", name)
+		default:
+			log.Info("unknown resource", "kind", r.GetKind())
+		}
 	}
-	*srv.OwnerReferences[0].Controller = true
-	*deploy.OwnerReferences[0].Controller = true
 
 	// Create the deployment and touch anything that needs to know its name.
 	if err := r.Client.Create(ctx, &deploy); err != nil {
@@ -289,8 +265,7 @@ func (r *IndexerReconciler) indexerTemplates(ctx context.Context, cur, next *cla
 	if err := next.Status.Deployment.From(&deploy); err != nil {
 		return err
 	}
-	cfgAnno[clairv1alpha1.TemplateIndexerDeployment] = deploy.Namespace + "/" + deploy.Name
-	log.Info("created deployment", "ref", deploy.Namespace+"/"+deploy.Name)
+	log.Info("created deployment", "ref", cfgAnno[clairv1alpha1.TemplateIndexerDeployment])
 
 	// Create the service and anything that needs to know its name.
 	if err := r.Client.Create(ctx, &srv); err != nil {
@@ -302,55 +277,30 @@ func (r *IndexerReconciler) indexerTemplates(ctx context.Context, cur, next *cla
 	cfgAnno[clairv1alpha1.TemplateIndexerService] = srv.Namespace + "/" + srv.Name
 	log.Info("created service", "ref", srv.Namespace+"/"+srv.Name)
 
-	if r.options.HPA {
-		// Create the HPA.
-		hpa := scalev2.HorizontalPodAutoscaler{
-			ObjectMeta: mkMeta(serviceName, &cur.ObjectMeta),
-			Spec: scalev2.HorizontalPodAutoscalerSpec{
-				ScaleTargetRef: scalev2.CrossVersionObjectReference{
-					Kind:       "Deployment",
-					APIVersion: "apps/v1",
-					Name:       deploy.Name,
-				},
-				MaxReplicas: 10, // wild guess
-				Metrics:     nil,
-				// TODO(hank) Set up custom HPA metrics to scale on. This may
-				// require some ranging to see if custom metrics are enabled and
-				// how.
-			},
-		}
-		*hpa.OwnerReferences[0].Controller = true
-		if err := r.Client.Create(ctx, &hpa); err != nil {
-			return err
-		}
-		if err := next.Status.Autoscaler.From(&hpa); err != nil {
-			return err
-		}
-		log.Info("created hpa", "ref", hpa.Namespace+"/"+hpa.Name)
-	}
-
-	if r.options.Monitor {
-		// Create our metrics monitor.
-		monitor := monitorv1.ServiceMonitor{
-			ObjectMeta: mkMeta(serviceName, &cur.ObjectMeta),
-			Spec: monitorv1.ServiceMonitorSpec{
-				Endpoints: []monitorv1.Endpoint{
-					{
-						Port:     clairv1alpha1.PortIntrospection,
-						Scheme:   `http`,
-						Interval: (30 * time.Second).String(),
+	/*
+		if r.options.Monitor {
+			// Create our metrics monitor.
+			monitor := monitorv1.ServiceMonitor{
+				ObjectMeta: mkMeta(serviceName, &cur.ObjectMeta),
+				Spec: monitorv1.ServiceMonitorSpec{
+					Endpoints: []monitorv1.Endpoint{
+						{
+							Port:     clairv1alpha1.PortIntrospection,
+							Scheme:   `http`,
+							Interval: (30 * time.Second).String(),
+						},
 					},
+					Selector: metav1.LabelSelector{MatchLabels: selectors},
 				},
-				Selector: metav1.LabelSelector{MatchLabels: selectors},
-			},
+			}
+			*monitor.OwnerReferences[0].Controller = true
+			monitor.Labels[`k8s-app`] = cur.Name // This seems to be the standard? It's hard to tell.
+			if err := r.Client.Create(ctx, &monitor); err != nil {
+				return err
+			}
+			log.Info("created servicemonitor", "ref", monitor.Namespace+"/"+monitor.Name)
 		}
-		*monitor.OwnerReferences[0].Controller = true
-		monitor.Labels[`k8s-app`] = cur.Name // This seems to be the standard? It's hard to tell.
-		if err := r.Client.Create(ctx, &monitor); err != nil {
-			return err
-		}
-		log.Info("created servicemonitor", "ref", monitor.Namespace+"/"+monitor.Name)
-	}
+	*/
 
 	// Purposefully grab the current version number?
 	//
@@ -358,7 +308,9 @@ func (r *IndexerReconciler) indexerTemplates(ctx context.Context, cur, next *cla
 	next.Status.ConfigVersion = cfg.GetResourceVersion()
 	// Add a non-controlling owner ref so that we get notifications when things
 	// change.
-	cfg.SetOwnerReferences(append(cfg.GetOwnerReferences(), metav1.OwnerReference{Name: cur.Name}))
+	cfg.SetOwnerReferences(append(cfg.GetOwnerReferences(), metav1.OwnerReference{
+		UID: cur.UID,
+	}))
 	if err := r.Client.Update(ctx, cfg); err != nil {
 		return err
 	}
@@ -369,6 +321,7 @@ func (r *IndexerReconciler) indexerTemplates(ctx context.Context, cur, next *cla
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *IndexerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Log = mgr.GetLogger().WithName("Indexer")
 	b, err := r.SetupService(mgr, &clairv1alpha1.Indexer{})
 	if err != nil {
 		return err

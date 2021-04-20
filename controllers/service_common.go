@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -33,7 +34,10 @@ type ServiceReconciler struct {
 
 // SetupService sets up the controller with the Manager.
 func (r *ServiceReconciler) SetupService(mgr ctrl.Manager, apiType client.Object) (*builder.Builder, error) {
+	r.Client = mgr.GetClient()
+	r.Scheme = mgr.GetScheme()
 	b := ctrl.NewControllerManagedBy(mgr).
+		WithLogger(r.Log).
 		For(apiType).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
@@ -48,18 +52,28 @@ func (r *ServiceReconciler) SetupService(mgr ctrl.Manager, apiType client.Object
 
 	// Attempt to resolve some GVKs. If we can, this means they're installed and
 	// we can use them.
-	for _, obj := range []client.Object{
-		&scalev2.HorizontalPodAutoscaler{},
-		&monitorv1.ServiceMonitor{},
+	for _, pair := range []struct {
+		gvk schema.GroupVersionKind
+		obj client.Object
+	}{
+		{
+			schema.GroupVersionKind{
+				Group: "autoscaling", Version: "v2beta2", Kind: "HorizontalPodAutoscaler"},
+			&scalev2.HorizontalPodAutoscaler{},
+		},
+		{
+			schema.GroupVersionKind{
+				Group: "monitoring.coreos.com", Version: "v1", Kind: "ServiceMonitor"},
+			&monitorv1.ServiceMonitor{},
+		},
 	} {
-		gvk := obj.GetObjectKind().GroupVersionKind()
-		if !r.Scheme.Recognizes(gvk) {
-			r.Log.Info("missing optionally supported resource", "gvk", gvk.String())
+		if !r.Scheme.Recognizes(pair.gvk) {
+			r.Log.Info("missing optionally supported resource", "gvk", pair.gvk.String())
 			continue
 		}
-		b = b.Owns(obj)
-		r.Log.Info("found optional kind", "gvk", gvk.String())
-		r.options.Set(gvk)
+		b = b.Owns(pair.obj)
+		r.Log.Info("found optional kind", "gvk", pair.gvk.String())
+		r.options.Set(pair.gvk)
 	}
 	return b, nil
 }
