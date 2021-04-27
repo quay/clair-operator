@@ -17,7 +17,12 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	runtime "k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
@@ -39,16 +44,39 @@ type IndexerStatus struct {
 
 	// Represents the observations of an Indexer's current state.
 	// Known .status.conditions.type are: "Available", "Progressing"
+	//
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	Deployment    *DeploymentReference `json:"deploymentRef,omitempty"`
-	Service       *ServiceReference    `json:"serviceRef,omitempty"`
-	Autoscaler    *AutoscalerReference `json:"autoscalerRef,omitempty"`
-	ConfigVersion string               `json:"configVersion,omitempty"`
+	// Refs ...
+	//
+	// +patchMergeKey=name
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=name
+	Refs []corev1.TypedLocalObjectReference `json:"refs,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
+
+	ConfigVersion string `json:"configVersion,omitempty"`
+}
+
+func (s *IndexerStatus) AddRef(obj metav1.Object, scheme *runtime.Scheme) error {
+	ro, ok := obj.(runtime.Object)
+	if !ok {
+		return fmt.Errorf("%T is not a runtime.Object", obj)
+	}
+	gvk, err := apiutil.GVKForObject(ro, scheme)
+	if err != nil {
+		return err
+	}
+	s.Refs = append(s.Refs, corev1.TypedLocalObjectReference{
+		APIGroup: &gvk.Group,
+		Kind:     gvk.Kind,
+		Name:     obj.GetName(),
+	})
+	return nil
 }
 
 const (
@@ -73,11 +101,10 @@ const (
 	IndexerReasonNeedService IndexerConditionReason = `NeedService`
 )
 
-// GetCondition returns a Condition associated with the provided type, adding an
-// entry to the backing slice if necessary.
+// GetCondition returns a Condition associated with the provided type or nil if
+// not found.
 func (i *Indexer) GetCondition(t string) (c *metav1.Condition) {
-	i.Status.Conditions, c = findCondition(i.Status.Conditions, t)
-	return c
+	return findCondition(i.Status.Conditions, t)
 }
 
 // +kubebuilder:object:root=true

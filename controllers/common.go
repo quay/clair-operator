@@ -30,14 +30,14 @@ var (
 )
 
 func (o *optionalTypes) Set(gvk schema.GroupVersionKind) {
-	switch gvk {
-	case routeGVK:
+	switch gvk.Kind {
+	case "Route":
 		o.Routes = true
-	case hpaGVK:
+	case "HorizontalPodAutoscaler":
 		o.HPA = true
-	case monitorGVK:
+	case "ServiceMonitor":
 		o.Monitor = true
-	case ingressGVK:
+	case "Ingress":
 		o.Ingress = true
 	default: // do nothing
 	}

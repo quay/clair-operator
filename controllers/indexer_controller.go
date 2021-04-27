@@ -19,17 +19,19 @@ package controllers
 import (
 	"context"
 	"encoding/json"
-	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	scalev2 "k8s.io/api/autoscaling/v2beta2"
 	corev1 "k8s.io/api/core/v1"
 	k8serr "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	monitorv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 
 	clairv1alpha1 "github.com/quay/clair-operator/api/v1alpha1"
 )
@@ -107,216 +109,274 @@ func (r *IndexerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	default:
 		return res, client.IgnoreNotFound(err)
 	}
-	next := cur.DeepCopy()
 
-	checkConfig := true
-	cnd := next.GetCondition(clairv1alpha1.IndexerAvailable)
-	switch {
-	case cnd.Status == metav1.ConditionUnknown:
-		log.Info("initial run")
-		// initial run
-		if err := r.indexerTemplates(ctx, &cur, next); err != nil {
+	// If our spec isn't complete, post a note and then chill.
+	if cur.Spec.Config == nil {
+		next := cur.DeepCopy()
+		next.Status.Conditions = append(next.Status.Conditions, metav1.Condition{
+			Type:               clairv1alpha1.IndexerAvailable,
+			ObservedGeneration: cur.Generation,
+			LastTransitionTime: metav1.Now(),
+			Status:             metav1.ConditionFalse,
+			Reason:             "InvalidSpec",
+			Message:            `spec missing "config"`,
+		})
+
+		if err := r.Client.Status().Update(ctx, next); err != nil {
 			return res, err
 		}
-		cnd.ObservedGeneration = cur.Generation
-		cnd.Status = metav1.ConditionFalse
-		cnd.Reason = "InitialCreation"
-		checkConfig = false
-	case cnd.Status == metav1.ConditionFalse:
-
-	case cnd.Status == metav1.ConditionTrue:
-		// check for dependency change
-		//case cnd.Reason == clairv1alpha1.IndexerReasonServiceCreated:
-		// create deployment
-		//case cnd.Reason == clairv1alpha1.IndexerReasonDeploymentCreated:
-		// wait on config
-		//case cnd.Reason == clairv1alpha1.IndexerReasonRedeploying:
-		// Mess with the deployment
+		return res, nil
 	}
-	if checkConfig {
-		cfg, err := r.config(ctx, cur.Namespace, cur.Spec.Config)
-		if err != nil {
-			return res, err
-		}
-		cnd := next.GetCondition(clairv1alpha1.ServiceRedeploying)
-		if v := cfg.GetResourceVersion(); v != cur.Status.ConfigVersion {
-			d := appsv1.Deployment{}
 
-			if err := r.Client.Get(ctx, types.NamespacedName{
-				Name:      cur.Status.Deployment.Name,
-				Namespace: cur.Namespace,
-			}, &d); err != nil {
-				return res, err
-			}
-			d.Annotations[deployRecreate] = time.Now().Format(time.RFC3339)
-			if err := r.Client.Update(ctx, &d); err != nil {
-				return res, err
-			}
-			next.Status.ConfigVersion = v
-			cnd.Status = metav1.ConditionTrue
-			cnd.Reason = `ConfigurationChanged`
-		} else {
-			cnd.Status = metav1.ConditionFalse
-			cnd.Reason = `DeploymentUpdated`
-		}
-	}
-	if err := r.Client.Update(ctx, next); err != nil {
+	cfg, err := r.config(ctx, cur.Namespace, cur.Spec.Config)
+	if err != nil {
 		return res, err
+	}
+	configChanged := cfg.GetResourceVersion() != cur.Status.ConfigVersion
+	emptyRefs := len(cur.Status.Refs) == 0
+	switch {
+	case configChanged && emptyRefs:
+		log.Info("initial run")
+		fallthrough
+	case !configChanged && emptyRefs:
+		log.Info("inflating templates")
+		return r.indexerTemplates(ctx, &cur, cfg)
+	case configChanged && !emptyRefs:
+		log.Info("need to check resources")
+		return r.checkResources(ctx, &cur, cfg)
+	case !configChanged && !emptyRefs:
+		log.Info("unsure why the controller was notified")
+		return res, nil
 	}
 	return res, nil
 }
 
-func (r *IndexerReconciler) indexerTemplates(ctx context.Context, cur, next *clairv1alpha1.Indexer) error {
+func (r *IndexerReconciler) indexerTemplates(ctx context.Context, cur *clairv1alpha1.Indexer, cfg *unstructured.Unstructured) (ctrl.Result, error) {
 	const (
-		serviceName  = `indexer`
-		configVolume = `config`
-		configFile   = `config.yaml`
-		configMount  = `/run/config`
-
 		// TODO(hank) Allow configuration, by environment variable?
 		img = `quay.io/projectquay/clair:4.0.0`
 	)
-	var (
-	//now       = time.Now()
-	//selectors = map[string]string{ServiceSelectorKey: serviceName, GroupSelectorKey: cur.Name}
-	)
 	log := logf.FromContext(ctx)
+	next := cur.DeepCopy()
 
-	// Populate the config source for our container volume.
-	cfg, err := r.config(ctx, cur.Namespace, cur.Spec.Config)
-	if err != nil {
-		return err
-	}
-	log.Info("found config", "ref", cur.Spec.Config)
 	cfgAnno := cfg.GetAnnotations()
+	if cfgAnno == nil {
+		cfgAnno = make(map[string]string)
+	}
 
-	k := newKustomize()
-	res, err := k.Indexer(cfg)
+	res, err := r.k.Indexer(cfg)
 	if err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
 	var (
-		deploy appsv1.Deployment
-		srv    corev1.Service
-		hpa    scalev2.HorizontalPodAutoscaler
+		deploy  appsv1.Deployment
+		srv     corev1.Service
+		hpa     scalev2.HorizontalPodAutoscaler
+		monitor monitorv1.ServiceMonitor
 	)
-	for _, r := range res.Resources() {
-		b, err := r.MarshalJSON()
+	for _, tmpl := range res.Resources() {
+		tmpl.SetNamespace(cur.Namespace)
+		b, err := tmpl.MarshalJSON()
 		if err != nil {
-			return err
+			return ctrl.Result{}, err
 		}
-		switch r.GetKind() {
+		log.Info("resource", "res", tmpl.GetKind())
+		switch tmpl.GetKind() {
 		case "Deployment":
 			if err := json.Unmarshal(b, &deploy); err != nil {
-				return err
+				return ctrl.Result{}, err
 			}
-			deploy.OwnerReferences = []metav1.OwnerReference{
-				metav1.OwnerReference{
-					APIVersion: cur.APIVersion,
-					Kind:       cur.Kind,
-					Name:       cur.Name,
-					UID:        cur.UID,
-				},
+			if err := controllerutil.SetControllerReference(cur, &deploy, r.Scheme); err != nil {
+				return ctrl.Result{}, err
 			}
-			*deploy.OwnerReferences[0].Controller = true
-			name := deploy.Namespace + "/" + deploy.Name
-			cfgAnno[clairv1alpha1.TemplateIndexerDeployment] = name
-			log.Info("new deployment", "ref", name)
 		case "Service":
 			if err := json.Unmarshal(b, &srv); err != nil {
-				return err
+				return ctrl.Result{}, err
 			}
-			srv.OwnerReferences = []metav1.OwnerReference{
-				metav1.OwnerReference{
-					APIVersion: cur.APIVersion,
-					Kind:       cur.Kind,
-					Name:       cur.Name,
-					UID:        cur.UID,
-				},
+			if err := controllerutil.SetControllerReference(cur, &srv, r.Scheme); err != nil {
+				return ctrl.Result{}, err
 			}
-			*srv.OwnerReferences[0].Controller = true
-			name := srv.Namespace + "/" + srv.Name
-			cfgAnno[clairv1alpha1.TemplateIndexerService] = name
-			log.Info("new service", "ref", name)
 		case "HorizontalPodAutoscaler":
 			if err := json.Unmarshal(b, &hpa); err != nil {
-				return err
+				return ctrl.Result{}, err
 			}
-			hpa.OwnerReferences = []metav1.OwnerReference{
-				metav1.OwnerReference{
-					APIVersion: cur.APIVersion,
-					Kind:       cur.Kind,
-					Name:       cur.Name,
-					UID:        cur.UID,
-				},
+			if err := controllerutil.SetControllerReference(cur, &hpa, r.Scheme); err != nil {
+				return ctrl.Result{}, err
 			}
-			*hpa.OwnerReferences[0].Controller = true
-			name := hpa.Namespace + "/" + hpa.Name
-			log.Info("new hpa", "ref", name)
+		case "ServiceMonitor":
+			if err := json.Unmarshal(b, &monitor); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := controllerutil.SetControllerReference(cur, &monitor, r.Scheme); err != nil {
+				return ctrl.Result{}, err
+			}
 		default:
-			log.Info("unknown resource", "kind", r.GetKind())
+			log.Info("unknown resource", "kind", tmpl.GetKind())
 		}
 	}
 
 	// Create the deployment and touch anything that needs to know its name.
 	if err := r.Client.Create(ctx, &deploy); err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
-	if err := next.Status.Deployment.From(&deploy); err != nil {
-		return err
+	if err := next.Status.AddRef(&deploy, r.Scheme); err != nil {
+		return ctrl.Result{}, err
 	}
+	if err := r.Client.Status().Update(ctx, next); err != nil {
+		return ctrl.Result{}, err
+	}
+	cfgAnno[clairv1alpha1.TemplateIndexerDeployment] = deploy.Namespace + "/" + deploy.Name
 	log.Info("created deployment", "ref", cfgAnno[clairv1alpha1.TemplateIndexerDeployment])
 
 	// Create the service and anything that needs to know its name.
 	if err := r.Client.Create(ctx, &srv); err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
-	if err := next.Status.Service.From(&srv); err != nil {
-		return err
+	if err := next.Status.AddRef(&srv, r.Scheme); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.Client.Status().Update(ctx, next); err != nil {
+		return ctrl.Result{}, err
 	}
 	cfgAnno[clairv1alpha1.TemplateIndexerService] = srv.Namespace + "/" + srv.Name
 	log.Info("created service", "ref", srv.Namespace+"/"+srv.Name)
 
-	/*
-		if r.options.Monitor {
-			// Create our metrics monitor.
-			monitor := monitorv1.ServiceMonitor{
-				ObjectMeta: mkMeta(serviceName, &cur.ObjectMeta),
-				Spec: monitorv1.ServiceMonitorSpec{
-					Endpoints: []monitorv1.Endpoint{
-						{
-							Port:     clairv1alpha1.PortIntrospection,
-							Scheme:   `http`,
-							Interval: (30 * time.Second).String(),
-						},
-					},
-					Selector: metav1.LabelSelector{MatchLabels: selectors},
-				},
-			}
-			*monitor.OwnerReferences[0].Controller = true
-			monitor.Labels[`k8s-app`] = cur.Name // This seems to be the standard? It's hard to tell.
-			if err := r.Client.Create(ctx, &monitor); err != nil {
-				return err
-			}
-			log.Info("created servicemonitor", "ref", monitor.Namespace+"/"+monitor.Name)
+	if r.options.HPA {
+		if err := r.Client.Create(ctx, &hpa); err != nil {
+			return ctrl.Result{}, err
 		}
-	*/
+		if err := next.Status.AddRef(&hpa, r.Scheme); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.Client.Status().Update(ctx, next); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("created hpa", "ref", hpa.Namespace+"/"+hpa.Name)
+	} else {
+		log.V(1).Info("skipping hpa creation")
+	}
 
-	// Purposefully grab the current version number?
+	if r.options.Monitor {
+		if err := r.Client.Create(ctx, &monitor); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := next.Status.AddRef(&monitor, r.Scheme); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.Client.Status().Update(ctx, next); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("created servicemonitor", "ref", monitor.Namespace+"/"+monitor.Name)
+	} else {
+		log.V(1).Info("skipping Monitor creation")
+	}
+
+	// Purposefully grab the current version number.
 	//
 	// Don't know if we'll see an update from the annotation changes.
 	next.Status.ConfigVersion = cfg.GetResourceVersion()
 	// Add a non-controlling owner ref so that we get notifications when things
 	// change.
-	cfg.SetOwnerReferences(append(cfg.GetOwnerReferences(), metav1.OwnerReference{
-		UID: cur.UID,
-	}))
+	if err := controllerutil.SetOwnerReference(cur, cfg, r.Scheme); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.Client.Update(ctx, cfg); err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
 	log.Info("config updated")
+	if err := r.Client.Status().Update(ctx, next); err != nil {
+		return ctrl.Result{}, err
+	}
+	log.Info("indexer updated")
 
-	return nil
+	return ctrl.Result{}, nil
+}
+
+func (r *IndexerReconciler) checkResources(ctx context.Context, cur *clairv1alpha1.Indexer, cfg *unstructured.Unstructured) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	log.Info("checking resources")
+	// Check annotations
+	a := cfg.GetAnnotations()
+	if a == nil {
+		a = make(map[string]string)
+	}
+	var (
+		deployName string
+		srvName    string
+		changed    bool
+	)
+	for _, r := range cur.Status.Refs {
+		switch r.Kind {
+		case "Deployment":
+			deployName = cur.Namespace + "/" + r.Name
+		case "Service":
+			srvName = cur.Namespace + "/" + r.Name
+		}
+	}
+	switch {
+	case deployName == "":
+		log.Info("missing deployment")
+	case a[clairv1alpha1.TemplateIndexerDeployment] != deployName:
+		log.Info("updating configuration deployment")
+		changed = true
+		a[clairv1alpha1.TemplateIndexerDeployment] = deployName
+	}
+	switch {
+	case srvName == "":
+		log.Info("missing service")
+	case a[clairv1alpha1.TemplateIndexerService] != srvName:
+		log.Info("updating configuration service")
+		changed = true
+		a[clairv1alpha1.TemplateIndexerService] = srvName
+	}
+	if changed {
+		cfg.SetAnnotations(a)
+		if err := r.Client.Update(ctx, cfg); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("updated config", "name", cfg.GetName())
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	var curStatus *metav1.Condition
+	for _, s := range cur.Status.Conditions {
+		if s.Type == `Available` {
+			curStatus = &s
+			break
+		}
+	}
+	// Check deployment Status
+	log.Info("checking refs")
+	cnd, err := r.CheckRefsAvailable(ctx, cur, cur.Status.Refs)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	switch {
+	case curStatus == nil:
+		next := cur.DeepCopy()
+		next.Status.Conditions = append(next.Status.Conditions, cnd)
+		if err := r.Client.Status().Update(ctx, next); err != nil {
+			return ctrl.Result{}, err
+		}
+	case curStatus.Reason != cnd.Reason:
+		log.V(1).Info("updating: dependent resources changed", "condition", cnd)
+		next := cur.DeepCopy()
+		// Can't strategic merge patch for... reasons? So modify this copy and
+		// make a normal patch.
+		for i, sc := range next.Status.Conditions {
+			if sc.Type == cnd.Type {
+				cnd.DeepCopyInto(&next.Status.Conditions[i])
+				break
+			}
+		}
+		if err := r.Client.Status().Update(ctx, next); err != nil {
+			return ctrl.Result{}, err
+		}
+	case curStatus.Reason == cnd.Reason:
+		log.V(1).Info("skipping update: dependent resources unchanged")
+	}
+
+	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

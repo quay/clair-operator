@@ -25,8 +25,10 @@ import (
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest"
 	appsv1 "k8s.io/api/apps/v1"
+	scalev2 "k8s.io/api/autoscaling/v2beta2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -63,6 +65,7 @@ func envSetup(ctx context.Context, t testing.TB) (context.Context, client.Client
 		clairv1alpha1.AddToScheme,
 		corev1.AddToScheme,
 		appsv1.AddToScheme,
+		scalev2.AddToScheme,
 	} {
 		if err := f(scheme); err != nil {
 			t.Fatal(err)
@@ -82,11 +85,13 @@ func envSetup(ctx context.Context, t testing.TB) (context.Context, client.Client
 	if err := (&IndexerReconciler{}).SetupWithManager(mgr); err != nil {
 		t.Fatal(err)
 	}
+	mgrctx, mgrdone := context.WithCancel(ctx)
 	go func() {
-		if err := mgr.Start(ctx); err != nil {
-			t.Error(err)
+		if err := mgr.Start(mgrctx); err != nil {
+			t.Errorf("error from Manager.Start: %v", err)
 		}
 	}()
+	t.Cleanup(mgrdone)
 
 	return ctx, mgr.GetClient()
 }
@@ -109,6 +114,37 @@ func configSetup(ctx context.Context, t testing.TB, c client.Client) *clairv1alp
 	return &clairv1alpha1.ConfigReference{
 		Name:     cfg.GetName(),
 		APIGroup: new(string), // APIGroup is "core", e.g. empty
-		Kind:     cfg.TypeMeta.Kind,
+		Kind:     "ConfigMap",
+	}
+}
+
+func markDeploymentAvailable(ctx context.Context, t testing.TB, c client.Client, cur client.Object, refs []corev1.TypedLocalObjectReference) {
+	n := types.NamespacedName{
+		Namespace: cur.GetNamespace(),
+	}
+	for _, ref := range refs {
+		if ref.Kind != "Deployment" {
+			continue
+		}
+		n.Name = ref.Name
+		var d appsv1.Deployment
+		if err := c.Get(ctx, n, &d); err != nil {
+			t.Error(err)
+			return
+		}
+		upd := d.DeepCopy()
+		upd.Status.Conditions = append(upd.Status.Conditions, appsv1.DeploymentCondition{
+			Type:   appsv1.DeploymentAvailable,
+			Status: corev1.ConditionTrue,
+			Reason: "TestTransition",
+		})
+		if err := c.Status().Update(ctx, upd); err != nil {
+			t.Error(err)
+			return
+		}
+		break
+	}
+	if n.Name == "" {
+		t.Errorf("unable to find Deployment ref on %q", cur.GetName())
 	}
 }

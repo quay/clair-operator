@@ -3,8 +3,10 @@ package controllers
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/kustomize/api/filesys"
 	"sigs.k8s.io/kustomize/api/krusty"
 	"sigs.k8s.io/kustomize/api/resid"
 	"sigs.k8s.io/kustomize/api/resmap"
@@ -15,12 +17,37 @@ import (
 
 type kustomize struct {
 	*krusty.Kustomizer
+	fs filesys.FileSystem
 }
 
-func newKustomize() *kustomize {
+func newKustomize() (*kustomize, error) {
+	tfs := filesys.MakeFsInMemory()
+	sub, err := fs.Sub(templates, "templates")
+	if err != nil {
+		return nil, err
+	}
+	err = fs.WalkDir(sub, ".", func(n string, d fs.DirEntry, err error) error {
+		if d.IsDir() {
+			return tfs.Mkdir(n)
+		}
+		b, err := fs.ReadFile(sub, n)
+		if err != nil {
+			return err
+		}
+		if err := tfs.WriteFile(n, b); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	opts := krusty.MakeDefaultOptions()
 	k := krusty.MakeKustomizer(opts)
-	return &kustomize{k}
+	return &kustomize{
+		Kustomizer: k,
+		fs:         tfs,
+	}, nil
 }
 
 func findDeployment(r resid.ResId) bool {
@@ -34,7 +61,7 @@ func findDeployment(r resid.ResId) bool {
 }
 
 func (k *kustomize) run(cfg *unstructured.Unstructured, which string) (resmap.ResMap, error) {
-	res, err := k.Kustomizer.Run(templatesFS, which)
+	res, err := k.Kustomizer.Run(k.fs, which)
 	if err != nil {
 		return nil, fmt.Errorf("kustomize: run error: %w", err)
 	}

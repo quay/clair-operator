@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
@@ -30,10 +31,16 @@ type ServiceReconciler struct {
 	Log     logr.Logger
 	Scheme  *runtime.Scheme
 	options optionalTypes
+	k       *kustomize
 }
 
 // SetupService sets up the controller with the Manager.
 func (r *ServiceReconciler) SetupService(mgr ctrl.Manager, apiType client.Object) (*builder.Builder, error) {
+	k, err := newKustomize()
+	if err != nil {
+		return nil, err
+	}
+	r.k = k
 	r.Client = mgr.GetClient()
 	r.Scheme = mgr.GetScheme()
 	b := ctrl.NewControllerManagedBy(mgr).
@@ -79,7 +86,17 @@ func (r *ServiceReconciler) SetupService(mgr ctrl.Manager, apiType client.Object
 }
 
 func (r *ServiceReconciler) config(ctx context.Context, ns string, ref *clairv1alpha1.ConfigReference) (*unstructured.Unstructured, error) {
+	log := logf.FromContext(ctx)
+	log.V(1).Info("looking up ref", "kind", ref.Kind, "name", ref.Name)
+	if ref.Kind != "Secret" && ref.Kind != "ConfigMap" {
+		return nil, fmt.Errorf("incorrect type pointed to by configReference: %q", ref.Kind)
+	}
+
 	var cfg unstructured.Unstructured
+	cfg.SetGroupVersionKind(schema.GroupVersionKind{
+		Version: "v1",
+		Kind:    ref.Kind,
+	})
 	name := types.NamespacedName{
 		Namespace: ns,
 		Name:      ref.Name,
@@ -87,12 +104,9 @@ func (r *ServiceReconciler) config(ctx context.Context, ns string, ref *clairv1a
 	if err := r.Client.Get(ctx, name, &cfg); err != nil {
 		return nil, err
 	}
-	kind := cfg.GroupVersionKind().Kind
+	kind := cfg.GetKind()
 	if want := ref.Kind; kind != want {
 		return nil, fmt.Errorf("unknown type pointed to by configReference: %q; wanted %q", kind, want)
-	}
-	if kind != "Secret" && kind != "ConfigMap" {
-		return nil, fmt.Errorf("incorrect type pointed to by configReference: %q", kind)
 	}
 	return &cfg, nil
 }
@@ -108,4 +122,53 @@ func conditionMap(cs []metav1.Condition, ts []string) map[string]metav1.Conditio
 		}
 	}
 	return m
+}
+
+func (r *ServiceReconciler) CheckRefsAvailable(ctx context.Context, cur client.Object, refs []corev1.TypedLocalObjectReference) (metav1.Condition, error) {
+	log := logf.FromContext(ctx)
+	rc := metav1.Condition{
+		Type:               "Available",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: cur.GetGeneration(),
+		LastTransitionTime: metav1.Now(),
+	}
+	n := types.NamespacedName{
+		Namespace: cur.GetNamespace(),
+	}
+	for _, ref := range refs {
+		var ready bool
+		var reason string
+		n.Name = ref.Name
+		switch ref.Kind {
+		case "Deployment":
+			reason = `DeploymentUnavailable`
+			var d appsv1.Deployment
+			if err := r.Client.Get(ctx, n, &d); err != nil {
+				rc.Reason = reason
+				rc.Message = err.Error()
+				return rc, err
+			}
+			for _, cnd := range d.Status.Conditions {
+				log.V(1).Info("examining Deployment", "name", d.Name, "condition", cnd)
+				if cnd.Type == appsv1.DeploymentAvailable && cnd.Status == corev1.ConditionTrue {
+					ready = true
+					break
+				}
+			}
+		case "Service":
+			// Services are always OK
+			ready = true
+		default:
+			log.V(1).Info("skipping ref", "kind", ref.Kind, "name", ref.Name)
+			continue
+		}
+		if !ready {
+			rc.Reason = reason
+			log.V(1).Info("not ready", "condition", rc)
+			return rc, nil
+		}
+	}
+	rc.Status = metav1.ConditionTrue
+	rc.Reason = `RefsAvailable`
+	return rc, nil
 }

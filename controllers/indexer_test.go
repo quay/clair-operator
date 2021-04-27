@@ -38,9 +38,9 @@ func TestIndexer(t *testing.T) {
 	timeout := time.After(time.Minute)
 	interval := time.NewTicker(time.Second)
 	defer interval.Stop()
-	var err error
 Retry:
-	for {
+	for ct := 0; ; ct++ {
+		var err error
 		select {
 		case <-timeout:
 			t.Error("timeout")
@@ -50,9 +50,41 @@ Retry:
 		}
 		if err != nil {
 			t.Log(err)
-		} else {
+			continue
+		}
+		if len(created.Status.Refs) == 0 {
+			t.Log("no refs on object")
+		}
+		t.Logf("status: %+v", created.Status)
+		var status *metav1.Condition
+		for _, s := range created.Status.Conditions {
+			if s.Type == `Available` {
+				status = &s
+				break
+			}
+		}
+		if status == nil {
+			t.Log("no status")
+			continue
+		}
+		if status.Status == metav1.ConditionTrue {
+			t.Log("indexer marked available")
 			break Retry
+		}
+		switch status.Reason {
+		case `DeploymentUnavailable`:
+			t.Log("marking Deployment available")
+			markDeploymentAvailable(ctx, t, c, &created, created.Status.Refs)
+		default:
+			t.Errorf("unknown reason: %q", status.Reason)
+		}
+		if ct > 10 {
+			t.Fatal("more than 10 loops, something's up")
 		}
 	}
 	t.Logf("looked up: %q", created.GetName())
+
+	for _, ref := range created.Status.Refs {
+		t.Logf("found: %v", ref)
+	}
 }

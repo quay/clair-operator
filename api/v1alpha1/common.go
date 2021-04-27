@@ -58,24 +58,14 @@ const (
 	PortIntrospection = `introspection`
 )
 
-func findCondition(cs []metav1.Condition, t string) ([]metav1.Condition, *metav1.Condition) {
-	var c *metav1.Condition
+func findCondition(cs []metav1.Condition, t string) (c *metav1.Condition) {
 	for i := range cs {
 		if cs[i].Type == t {
 			c = &cs[i]
 			break
 		}
 	}
-	if c == nil {
-		l := len(cs)
-		cs = append(cs, metav1.Condition{
-			Type:               t,
-			Status:             metav1.ConditionUnknown,
-			LastTransitionTime: metav1.Now(),
-		})
-		c = &cs[l]
-	}
-	return cs, c
+	return
 }
 
 // ConfigReference is a reference to a ConfigMap or Secret resource with the
