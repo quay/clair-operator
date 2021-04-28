@@ -114,7 +114,7 @@ func (r *IndexerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if cur.Spec.Config == nil {
 		next := cur.DeepCopy()
 		next.Status.Conditions = append(next.Status.Conditions, metav1.Condition{
-			Type:               clairv1alpha1.IndexerAvailable,
+			Type:               clairv1alpha1.ServiceAvailable,
 			ObservedGeneration: cur.Generation,
 			LastTransitionTime: metav1.Now(),
 			Status:             metav1.ConditionFalse,
@@ -340,7 +340,7 @@ func (r *IndexerReconciler) checkResources(ctx context.Context, cur *clairv1alph
 
 	var curStatus *metav1.Condition
 	for _, s := range cur.Status.Conditions {
-		if s.Type == `Available` {
+		if s.Type == clairv1alpha1.ServiceAvailable {
 			curStatus = &s
 			break
 		}
@@ -361,8 +361,6 @@ func (r *IndexerReconciler) checkResources(ctx context.Context, cur *clairv1alph
 	case curStatus.Reason != cnd.Reason:
 		log.V(1).Info("updating: dependent resources changed", "condition", cnd)
 		next := cur.DeepCopy()
-		// Can't strategic merge patch for... reasons? So modify this copy and
-		// make a normal patch.
 		for i, sc := range next.Status.Conditions {
 			if sc.Type == cnd.Type {
 				cnd.DeepCopyInto(&next.Status.Conditions[i])

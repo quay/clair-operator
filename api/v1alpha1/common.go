@@ -49,6 +49,14 @@ const (
 	TemplateNotifierDeployment = `clair.projectquay.io/template-notifier-deployment`
 )
 
+// Condition types ...
+const (
+	ServiceAvailable           = `Available`
+	ServiceRedeploying         = `clair.projectquay.io/Redeploying`
+	ServiceServiceAvailable    = `clair.projectquay.io/ServiceAvailable`
+	ServicedeploymentAvailable = `clair.projectquay.io/DeploymentAvailable`
+)
+
 // Pod port names.
 //
 // These are defined here because various components expect to be able to

@@ -127,7 +127,7 @@ func conditionMap(cs []metav1.Condition, ts []string) map[string]metav1.Conditio
 func (r *ServiceReconciler) CheckRefsAvailable(ctx context.Context, cur client.Object, refs []corev1.TypedLocalObjectReference) (metav1.Condition, error) {
 	log := logf.FromContext(ctx)
 	rc := metav1.Condition{
-		Type:               "Available",
+		Type:               clairv1alpha1.ServiceAvailable,
 		Status:             metav1.ConditionFalse,
 		ObservedGeneration: cur.GetGeneration(),
 		LastTransitionTime: metav1.Now(),

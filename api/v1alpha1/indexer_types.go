@@ -79,13 +79,6 @@ func (s *IndexerStatus) AddRef(obj metav1.Object, scheme *runtime.Scheme) error 
 	return nil
 }
 
-const (
-	IndexerAvailable           = `Available`
-	ServiceRedeploying         = `clair.projectquay.io/Redeploying`
-	IndexerServiceAvailable    = `clair.projectquay.io/ServiceAvailable`
-	IndexerDeploymentAvailable = `clair.projectquay.io/DeploymentAvailable`
-)
-
 type IndexerConditionReason string
 
 // Available reasons:
