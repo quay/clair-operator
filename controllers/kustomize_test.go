@@ -26,12 +26,14 @@ func TestTemplate(t *testing.T) {
 
 	tt := []struct {
 		name string
-		mk   func(cfg configObject) (resmap.ResMap, error)
+		mk   func(cfg configObject, img string) (resmap.ResMap, error)
+		img  string
 		gold string
 	}{
 		{
 			name: "Indexer",
 			mk:   k.Indexer,
+			img:  "test/image:tag",
 			gold: "testdata/want.indexer.yaml",
 		},
 	}
@@ -49,7 +51,7 @@ func TestTemplate(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			res, err := tc.mk(cfg)
+			res, err := tc.mk(cfg, tc.img)
 			if err != nil {
 				t.Error(err)
 			}

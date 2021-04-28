@@ -152,10 +152,6 @@ func (r *IndexerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 }
 
 func (r *IndexerReconciler) indexerTemplates(ctx context.Context, cur *clairv1alpha1.Indexer, cfg *unstructured.Unstructured) (ctrl.Result, error) {
-	const (
-		// TODO(hank) Allow configuration, by environment variable?
-		img = `quay.io/projectquay/clair:4.0.0`
-	)
 	log := logf.FromContext(ctx)
 	next := cur.DeepCopy()
 
@@ -164,7 +160,7 @@ func (r *IndexerReconciler) indexerTemplates(ctx context.Context, cur *clairv1al
 		cfgAnno = make(map[string]string)
 	}
 
-	res, err := r.k.Indexer(cfg)
+	res, err := r.k.Indexer(cfg, "") // TODO(hank) Allow changing image
 	if err != nil {
 		return ctrl.Result{}, err
 	}

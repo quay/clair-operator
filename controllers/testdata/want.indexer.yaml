@@ -46,7 +46,7 @@ spec:
           value: /run/clair
         - name: CLAIR_CONF
           value: /etc/clair.yaml
-        image: clair:latest
+        image: test/image:tag
         livenessProbe:
           httpGet:
             path: /healthz
