@@ -1,0 +1,16 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: matcher
+  template:
+    spec:
+      containers:
+        - name: clair
+          env:
+            - name: CLAIR_MODE
+              value: matcher
