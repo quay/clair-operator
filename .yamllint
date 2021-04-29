@@ -1,2 +1,27 @@
 ---
 extends: default
+
+rules:
+  comments:
+    require-starting-space: false
+  indentation:
+    spaces: 2
+    indent-sequences: consistent
+  line-length:
+    max: 100
+    allow-non-breakable-words: true
+    allow-non-breakable-inline-mappings: false
+    ignore: |
+      /config/crd/bases
+      /bundle
+      **/testdata/*.yaml
+  empty-lines:
+    max: 2
+    max-start: 2
+    max-end: 2
+  document-start:
+    ignore: |
+      **/testdata/*.yaml
+      /packagemanifests
+      /config
+      /bundle

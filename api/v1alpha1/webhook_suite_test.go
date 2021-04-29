@@ -275,7 +275,7 @@ func (s *secretConfig) SetItem(key, val string) {
 }
 
 var (
-	//go:embed testdata/notyaml.yaml
+	//go:embed testdata/notyaml
 	invalidYAML string
 	//go:embed testdata/invalid.yaml
 	invalidConfig string
