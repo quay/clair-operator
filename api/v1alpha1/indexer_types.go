@@ -35,6 +35,9 @@ type IndexerSpec struct {
 
 	// Config ...
 	Config *ConfigReference `json:"configRef,omitempty"`
+
+	// ImageOverride ...
+	ImageOverride *string `json:"imageOverride,omitempty"`
 }
 
 // IndexerStatus defines the observed state of Indexer
@@ -60,6 +63,7 @@ type IndexerStatus struct {
 	Refs []corev1.TypedLocalObjectReference `json:"refs,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
 
 	ConfigVersion string `json:"configVersion,omitempty"`
+	Image         string `json:"image,omitempty"`
 }
 
 func (s *IndexerStatus) AddRef(obj metav1.Object, scheme *runtime.Scheme) error {
