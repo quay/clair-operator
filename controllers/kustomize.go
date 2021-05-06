@@ -65,6 +65,9 @@ func findDeployment(r resid.ResId) bool {
 }
 
 func (k *kustomize) run(cfg *unstructured.Unstructured, which string, image string) (resmap.ResMap, error) {
+	if image == "" {
+		image = DefaultImage
+	}
 	res, err := k.Kustomizer.Run(k.fs, which)
 	if err != nil {
 		return nil, fmt.Errorf("kustomize: run error: %w", err)
@@ -146,22 +149,13 @@ func (k *kustomize) run(cfg *unstructured.Unstructured, which string, image stri
 }
 
 func (k *kustomize) Indexer(cfg configObject, image string) (resmap.ResMap, error) {
-	if image == "" {
-		image = DefaultImage
-	}
 	return k.run(cfg, "indexer", image)
 }
 
 func (k *kustomize) Matcher(cfg configObject, image string) (resmap.ResMap, error) {
-	if image == "" {
-		image = DefaultImage
-	}
 	return k.run(cfg, "matcher", image)
 }
 
 func (k *kustomize) Notifier(cfg configObject, image string) (resmap.ResMap, error) {
-	if image == "" {
-		image = DefaultImage
-	}
 	return k.run(cfg, "notifier", image)
 }

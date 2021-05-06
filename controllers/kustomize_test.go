@@ -17,37 +17,68 @@ func TestTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := &unstructured.Unstructured{}
-	cfg.SetGroupVersionKind(schema.GroupVersionKind{
-		Version: "v1",
-		Kind:    "ConfigMap",
+
+	t.Run("ConfigMap", func(t *testing.T) {
+		var cfg unstructured.Unstructured
+		cfg.SetGroupVersionKind(schema.GroupVersionKind{
+			Version: "v1",
+			Kind:    "ConfigMap",
+		})
+		cfg.SetName("injected-cfg")
+		for _, tc := range []templateTestcase{
+			{
+				Name: "Indexer",
+				Mk:   k.Indexer,
+				Img:  "test/image:tag",
+				Want: "testdata/want.config.indexer.yaml",
+			},
+			{
+				Name: "Matcher",
+				Mk:   k.Matcher,
+				Img:  "test/image:tag",
+				Want: "testdata/want.config.matcher.yaml",
+			},
+			{
+				Name: "Notifier",
+				Mk:   k.Notifier,
+				Img:  "test/image:tag",
+				Want: "testdata/want.config.notifier.yaml",
+			},
+		} {
+			t.Run(tc.Name, tc.Run(&cfg))
+		}
 	})
-	cfg.SetName("injected-cfg")
 
-	tt := []templateTestcase{
-		{
-			Name: "Indexer",
-			Mk:   k.Indexer,
-			Img:  "test/image:tag",
-			Want: "testdata/want.indexer.yaml",
-		},
-		{
-			Name: "Matcher",
-			Mk:   k.Matcher,
-			Img:  "test/image:tag",
-			Want: "testdata/want.matcher.yaml",
-		},
-		{
-			Name: "Notifier",
-			Mk:   k.Notifier,
-			Img:  "test/image:tag",
-			Want: "testdata/want.notifier.yaml",
-		},
-	}
-
-	for _, tc := range tt {
-		t.Run(tc.Name, tc.Run(cfg))
-	}
+	t.Run("Secret", func(t *testing.T) {
+		var cfg unstructured.Unstructured
+		cfg.SetGroupVersionKind(schema.GroupVersionKind{
+			Version: "v1",
+			Kind:    "Secret",
+		})
+		cfg.SetName("injected-secret")
+		for _, tc := range []templateTestcase{
+			{
+				Name: "Indexer",
+				Mk:   k.Indexer,
+				Img:  "test/image:tag",
+				Want: "testdata/want.secret.indexer.yaml",
+			},
+			{
+				Name: "Matcher",
+				Mk:   k.Matcher,
+				Img:  "test/image:tag",
+				Want: "testdata/want.secret.matcher.yaml",
+			},
+			{
+				Name: "Notifier",
+				Mk:   k.Notifier,
+				Img:  "test/image:tag",
+				Want: "testdata/want.secret.notifier.yaml",
+			},
+		} {
+			t.Run(tc.Name, tc.Run(&cfg))
+		}
+	})
 }
 
 type templateTestcase struct {

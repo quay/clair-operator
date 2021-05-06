@@ -111,19 +111,6 @@ func (r *ServiceReconciler) config(ctx context.Context, ns string, ref *clairv1a
 	return &cfg, nil
 }
 
-func conditionMap(cs []metav1.Condition, ts []string) map[string]metav1.ConditionStatus {
-	m := make(map[string]metav1.ConditionStatus, len(ts))
-	for _, t := range ts {
-		m[t] = metav1.ConditionUnknown
-	}
-	for _, c := range cs {
-		if _, ok := m[c.Type]; ok {
-			m[c.Type] = c.Status
-		}
-	}
-	return m
-}
-
 func (r *ServiceReconciler) CheckRefsAvailable(ctx context.Context, cur client.Object, refs []corev1.TypedLocalObjectReference) (metav1.Condition, error) {
 	log := logf.FromContext(ctx)
 	rc := metav1.Condition{
