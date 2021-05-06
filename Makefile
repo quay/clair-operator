@@ -109,7 +109,7 @@ bin/controller-gen: go.mod
 KUSTOMIZE = $(shell pwd)/bin/kustomize
 kustomize: bin/kustomize
 bin/kustomize: go.mod
-	GOBIN=$(shell git rev-parse --show-toplevel)/bin go install sigs.k8s.io/kustomize/kustomize/v3
+	GOBIN=$(shell git rev-parse --show-toplevel)/bin go install sigs.k8s.io/kustomize/kustomize/v4
 
 # Generate bundle manifests and metadata, then validate generated files.
 .PHONY: bundle
