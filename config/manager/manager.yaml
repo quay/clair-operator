@@ -30,6 +30,9 @@ spec:
             - /manager
           args:
             - --leader-elect
+          env:
+            - name: RELATED_IMAGE_CLAIR
+              value: quay.io/projectquay/clair:latest
           image: controller:latest
           name: manager
           securityContext:

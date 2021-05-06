@@ -39,7 +39,7 @@ patchesStrategicMerge:
 
   # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK]
   # prefix including the one in crd/kustomization.yaml
-  #- manager_webhook_patch.yaml
+  #- manager_webhook_patch.yaml # doesn't exist?
 
   # [CERTMANAGER] To enable cert-manager, uncomment all sections with
   # 'CERTMANAGER'.

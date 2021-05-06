@@ -4,19 +4,19 @@
 # package.
 # It should be run by config/default
 resources:
-  - bases/clair.projectquay.io_clairs.yaml
-  - bases/clair.projectquay.io_indexers.yaml
-  - bases/clair.projectquay.io_matchers.yaml
-  - bases/clair.projectquay.io_notifiers.yaml
+- bases/clair.projectquay.io_clairs.yaml
+- bases/clair.projectquay.io_indexers.yaml
+- bases/clair.projectquay.io_matchers.yaml
+- bases/clair.projectquay.io_notifiers.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patchesStrategicMerge:
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix.
 # patches here are for enabling the conversion webhook for each CRD
-#- patches/webhook_in_clairs.yaml
-#- patches/webhook_in_indexers.yaml
-#- patches/webhook_in_matchers.yaml
-#- patches/webhook_in_notifiers.yaml
+- patches/webhook_in_clairs.yaml
+- patches/webhook_in_indexers.yaml
+- patches/webhook_in_matchers.yaml
+- patches/webhook_in_notifiers.yaml
 # +kubebuilder:scaffold:crdkustomizewebhookpatch
 
 # [CERTMANAGER] To enable webhook, uncomment all the sections with [CERTMANAGER]
@@ -31,4 +31,4 @@ patchesStrategicMerge:
 # the following config is for teaching kustomize how to do kustomization for
 # CRDs.
 configurations:
-  - kustomizeconfig.yaml
+- kustomizeconfig.yaml

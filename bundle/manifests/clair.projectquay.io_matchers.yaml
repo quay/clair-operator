@@ -6,6 +6,15 @@ metadata:
   creationTimestamp: null
   name: matchers.clair.projectquay.io
 spec:
+  conversion:
+    strategy: Webhook
+    webhook:
+      clientConfig:
+        service:
+          name: clair-webhook-service
+          namespace: clair-system
+          path: /convert
+      conversionReviewVersions: null
   group: clair.projectquay.io
   names:
     kind: Matcher

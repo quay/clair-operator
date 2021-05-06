@@ -119,6 +119,9 @@ spec:
                 - --leader-elect
                 command:
                 - /manager
+                env:
+                - name: RELATED_IMAGE_CLAIR
+                  value: quay.io/projectquay/clair:latest
                 image: controller:latest
                 livenessProbe:
                   httpGet:
@@ -165,6 +168,19 @@ spec:
   - email: hdonnay@redhat.com
     name: Hank Donnay
   maturity: alpha
+  nativeAPIs:
+  - group: apps
+    kind: Deployment
+    version: v1
+  - group: ""
+    kind: ConfigMap
+    version: v1
+  - group: ""
+    kind: Secret
+    version: v1
+  - group: ""
+    kind: Service
+    version: v1
   provider:
     name: The Clair Authors
     url: https://quay.github.io/clair
