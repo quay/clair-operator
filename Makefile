@@ -13,8 +13,6 @@ BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
-# Produce CRDs that work back to Kubernetes 1.11 (no version conversion)
-CRD_OPTIONS ?= "crd:trivialVersions=true,preserveUnknownFields=false"
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -28,36 +26,35 @@ all: manager
 # Run tests
 ENVTEST_ASSETS_DIR=$(shell pwd)/testbin
 .PHONY: test
-test: generate fmt vet manifests $(ENVTEST_ASSETS_DIR)/setup-envtest.sh
+test: generate
+	go fmt ./...
+	go vet ./...
 	source ${ENVTEST_ASSETS_DIR}/setup-envtest.sh;\
 		fetch_envtest_tools $(ENVTEST_ASSETS_DIR);\
 		setup_envtest_env $(ENVTEST_ASSETS_DIR);\
 		go test ./... -coverprofile cover.out
 
-$(ENVTEST_ASSETS_DIR):
-	mkdir $(ENVTEST_ASSETS_DIR)
-
-$(ENVTEST_ASSETS_DIR)/setup-envtest.sh: $(ENVTEST_ASSETS_DIR)
-	curl -sSLo $@ https://raw.githubusercontent.com/kubernetes-sigs/controller-runtime/v0.7.0/hack/setup-envtest.sh
+testbin/setup-envtest.sh: go.mod
+	curl -sSLo $@ https://raw.githubusercontent.com/kubernetes-sigs/controller-runtime/$$(go list -m sigs.k8s.io/controller-runtime | awk '{print $$2}')/hack/setup-envtest.sh
 
 # Build manager binary
-manager: generate fmt vet
+manager: generate
 	go build -o bin/manager main.go
 
 # Run against the configured Kubernetes cluster in ~/.kube/config
-run: generate fmt vet manifests
+run: generate
 	go run ./main.go
 
 # Install CRDs into a cluster
-install: manifests kustomize
+install: manifests bin/kustomize
 	$(KUSTOMIZE) build config/crd | kubectl apply -f -
 
 # Uninstall CRDs from a cluster
-uninstall: manifests kustomize
+uninstall: manifests bin/kustomize
 	$(KUSTOMIZE) build config/crd | kubectl delete -f -
 
 # Deploy controller in the configured Kubernetes cluster in ~/.kube/config
-deploy: manifests kustomize
+deploy: manifests bin/kustomize
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	$(KUSTOMIZE) build config/default | kubectl apply -f -
 
@@ -65,31 +62,10 @@ deploy: manifests kustomize
 undeploy:
 	$(KUSTOMIZE) build config/default | kubectl delete -f -
 
-# Generate manifests e.g. CRD, RBAC etc.
-.PHONY: manifests
-manifests: controller-gen
-	$(CONTROLLER_GEN)\
-		$(CRD_OPTIONS)\
-		rbac:roleName=manager-role webhook\
-		paths="./..."\
-		output:crd:artifacts:config=config/crd/bases
-
-# Run go fmt against code
-.PHONY: fmt
-fmt:
-	go fmt ./...
-
-# Run go vet against code
-.PHONY: vet
-vet:
-	go vet ./...
-
-# Generate code
+# Generate code and manifests e.g. CRD, RBAC etc.
 .PHONY: generate
-generate: controller-gen
-	$(CONTROLLER_GEN)\
-		object:headerFile="hack/boilerplate.go.txt"\
-		paths="./..."
+generate:
+	go generate -x ./...
 
 # Build the docker image
 docker-build: test
@@ -107,13 +83,12 @@ bin/controller-gen: go.mod
 
 # Download kustomize locally if necessary
 KUSTOMIZE = $(shell pwd)/bin/kustomize
-kustomize: bin/kustomize
 bin/kustomize: go.mod
 	GOBIN=$(shell git rev-parse --show-toplevel)/bin go install sigs.k8s.io/kustomize/kustomize/v4
 
 # Generate bundle manifests and metadata, then validate generated files.
 .PHONY: bundle
-bundle: manifests kustomize
+bundle: bin/kustomize
 	operator-sdk generate kustomize manifests -q
 	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
 	$(KUSTOMIZE) build config/manifests | operator-sdk generate bundle -q --overwrite --version $(VERSION) $(BUNDLE_METADATA_OPTS)
