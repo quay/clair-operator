@@ -38,6 +38,11 @@ spec:
               value: /run/clair
             - name: CLAIR_CONF
               value: /etc/clair.yaml
+            - name: GOMAXPROCS
+              valueFrom:
+                resourceFieldRef:
+                  containerName: clair
+                  resource: requests.cpu
           volumeMounts:
             - name: run
               mountPath: /run/clair
@@ -47,6 +52,9 @@ spec:
           workingDir: /run/clair
           securityContext:
             allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: "1"
           startupProbe:
             tcpSocket:
               port: http
