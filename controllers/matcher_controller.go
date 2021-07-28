@@ -19,7 +19,11 @@ package controllers
 import (
 	"context"
 
+	k8serr "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	clairv1alpha1 "github.com/quay/clair-operator/api/v1alpha1"
 )
@@ -48,15 +52,67 @@ type MatcherReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.7.0/pkg/reconcile
 func (r *MatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = r.Log.WithValues("matcher", req.NamespacedName)
+	log := r.Log.WithValues("matcher", req.NamespacedName)
+	ctx = logf.IntoContext(ctx, log)
+	log.Info("start")
+	defer log.Info("done")
+	var (
+		cur clairv1alpha1.Matcher
+		res ctrl.Result
+	)
+	err := r.Client.Get(ctx, req.NamespacedName, &cur)
+	switch {
+	case err == nil:
+	case k8serr.IsNotFound(err):
+		// ???
+		return res, nil
+	default:
+		return res, client.IgnoreNotFound(err)
+	}
 
-	// your logic here
+	if cur.Spec.Config == nil {
+		next := cur.DeepCopy()
+		next.Status.Conditions = append(next.Status.Conditions, metav1.Condition{
+			Type:               clairv1alpha1.ServiceAvailable,
+			ObservedGeneration: cur.Generation,
+			LastTransitionTime: metav1.Now(),
+			Status:             metav1.ConditionFalse,
+			Reason:             "InvalidSpec",
+			Message:            `spec missing "config"`,
+		})
 
-	return ctrl.Result{}, nil
+		if err := r.Client.Status().Update(ctx, next); err != nil {
+			return res, err
+		}
+		return res, nil
+	}
+
+	cfg, err := r.config(ctx, cur.Namespace, cur.Spec.Config)
+	if err != nil {
+		return res, err
+	}
+	configChanged := cfg.GetResourceVersion() != cur.Status.ConfigVersion
+	emptyRefs := len(cur.Status.Refs) == 0
+	switch {
+	case configChanged && emptyRefs:
+		log.Info("initial run")
+		fallthrough
+	case !configChanged && emptyRefs:
+		log.Info("inflating templates")
+		return r.InflateTemplates(ctx, &cur, cur.DeepCopy(), cfg)
+	case configChanged && !emptyRefs:
+		log.Info("need to check resources")
+		return r.CheckResources(ctx, &cur, cur.DeepCopy(), cfg)
+	case !configChanged && !emptyRefs:
+		log.Info("unsure why the controller was notified")
+		return res, nil
+	}
+	return res, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *MatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Log = mgr.GetLogger().WithName("Matcher")
 	b, err := r.SetupService(mgr, &clairv1alpha1.Matcher{})
 	if err != nil {
 		return err

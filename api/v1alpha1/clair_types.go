@@ -17,13 +17,11 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
-// ClairSpec defines the desired state of Clair
+// ClairSpec defines the desired state of Clair.
 type ClairSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
@@ -36,26 +34,28 @@ type ClairSpec struct {
 	Databases *Databases `json:"databases,omitempty"`
 
 	// Notifier ...
+	//
+	// If not provided, a notifier will not be provisioned.
 	// +optional
 	Notifier *NotifierConfig `json:"notifier,omitempty"`
 }
 
-// Databases indicates where
+// Databases ...
 type Databases struct {
 	// +kubebuilder:validation:Required
 
 	// Indexer ...
-	Indexer RefURI `json:"indexer"`
+	Indexer *RefURI `json:"indexer,omitempty"`
 
 	// +kubebuilder:validation:Required
 
 	// Matcher ...
-	Matcher RefURI `json:"matcher"`
+	Matcher *RefURI `json:"matcher,omitempty"`
 
 	// +kubebuilder:validation:Required
 
 	// Notifier ...
-	Notifier RefURI `json:"notifier"`
+	Notifier *RefURI `json:"notifier,omitempty"`
 }
 
 type NotifierConfig struct {
@@ -142,15 +142,28 @@ type ClairStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// Condition ...
-	Condition []ClairCondition `json:"condition,omitempty"`
+	// Conditions ...
+	//
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+
+	// Refs ...
+	//
+	// +patchMergeKey=name
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=name
+	Refs []corev1.TypedLocalObjectReference `json:"refs,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
+
+	// The below are set by the operator as things are configured and ready.
 
 	// Endpoint ...
 	Endpoint string `json:"endpoint,omitempty"`
-
 	// Config ...
 	Config *ConfigReference `json:"config,omitempty"`
-
 	// Database ...
 	Database *ServiceRef `json:"database,omitempty"`
 	// Indexer ...
@@ -160,77 +173,6 @@ type ClairStatus struct {
 	// Notifier ...
 	Notifier *ServiceRef `json:"notifier,omitempty"`
 }
-
-func (c *Clair) SetCondition(t ClairConditionType, s metav1.ConditionStatus, r ClairConditionReason, msg string) {
-	now := metav1.Now()
-	cs := c.Status.Condition
-	var cnd *ClairCondition
-	for i := range cs {
-		if cs[i].Type == t {
-			cnd = &cs[i]
-			break
-		}
-	}
-	if cnd == nil {
-		c.Status.Condition = append(c.Status.Condition, ClairCondition{
-			Type:   t,
-			Status: metav1.ConditionUnknown,
-		})
-	}
-
-	if cnd.Status != s {
-		cnd.Status = s
-		cnd.LastTransitionTime = &now
-	}
-	if s == metav1.ConditionTrue && *cnd.Reason != r {
-		cnd.Reason = &r
-		cnd.LastUpdateTime = &now
-	}
-	if msg != "" {
-		cnd.Message = &msg
-		cnd.LastUpdateTime = &now
-	}
-}
-
-func (c *Clair) GetCondition(t ClairConditionType) *ClairCondition {
-	cs := c.Status.Condition
-	for i := range cs {
-		if cs[i].Type == t {
-			return &cs[i]
-		}
-	}
-	return nil
-}
-
-type ClairCondition struct {
-	Type   ClairConditionType     `json:"type"`
-	Status metav1.ConditionStatus `json:"status"`
-
-	// +optional
-	Reason *ClairConditionReason `json:"reason,omitempty"`
-	// +optional
-	Message *string `json:"message,omitempty"`
-
-	// +optional
-	LastUpdateTime *metav1.Time `json:"lastUpdateTime,omitempty"`
-	// +optional
-	LastTransitionTime *metav1.Time `json:"lastTransitionTime,omitempty"`
-}
-
-type ClairConditionType string
-
-const (
-	ClairAvailable     ClairConditionType = "Available"
-	ClairConfigBlocked ClairConditionType = "ConfigurationBlocked"
-)
-
-type ClairConditionReason string
-
-const (
-	ClairReasonHealthChecksPassing ClairConditionReason = "HealthChecksPassing"
-
-	ClairReasonMissingDeps ClairConditionReason = "DependenciesMissing"
-)
 
 // A ServiceRef is a paired Deployment and Service.
 type ServiceRef struct {

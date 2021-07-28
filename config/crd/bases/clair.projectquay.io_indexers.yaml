@@ -37,7 +37,8 @@ spec:
             description: IndexerSpec defines the desired state of Indexer
             properties:
               configRef:
-                description: Config ...
+                description: Config is a reference to a local object that's either
+                  a ConfigMap or a Secret.
                 properties:
                   apiGroup:
                     description: APIGroup is the group for the resource being referenced.
@@ -56,14 +57,15 @@ spec:
                 - name
                 type: object
               imageOverride:
-                description: ImageOverride ...
+                description: ImageOverride overrides the clair image that should be
+                  used by any created deployments.
                 type: string
             type: object
           status:
             description: IndexerStatus defines the observed state of Indexer
             properties:
               conditions:
-                description: 'Represents the observations of an Indexer''s current
+                description: 'Represents the observations of a Clair Service''s current
                   state. Known .status.conditions.type are: "Available", "Progressing"'
                 items:
                   description: "Condition contains details for one aspect of the current
@@ -137,8 +139,11 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               configVersion:
+                description: ConfigVersion is the last observed version on the Object
+                  referenced by the Spec's Config member.
                 type: string
               image:
+                description: Image is the image any created deployments should use.
                 type: string
               refs:
                 description: Refs ...

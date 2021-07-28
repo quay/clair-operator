@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/go-logr/logr"
@@ -17,6 +18,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -158,4 +160,307 @@ func (r *ServiceReconciler) CheckRefsAvailable(ctx context.Context, cur client.O
 	rc.Status = metav1.ConditionTrue
 	rc.Reason = `RefsAvailable`
 	return rc, nil
+}
+
+func (r *ServiceReconciler) InflateTemplates(ctx context.Context, cur, next client.Object, cfg *unstructured.Unstructured) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	cfgAnno := cfg.GetAnnotations()
+	if cfgAnno == nil {
+		cfgAnno = make(map[string]string)
+	}
+	spec := getSpec(cur)
+	status := getStatus(next)
+	var img string
+	if spec.ImageOverride != nil {
+		img = *spec.ImageOverride
+		status.Image = img
+	}
+
+	res, err := r.k.run(cfg, templateName(cur), img)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	var (
+		deploy  appsv1.Deployment
+		srv     corev1.Service
+		hpa     scalev2.HorizontalPodAutoscaler
+		monitor monitorv1.ServiceMonitor
+	)
+	for _, tmpl := range res.Resources() {
+		tmpl.SetNamespace(cur.GetNamespace())
+		b, err := tmpl.MarshalJSON()
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("resource", "res", tmpl.GetKind())
+		switch tmpl.GetKind() {
+		case "Deployment":
+			if err := json.Unmarshal(b, &deploy); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := controllerutil.SetControllerReference(cur, &deploy, r.Scheme); err != nil {
+				return ctrl.Result{}, err
+			}
+		case "Service":
+			if err := json.Unmarshal(b, &srv); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := controllerutil.SetControllerReference(cur, &srv, r.Scheme); err != nil {
+				return ctrl.Result{}, err
+			}
+		case "HorizontalPodAutoscaler":
+			if err := json.Unmarshal(b, &hpa); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := controllerutil.SetControllerReference(cur, &hpa, r.Scheme); err != nil {
+				return ctrl.Result{}, err
+			}
+		case "ServiceMonitor":
+			if err := json.Unmarshal(b, &monitor); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := controllerutil.SetControllerReference(cur, &monitor, r.Scheme); err != nil {
+				return ctrl.Result{}, err
+			}
+		default:
+			log.Info("unknown resource", "kind", tmpl.GetKind())
+		}
+	}
+
+	// Create the deployment and touch anything that needs to know its name.
+	if err := r.Client.Create(ctx, &deploy); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := status.AddRef(&deploy, r.Scheme); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.Client.Status().Update(ctx, next); err != nil {
+		return ctrl.Result{}, err
+	}
+	cfgAnno[clairv1alpha1.TemplateMatcherDeployment] = deploy.Namespace + "/" + deploy.Name
+	log.Info("created deployment", "ref", cfgAnno[clairv1alpha1.TemplateMatcherDeployment])
+
+	// Create the service and anything that needs to know its name.
+	if err := r.Client.Create(ctx, &srv); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := status.AddRef(&srv, r.Scheme); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.Client.Status().Update(ctx, next); err != nil {
+		return ctrl.Result{}, err
+	}
+	cfgAnno[clairv1alpha1.TemplateMatcherService] = srv.Namespace + "/" + srv.Name
+	log.Info("created service", "ref", srv.Namespace+"/"+srv.Name)
+
+	if r.options.HPA {
+		if err := r.Client.Create(ctx, &hpa); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := status.AddRef(&hpa, r.Scheme); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.Client.Status().Update(ctx, next); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("created hpa", "ref", hpa.Namespace+"/"+hpa.Name)
+	} else {
+		log.V(1).Info("skipping hpa creation")
+	}
+
+	if r.options.Monitor {
+		if err := r.Client.Create(ctx, &monitor); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := status.AddRef(&monitor, r.Scheme); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.Client.Status().Update(ctx, next); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("created servicemonitor", "ref", monitor.Namespace+"/"+monitor.Name)
+	} else {
+		log.V(1).Info("skipping Monitor creation")
+	}
+
+	// Purposefully grab the current version number.
+	//
+	// Don't know if we'll see an update from the annotation changes.
+	status.ConfigVersion = cfg.GetResourceVersion()
+	// Add a non-controlling owner ref so that we get notifications when things
+	// change.
+	if err := controllerutil.SetOwnerReference(cur, cfg, r.Scheme); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.Client.Update(ctx, cfg); err != nil {
+		return ctrl.Result{}, err
+	}
+	log.Info("config updated")
+	if err := r.Client.Status().Update(ctx, next); err != nil {
+		return ctrl.Result{}, err
+	}
+	log.Info("indexer updated")
+
+	return ctrl.Result{}, nil
+}
+
+// GetSpec pulls the common spec struct out of the enclosing types.
+func getSpec(cur client.Object) *clairv1alpha1.ServiceSpec {
+	switch r := cur.(type) {
+	case *clairv1alpha1.Matcher:
+		return &r.Spec.ServiceSpec
+	case *clairv1alpha1.Indexer:
+		return &r.Spec.ServiceSpec
+	case *clairv1alpha1.Notifier:
+		return &r.Spec.ServiceSpec
+	default:
+	}
+	panic(fmt.Sprintf("programmer error: called with unexpected type: %T", cur))
+}
+
+// GetStatus pulls the common status struct out of the enclosing types.
+func getStatus(cur client.Object) *clairv1alpha1.ServiceStatus {
+	switch r := cur.(type) {
+	case *clairv1alpha1.Matcher:
+		return &r.Status.ServiceStatus
+	case *clairv1alpha1.Indexer:
+		return &r.Status.ServiceStatus
+	case *clairv1alpha1.Notifier:
+		return &r.Status.ServiceStatus
+	default:
+	}
+	panic(fmt.Sprintf("programmer error: called with unexpected type: %T", cur))
+}
+
+// TemplateName returns the name of the embedded templates for the passed
+// struct.
+func templateName(cur client.Object) string {
+	switch cur.(type) {
+	case *clairv1alpha1.Matcher:
+		return "matcher"
+	case *clairv1alpha1.Indexer:
+		return "indexer"
+	case *clairv1alpha1.Notifier:
+		return "notifier"
+	default:
+	}
+	panic(fmt.Sprintf("programmer error: called with unexpected type: %T", cur))
+}
+
+func (s *ServiceReconciler) CheckResources(ctx context.Context, cur, next client.Object, cfg *unstructured.Unstructured) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	log.Info("checking resources")
+	// Check annotations
+	a := cfg.GetAnnotations()
+	if a == nil {
+		a = make(map[string]string)
+	}
+	status := getStatus(cur)
+	var (
+		deployName string
+		deployAnno = deploymentAnnotation(cur)
+		srvName    string
+		srvAnno    = serviceAnnotation(cur)
+		changed    bool
+	)
+	for _, r := range status.Refs {
+		switch r.Kind {
+		case "Deployment":
+			deployName = cur.GetNamespace() + "/" + r.Name
+		case "Service":
+			srvName = cur.GetNamespace() + "/" + r.Name
+		}
+	}
+	switch {
+	case deployName == "":
+		log.Info("missing deployment")
+	case a[deployAnno] != deployName:
+		log.Info("updating configuration deployment")
+		changed = true
+		a[deployAnno] = deployName
+	}
+	switch {
+	case srvName == "":
+		log.Info("missing service")
+	case a[srvAnno] != srvName:
+		log.Info("updating configuration service")
+		changed = true
+		a[srvAnno] = srvName
+	}
+	if changed {
+		cfg.SetAnnotations(a)
+		if err := s.Client.Update(ctx, cfg); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("updated config", "name", cfg.GetName())
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	var curStatus *metav1.Condition
+	for _, s := range status.Conditions {
+		if s.Type == clairv1alpha1.ServiceAvailable {
+			curStatus = &s
+			break
+		}
+	}
+	// Check deployment Status
+	log.Info("checking refs")
+	cnd, err := s.CheckRefsAvailable(ctx, cur, status.Refs)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	ns := getStatus(next)
+	switch {
+	case curStatus == nil:
+		ns.Conditions = append(ns.Conditions, cnd)
+		if err := s.Client.Status().Update(ctx, next); err != nil {
+			return ctrl.Result{}, err
+		}
+	case curStatus.Reason != cnd.Reason:
+		log.V(1).Info("updating: dependent resources changed", "condition", cnd)
+		for i, sc := range ns.Conditions {
+			if sc.Type == cnd.Type {
+				cnd.DeepCopyInto(&ns.Conditions[i])
+				break
+			}
+		}
+		if err := s.Client.Status().Update(ctx, next); err != nil {
+			return ctrl.Result{}, err
+		}
+	case curStatus.Reason == cnd.Reason:
+		log.V(1).Info("skipping update: dependent resources unchanged")
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// DeploymentAnnotation returns the correct annotation for the deployment of the
+// type passed in.
+func deploymentAnnotation(cur client.Object) string {
+	switch cur.(type) {
+	case *clairv1alpha1.Matcher:
+		return clairv1alpha1.TemplateMatcherDeployment
+	case *clairv1alpha1.Indexer:
+		return clairv1alpha1.TemplateIndexerDeployment
+	case *clairv1alpha1.Notifier:
+		return clairv1alpha1.TemplateNotifierDeployment
+	default:
+	}
+	panic(fmt.Sprintf("programmer error: called with unexpected type: %T", cur))
+}
+
+// ServiceAnnotation returns the correct annotation for the service of the
+// type passed in.
+func serviceAnnotation(cur client.Object) string {
+	switch cur.(type) {
+	case *clairv1alpha1.Matcher:
+		return clairv1alpha1.TemplateMatcherService
+	case *clairv1alpha1.Indexer:
+		return clairv1alpha1.TemplateIndexerService
+	case *clairv1alpha1.Notifier:
+		return clairv1alpha1.TemplateNotifierService
+	default:
+	}
+	panic(fmt.Sprintf("programmer error: called with unexpected type: %T", cur))
 }

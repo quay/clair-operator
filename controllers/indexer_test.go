@@ -25,10 +25,8 @@ func TestIndexer(t *testing.T) {
 				GenerateName: "test-indexer-",
 				Namespace:    "default",
 			},
-			Spec: clairv1alpha1.IndexerSpec{
-				Config: ref,
-			},
 		}
+		obj.Spec.Config = ref
 		if err := c.Create(ctx, &obj); err != nil {
 			t.Error(err)
 		}
@@ -49,10 +47,8 @@ func TestIndexer(t *testing.T) {
 				GenerateName: "test-indexer-",
 				Namespace:    "default",
 			},
-			Spec: clairv1alpha1.IndexerSpec{
-				Config: nil,
-			},
 		}
+		obj.Spec.Config = nil
 		if err := c.Create(ctx, &obj); err != nil {
 			t.Error(err)
 		}

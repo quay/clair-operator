@@ -18,11 +18,14 @@ package v1alpha1
 
 import (
 	"errors"
+	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
 	scalev2 "k8s.io/api/autoscaling/v2beta2"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	runtime "k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 )
 
 // Labels ...
@@ -74,6 +77,62 @@ func findCondition(cs []metav1.Condition, t string) (c *metav1.Condition) {
 		}
 	}
 	return
+}
+
+type ServiceSpec struct {
+	// Config is a reference to a local object that's either a ConfigMap or a
+	// Secret.
+	Config *ConfigReference `json:"configRef,omitempty"`
+
+	// ImageOverride overrides the clair image that should be used by any
+	// created deployments.
+	ImageOverride *string `json:"imageOverride,omitempty"`
+}
+
+type ServiceStatus struct {
+	// Represents the observations of a Clair Service's current state.
+	// Known .status.conditions.type are: "Available", "Progressing"
+	//
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+
+	// Refs ...
+	//
+	// +patchMergeKey=name
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=name
+	Refs []corev1.TypedLocalObjectReference `json:"refs,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
+
+	// ConfigVersion is the last observed version on the Object referenced by
+	// the Spec's Config member.
+	ConfigVersion string `json:"configVersion,omitempty"`
+
+	// Image is the image any created deployments should use.
+	Image string `json:"image,omitempty"`
+}
+
+// AddRef adds a reference to the Refs slice.
+//
+// This is used to keep track of created objects.
+func (s *ServiceStatus) AddRef(obj metav1.Object, scheme *runtime.Scheme) error {
+	ro, ok := obj.(runtime.Object)
+	if !ok {
+		return fmt.Errorf("%T is not a runtime.Object", obj)
+	}
+	gvk, err := apiutil.GVKForObject(ro, scheme)
+	if err != nil {
+		return err
+	}
+	s.Refs = append(s.Refs, corev1.TypedLocalObjectReference{
+		APIGroup: &gvk.Group,
+		Kind:     gvk.Kind,
+		Name:     obj.GetName(),
+	})
+	return nil
 }
 
 // ConfigReference is a reference to a ConfigMap or Secret resource with the
@@ -152,7 +211,9 @@ func (r *AutoscalerReference) From(a *scalev2.HorizontalPodAutoscaler) error {
 // as a client certificate.
 type ClientCert corev1.SecretReference
 
-// RefURI ...
+// RefURI is an object that can be either an URI or a ref to a key in a Secret.
+//
+// The latter is useful if the connection is secured by a password in the URL.
 type RefURI struct {
 	// +optional
 	URI *string `json:"uri,omitempty"`

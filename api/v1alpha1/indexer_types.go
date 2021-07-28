@@ -17,70 +17,17 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"fmt"
-
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	runtime "k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 )
-
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
 // IndexerSpec defines the desired state of Indexer
 type IndexerSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// Config ...
-	Config *ConfigReference `json:"configRef,omitempty"`
-
-	// ImageOverride ...
-	ImageOverride *string `json:"imageOverride,omitempty"`
+	ServiceSpec `json:",inline"`
 }
 
 // IndexerStatus defines the observed state of Indexer
 type IndexerStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// Represents the observations of an Indexer's current state.
-	// Known .status.conditions.type are: "Available", "Progressing"
-	//
-	// +patchMergeKey=type
-	// +patchStrategy=merge
-	// +listType=map
-	// +listMapKey=type
-	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
-
-	// Refs ...
-	//
-	// +patchMergeKey=name
-	// +patchStrategy=merge
-	// +listType=map
-	// +listMapKey=name
-	Refs []corev1.TypedLocalObjectReference `json:"refs,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
-
-	ConfigVersion string `json:"configVersion,omitempty"`
-	Image         string `json:"image,omitempty"`
-}
-
-func (s *IndexerStatus) AddRef(obj metav1.Object, scheme *runtime.Scheme) error {
-	ro, ok := obj.(runtime.Object)
-	if !ok {
-		return fmt.Errorf("%T is not a runtime.Object", obj)
-	}
-	gvk, err := apiutil.GVKForObject(ro, scheme)
-	if err != nil {
-		return err
-	}
-	s.Refs = append(s.Refs, corev1.TypedLocalObjectReference{
-		APIGroup: &gvk.Group,
-		Kind:     gvk.Kind,
-		Name:     obj.GetName(),
-	})
-	return nil
+	ServiceStatus `json:",inline"`
 }
 
 type IndexerConditionReason string
