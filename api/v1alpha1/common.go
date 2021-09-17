@@ -83,10 +83,6 @@ type ServiceSpec struct {
 	// Config is a reference to a local object that's either a ConfigMap or a
 	// Secret.
 	Config *ConfigReference `json:"configRef,omitempty"`
-
-	// ImageOverride overrides the clair image that should be used by any
-	// created deployments.
-	ImageOverride *string `json:"imageOverride,omitempty"`
 }
 
 type ServiceStatus struct {

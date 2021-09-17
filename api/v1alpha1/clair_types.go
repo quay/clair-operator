@@ -17,8 +17,12 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	runtime "k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 )
 
 // ClairSpec defines the desired state of Clair.
@@ -86,13 +90,6 @@ type Header struct {
 }
 
 type STOMPNotifier struct {
-	URIs        []string `json:"uris"`
-	Destination string   `json:"destination"`
-
-	// Rollup ...
-	// +optional
-	Rollup *int32 `json:"rollup,omitempty"`
-
 	// ClientCert ...
 	// +optional
 	ClientCert *ClientCert `json:"clientCert,omitempty"`
@@ -100,6 +97,13 @@ type STOMPNotifier struct {
 	// Login ...
 	// +optional
 	Login *STOMPLogin `json:"login,omitempty"`
+
+	// Rollup ...
+	// +optional
+	Rollup *int32 `json:"rollup,omitempty"`
+
+	Destination string   `json:"destination"`
+	URIs        []string `json:"uris"`
 }
 
 type STOMPLogin struct {
@@ -112,10 +116,6 @@ type STOMPLogin struct {
 }
 
 type AMQPNotifier struct {
-	URIs       []string     `json:"uris"`
-	RoutingKey string       `json:"routingKey"`
-	Exchange   AMQPExchange `json:"exchange"`
-
 	// Rollup ...
 	// +optional
 	Rollup *int32 `json:"rollup,omitempty"`
@@ -123,6 +123,10 @@ type AMQPNotifier struct {
 	// ClientCert ...
 	// +optional
 	ClientCert *ClientCert `json:"clientCert,omitempty"`
+
+	URIs       []string     `json:"uris"`
+	RoutingKey string       `json:"routingKey"`
+	Exchange   AMQPExchange `json:"exchange"`
 }
 
 type AMQPExchange struct {
@@ -172,6 +176,23 @@ type ClairStatus struct {
 	Matcher *ServiceRef `json:"matcher,omitempty"`
 	// Notifier ...
 	Notifier *ServiceRef `json:"notifier,omitempty"`
+}
+
+func (s *ClairStatus) AddRef(obj metav1.Object, scheme *runtime.Scheme) error {
+	ro, ok := obj.(runtime.Object)
+	if !ok {
+		return fmt.Errorf("%T is not a runtime.Object", obj)
+	}
+	gvk, err := apiutil.GVKForObject(ro, scheme)
+	if err != nil {
+		return err
+	}
+	s.Refs = append(s.Refs, corev1.TypedLocalObjectReference{
+		APIGroup: &gvk.Group,
+		Kind:     gvk.Kind,
+		Name:     obj.GetName(),
+	})
+	return nil
 }
 
 // A ServiceRef is a paired Deployment and Service.
