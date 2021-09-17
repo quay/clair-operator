@@ -64,12 +64,13 @@ func toName(s string) types.NamespacedName {
 	return t
 }
 
+// ConfigDetails normalizes a ConfigMap or Secret into the common elements.
 type configDetails struct {
-	isSecret    bool
 	labels      map[string]string
 	annotations map[string]string
 	data        map[string][]byte
 	strData     map[string]string
+	isSecret    bool
 }
 
 func (d *configDetails) item(k string) (v []byte, ok bool) {
@@ -119,6 +120,8 @@ func (c *configCommon) InjectDecoder(d *admission.Decoder) error {
 	return nil
 }
 
+// Details fetches the concrete type of the Object specified in the Request,
+// then normalizes it into a configDetails.
 func (c *configCommon) details(ctx context.Context, req admission.Request) (configDetails, error) {
 	var cfg configDetails
 	// Populate the labels, annotations, and data.

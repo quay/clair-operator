@@ -244,8 +244,10 @@ type ConfigObject interface {
 	SetItem(key, val string)
 }
 
-type configmapConfig struct{ *corev1.ConfigMap }
-type secretConfig struct{ *corev1.Secret }
+type (
+	configmapConfig struct{ *corev1.ConfigMap }
+	secretConfig    struct{ *corev1.Secret }
+)
 
 var (
 	_ ConfigObject = (*configmapConfig)(nil)
@@ -263,6 +265,7 @@ func (c *configmapConfig) GetItem(key string) string {
 	}
 	return string(b)
 }
+
 func (c *configmapConfig) SetItem(key, val string) {
 	c.Data[key] = val
 }
@@ -270,6 +273,7 @@ func (c *configmapConfig) SetItem(key, val string) {
 func (s *secretConfig) GetItem(key string) string {
 	return string(s.Data[key])
 }
+
 func (s *secretConfig) SetItem(key, val string) {
 	s.StringData[key] = val
 }

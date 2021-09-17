@@ -22,6 +22,15 @@ var (
 // ConfigValidator is a validating webhook that disallows updates or creations
 // of labelled ConfigMaps or Secrets with malformed Clair configurations.
 //
+// To opt into this behavior, a ConfigMap or Secret must have the label
+// [ConfigLabel] ("clair.projectquay.io/config"), with the value being the
+// version of the Clair config. This is currently only "v1".
+//
+// The annotation [ConfigKey] ("clair.projectquay.io/config-key") must be
+// present. The value is used as the key containing the configuration to
+// validate. If using the ConfigMutator, this key will be autopopulated if not
+// present.
+//
 // +kubebuilder:object:generate=false
 type ConfigValidator struct {
 	configCommon
