@@ -56,10 +56,6 @@ spec:
                 - kind
                 - name
                 type: object
-              imageOverride:
-                description: ImageOverride overrides the clair image that should be
-                  used by any created deployments.
-                type: string
             type: object
           status:
             description: NotifierStatus defines the observed state of Notifier

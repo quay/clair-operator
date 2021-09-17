@@ -20,6 +20,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/go-logr/zapr"
 	"go.uber.org/zap/zapcore"
@@ -27,6 +28,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	scalev2 "k8s.io/api/autoscaling/v2beta2"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -38,7 +40,12 @@ import (
 	// +kubebuilder:scaffold:imports
 )
 
-func envSetup(ctx context.Context, t testing.TB) (context.Context, client.Client) {
+// EnvSetup starts an envtest instance and pre-populates it with the local
+// types.
+//
+// This function is largely ported from the one spit out by the scaffolding,
+// with all the ginkgo/gomega pulled out.
+func EnvSetup(ctx context.Context, t testing.TB) (context.Context, client.Client) {
 	logger := zapr.NewLogger(zaptest.NewLogger(t, zaptest.Level(zapcore.DebugLevel))).
 		WithName("controllers")
 	ctx = log.IntoContext(ctx, logger)
@@ -66,6 +73,7 @@ func envSetup(ctx context.Context, t testing.TB) (context.Context, client.Client
 		corev1.AddToScheme,
 		appsv1.AddToScheme,
 		scalev2.AddToScheme,
+		// Add more groups here as needed.
 	} {
 		if err := f(scheme); err != nil {
 			t.Fatal(err)
@@ -94,6 +102,39 @@ func envSetup(ctx context.Context, t testing.TB) (context.Context, client.Client
 	t.Cleanup(mgrdone)
 
 	return ctx, mgr.GetClient()
+}
+
+// ServiceTestcase is a helper struct for testing the service reconcilers.
+type ServiceTestcase struct {
+	New   func(context.Context, testing.TB, client.Client) client.Object
+	Check CheckFunc
+	Name  string
+}
+
+// CheckFunc is a function called to verify the expected state of the (fake)
+// cluster.
+//
+// The passed-in name is the name of the created resouce, and the the passed-in
+// condition is the `Available` condition.
+type CheckFunc func(ctx context.Context, t testing.TB, c client.Client, name types.NamespacedName, cnd *metav1.Condition) (ok bool)
+
+// Run does what it says on the tin.
+//
+// Intended to be used to drive subtests.
+func (tc ServiceTestcase) Run(ctx context.Context, c client.Client) func(*testing.T) {
+	return func(t *testing.T) {
+		o := tc.New(ctx, t, c)
+		if err := c.Create(ctx, o); err != nil {
+			t.Error(err)
+		}
+		t.Logf("created: %q", o.GetName())
+
+		lookup := types.NamespacedName{
+			Name:      o.GetName(),
+			Namespace: o.GetNamespace(),
+		}
+		retryCheck(ctx, t, c, lookup, tc.Check)
+	}
 }
 
 func configSetup(ctx context.Context, t testing.TB, c client.Client) *clairv1alpha1.ConfigReference {
@@ -146,5 +187,49 @@ func markDeploymentAvailable(ctx context.Context, t testing.TB, c client.Client,
 	}
 	if n.Name == "" {
 		t.Errorf("unable to find Deployment ref on %q", cur.GetName())
+	}
+}
+
+func retryCheck(ctx context.Context, t testing.TB, c client.Client, name types.NamespacedName, check CheckFunc) {
+	t.Helper()
+	o := clairv1alpha1.Indexer{}
+
+	timeout := time.After(time.Minute)
+	interval := time.NewTicker(time.Second)
+	defer interval.Stop()
+	for ct := 0; ; ct++ {
+		var err error
+		select {
+		case <-timeout:
+			t.Error("timeout")
+			return
+		case <-interval.C:
+			err = c.Get(ctx, name, &o)
+		}
+		if err != nil {
+			t.Log(err)
+			continue
+		}
+		if len(o.Status.Refs) == 0 {
+			t.Log("no refs on object")
+		}
+		t.Logf("status: %+v", o.Status)
+		var status *metav1.Condition
+		for _, s := range o.Status.Conditions {
+			if s.Type == `Available` {
+				status = &s
+				break
+			}
+		}
+		if status == nil {
+			t.Log("no status")
+			continue
+		}
+		if check(ctx, t, c, name, status) {
+			return
+		}
+		if ct > 10 {
+			t.Fatal("more than 10 loops, something's up")
+		}
 	}
 }

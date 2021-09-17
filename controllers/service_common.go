@@ -32,8 +32,8 @@ type ServiceReconciler struct {
 	client.Client
 	Log     logr.Logger
 	Scheme  *runtime.Scheme
-	options optionalTypes
 	k       *kustomize
+	options optionalTypes
 }
 
 // SetupService sets up the controller with the Manager.
@@ -62,18 +62,20 @@ func (r *ServiceReconciler) SetupService(mgr ctrl.Manager, apiType client.Object
 	// Attempt to resolve some GVKs. If we can, this means they're installed and
 	// we can use them.
 	for _, pair := range []struct {
-		gvk schema.GroupVersionKind
 		obj client.Object
+		gvk schema.GroupVersionKind
 	}{
 		{
-			schema.GroupVersionKind{
-				Group: "autoscaling", Version: "v2beta2", Kind: "HorizontalPodAutoscaler"},
 			&scalev2.HorizontalPodAutoscaler{},
+			schema.GroupVersionKind{
+				Group: "autoscaling", Version: "v2beta2", Kind: "HorizontalPodAutoscaler",
+			},
 		},
 		{
-			schema.GroupVersionKind{
-				Group: "monitoring.coreos.com", Version: "v1", Kind: "ServiceMonitor"},
 			&monitorv1.ServiceMonitor{},
+			schema.GroupVersionKind{
+				Group: "monitoring.coreos.com", Version: "v1", Kind: "ServiceMonitor",
+			},
 		},
 	} {
 		if !r.Scheme.Recognizes(pair.gvk) {
@@ -169,15 +171,9 @@ func (r *ServiceReconciler) InflateTemplates(ctx context.Context, cur, next clie
 	if cfgAnno == nil {
 		cfgAnno = make(map[string]string)
 	}
-	spec := getSpec(cur)
 	status := getStatus(next)
-	var img string
-	if spec.ImageOverride != nil {
-		img = *spec.ImageOverride
-		status.Image = img
-	}
 
-	res, err := r.k.run(cfg, templateName(cur), img)
+	res, err := r.k.Run(cfg, templateName(cur), clairImage)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -193,7 +189,7 @@ func (r *ServiceReconciler) InflateTemplates(ctx context.Context, cur, next clie
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		log.Info("resource", "res", tmpl.GetKind())
+		log.Info("resource", "res", tmpl.GetKind()+"/"+tmpl.GetName())
 		switch tmpl.GetKind() {
 		case "Deployment":
 			if err := json.Unmarshal(b, &deploy); err != nil {

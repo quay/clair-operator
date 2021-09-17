@@ -1,0 +1,31 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: clair
+spec:
+  rules:
+    - host: example.com
+      http:
+        paths:
+          - path: /indexer
+            pathType: Prefix
+            backend:
+              service:
+                name: indexer
+                port:
+                  name: http
+          - path: /matcher
+            pathType: Prefix
+            backend:
+              service:
+                name: matcher
+                port:
+                  name: http
+          - path: /notifier
+            pathType: Prefix
+            backend:
+              service:
+                name: notifier
+                port:
+                  name: http

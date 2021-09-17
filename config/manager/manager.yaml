@@ -33,6 +33,8 @@ spec:
           env:
             - name: RELATED_IMAGE_CLAIR
               value: quay.io/projectquay/clair:latest
+            - name: RELATED_IMAGE_POSTGRES
+              value: docker.io/library/postgres:13
           image: controller:latest
           name: manager
           securityContext:

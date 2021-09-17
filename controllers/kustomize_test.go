@@ -116,3 +116,15 @@ func (tc templateTestcase) Run(cfg *unstructured.Unstructured) func(*testing.T) 
 		}
 	}
 }
+
+func (k *kustomize) Indexer(cfg configObject, image string) (resmap.ResMap, error) {
+	return k.Run(cfg, "indexer", image)
+}
+
+func (k *kustomize) Matcher(cfg configObject, image string) (resmap.ResMap, error) {
+	return k.Run(cfg, "matcher", image)
+}
+
+func (k *kustomize) Notifier(cfg configObject, image string) (resmap.ResMap, error) {
+	return k.Run(cfg, "notifier", image)
+}
