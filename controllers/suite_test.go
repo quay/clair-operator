@@ -19,6 +19,7 @@ package controllers
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -93,6 +94,9 @@ func EnvSetup(ctx context.Context, t testing.TB) (context.Context, client.Client
 	if err := (&IndexerReconciler{}).SetupWithManager(mgr); err != nil {
 		t.Fatal(err)
 	}
+	if err := (&MatcherReconciler{}).SetupWithManager(mgr); err != nil {
+		t.Fatal(err)
+	}
 	mgrctx, mgrdone := context.WithCancel(ctx)
 	go func() {
 		if err := mgr.Start(mgrctx); err != nil {
@@ -128,12 +132,14 @@ func (tc ServiceTestcase) Run(ctx context.Context, c client.Client) func(*testin
 			t.Error(err)
 		}
 		t.Logf("created: %q", o.GetName())
+		// If this can't succeed, this code deserves to panic.
+		typ := reflect.TypeOf(o).Elem()
 
 		lookup := types.NamespacedName{
 			Name:      o.GetName(),
 			Namespace: o.GetNamespace(),
 		}
-		retryCheck(ctx, t, c, lookup, tc.Check)
+		retryCheck(ctx, t, c, lookup, typ, tc.Check)
 	}
 }
 
@@ -154,7 +160,7 @@ func configSetup(ctx context.Context, t testing.TB, c client.Client) *clairv1alp
 
 	return &clairv1alpha1.ConfigReference{
 		Name:     cfg.GetName(),
-		APIGroup: new(string), // APIGroup is "core", e.g. empty
+		APIGroup: new(string), // APIGroup is "core", i.e. empty
 		Kind:     "ConfigMap",
 	}
 }
@@ -190,32 +196,33 @@ func markDeploymentAvailable(ctx context.Context, t testing.TB, c client.Client,
 	}
 }
 
-func retryCheck(ctx context.Context, t testing.TB, c client.Client, name types.NamespacedName, check CheckFunc) {
+func retryCheck(ctx context.Context, t testing.TB, c client.Client, name types.NamespacedName, typ reflect.Type, check CheckFunc) {
 	t.Helper()
-	o := clairv1alpha1.Indexer{}
 
 	timeout := time.After(time.Minute)
 	interval := time.NewTicker(time.Second)
 	defer interval.Stop()
 	for ct := 0; ; ct++ {
+		o := reflect.New(typ).Interface().(client.Object)
 		var err error
 		select {
 		case <-timeout:
 			t.Error("timeout")
 			return
 		case <-interval.C:
-			err = c.Get(ctx, name, &o)
+			err = c.Get(ctx, name, o)
 		}
 		if err != nil {
 			t.Log(err)
 			continue
 		}
-		if len(o.Status.Refs) == 0 {
+		s := getStatus(o)
+		if len(s.Refs) == 0 {
 			t.Log("no refs on object")
 		}
-		t.Logf("status: %+v", o.Status)
+		t.Logf("status: %+v", s)
 		var status *metav1.Condition
-		for _, s := range o.Status.Conditions {
+		for _, s := range s.Conditions {
 			if s.Type == `Available` {
 				status = &s
 				break
