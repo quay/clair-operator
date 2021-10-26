@@ -15,6 +15,7 @@ type optionalTypes struct {
 	HPA     bool
 	Monitor bool
 	Ingress bool
+	Proxy   bool
 }
 
 func (o *optionalTypes) Set(gvk schema.GroupVersionKind) {
@@ -27,6 +28,8 @@ func (o *optionalTypes) Set(gvk schema.GroupVersionKind) {
 		o.Monitor = true
 	case "Ingress":
 		o.Ingress = true
+	case "Proxy":
+		o.Proxy = true
 	default: // do nothing
 	}
 }

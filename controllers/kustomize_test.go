@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	configv1 "github.com/openshift/api/config/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/kustomize/api/resmap"
@@ -44,6 +45,16 @@ func TestTemplate(t *testing.T) {
 				Img:  "test/image:tag",
 				Want: "testdata/want.config.notifier.yaml",
 			},
+			{
+				Name: "NotifierProxy",
+				Mk: k.NotifierProxy(&proxyFilter{&configv1.Proxy{
+					Spec: configv1.ProxySpec{
+						HTTPProxy: "http://example.com/",
+					},
+				}}),
+				Img:  "test/image:tag",
+				Want: "testdata/want.config.notifier_proxy.yaml",
+			},
 		} {
 			t.Run(tc.Name, tc.Run(&cfg))
 		}
@@ -74,6 +85,16 @@ func TestTemplate(t *testing.T) {
 				Mk:   k.Notifier,
 				Img:  "test/image:tag",
 				Want: "testdata/want.secret.notifier.yaml",
+			},
+			{
+				Name: "NotifierProxy",
+				Mk: k.NotifierProxy(&proxyFilter{&configv1.Proxy{
+					Spec: configv1.ProxySpec{
+						HTTPProxy: "http://example.com/",
+					},
+				}}),
+				Img:  "test/image:tag",
+				Want: "testdata/want.secret.notifier_proxy.yaml",
 			},
 		} {
 			t.Run(tc.Name, tc.Run(&cfg))
@@ -118,13 +139,19 @@ func (tc templateTestcase) Run(cfg *unstructured.Unstructured) func(*testing.T) 
 }
 
 func (k *kustomize) Indexer(cfg configObject, image string) (resmap.ResMap, error) {
-	return k.Run(cfg, "indexer", image)
+	return k.Run(cfg, "indexer", image, nil)
 }
 
 func (k *kustomize) Matcher(cfg configObject, image string) (resmap.ResMap, error) {
-	return k.Run(cfg, "matcher", image)
+	return k.Run(cfg, "matcher", image, nil)
 }
 
 func (k *kustomize) Notifier(cfg configObject, image string) (resmap.ResMap, error) {
-	return k.Run(cfg, "notifier", image)
+	return k.Run(cfg, "notifier", image, nil)
+}
+
+func (k *kustomize) NotifierProxy(p *proxyFilter) func(configObject, string) (resmap.ResMap, error) {
+	return func(cfg configObject, image string) (resmap.ResMap, error) {
+		return k.Run(cfg, "notifier", image, p)
+	}
 }

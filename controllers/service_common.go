@@ -3,13 +3,16 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/go-logr/logr"
+	configv1 "github.com/openshift/api/config/v1"
 	monitorv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	scalev2 "k8s.io/api/autoscaling/v2beta2"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -23,6 +26,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/source"
+	"sigs.k8s.io/kustomize/kyaml/kio"
 
 	clairv1alpha1 "github.com/quay/clair-operator/api/v1alpha1"
 )
@@ -47,47 +51,106 @@ func (r *ServiceReconciler) SetupService(mgr ctrl.Manager, apiType client.Object
 	r.Scheme = mgr.GetScheme()
 	b := ctrl.NewControllerManagedBy(mgr).
 		WithLogger(r.Log).
-		For(apiType).
-		Owns(&appsv1.Deployment{}).
-		Owns(&corev1.Service{}).
-		// Do this manually for Secrets and ConfigMaps, because otherwise we
-		// won't get events, as we're not the sole controller.
-		Watches(&source.Kind{Type: &corev1.Secret{}},
-			&handler.EnqueueRequestForOwner{OwnerType: apiType, IsController: false},
-			builder.WithPredicates(&predicate.GenerationChangedPredicate{})).
-		Watches(&source.Kind{Type: &corev1.ConfigMap{}},
-			&handler.EnqueueRequestForOwner{OwnerType: apiType, IsController: false},
-			builder.WithPredicates(&predicate.GenerationChangedPredicate{}))
+		For(apiType)
 
-	// Attempt to resolve some GVKs. If we can, this means they're installed and
-	// we can use them.
-	for _, pair := range []struct {
-		obj client.Object
-		gvk schema.GroupVersionKind
+	for _, setup := range []struct {
+		f  func(*builder.Builder, *typeprobe) *builder.Builder
+		ps []typeprobe
 	}{
 		{
-			&scalev2.HorizontalPodAutoscaler{},
-			schema.GroupVersionKind{
-				Group: "autoscaling", Version: "v2beta2", Kind: "HorizontalPodAutoscaler",
+			ps: ownedTypes,
+			f: func(b *builder.Builder, p *typeprobe) *builder.Builder {
+				return b.Owns(p.obj)
 			},
 		},
 		{
-			&monitorv1.ServiceMonitor{},
-			schema.GroupVersionKind{
-				Group: "monitoring.coreos.com", Version: "v1", Kind: "ServiceMonitor",
+			ps: watchedTypes,
+			// These are needed for types where we're not the owner of the object but
+			// want to be notified of events.
+			f: func(b *builder.Builder, p *typeprobe) *builder.Builder {
+				return b.Watches(&source.Kind{Type: p.obj},
+					&handler.EnqueueRequestForOwner{OwnerType: apiType, IsController: false},
+					builder.WithPredicates(&predicate.GenerationChangedPredicate{}))
 			},
 		},
 	} {
-		if !r.Scheme.Recognizes(pair.gvk) {
-			r.Log.Info("missing optionally supported resource", "gvk", pair.gvk.String())
-			continue
+		for _, p := range setup.ps {
+			gvk := p.gvk.String()
+			if !r.Scheme.Recognizes(p.gvk) {
+				if p.optional {
+					r.Log.Info("missing optionally supported resource", "gvk", gvk)
+					continue
+				}
+				return nil, fmt.Errorf("missing required gvk: %q", gvk)
+			}
+			b = setup.f(b, &p)
+			if p.optional {
+				r.Log.Info("found optional kind", "gvk", gvk)
+			}
+			r.options.Set(p.gvk)
 		}
-		b = b.Owns(pair.obj)
-		r.Log.Info("found optional kind", "gvk", pair.gvk.String())
-		r.options.Set(pair.gvk)
 	}
+
 	return b, nil
 }
+
+type typeprobe struct {
+	obj      client.Object
+	gvk      schema.GroupVersionKind
+	optional bool
+}
+
+var (
+	ownedTypes = []typeprobe{
+		{
+			obj: &appsv1.Deployment{},
+			gvk: schema.GroupVersionKind{
+				Group: "apps", Version: "v1", Kind: "Deployment",
+			},
+		},
+		{
+			obj: &corev1.Service{},
+			gvk: schema.GroupVersionKind{
+				Group: "", Version: "v1", Kind: "Service",
+			},
+		},
+		{
+			obj: &scalev2.HorizontalPodAutoscaler{},
+			gvk: schema.GroupVersionKind{
+				Group: "autoscaling", Version: "v2beta2", Kind: "HorizontalPodAutoscaler",
+			},
+			optional: true,
+		},
+		{
+			obj: &monitorv1.ServiceMonitor{},
+			gvk: schema.GroupVersionKind{
+				Group: "monitoring.coreos.com", Version: "v1", Kind: "ServiceMonitor",
+			},
+			optional: true,
+		},
+	}
+	watchedTypes = []typeprobe{
+		{
+			obj: &corev1.ConfigMap{},
+			gvk: schema.GroupVersionKind{
+				Group: "", Version: "v1", Kind: "ConfigMap",
+			},
+		},
+		{
+			obj: &corev1.Secret{},
+			gvk: schema.GroupVersionKind{
+				Group: "", Version: "v1", Kind: "Secret",
+			},
+		},
+		{
+			obj: &configv1.Proxy{},
+			gvk: schema.GroupVersionKind{
+				Group: "config.openshift.io", Version: "v1", Kind: "Proxy",
+			},
+			optional: true,
+		},
+	}
+)
 
 func (r *ServiceReconciler) config(ctx context.Context, ns string, ref *clairv1alpha1.ConfigReference) (*unstructured.Unstructured, error) {
 	log := logf.FromContext(ctx)
@@ -164,6 +227,11 @@ func (r *ServiceReconciler) CheckRefsAvailable(ctx context.Context, cur client.O
 	return rc, nil
 }
 
+var clusterProxy = types.NamespacedName{
+	Namespace: "",
+	Name:      "cluster",
+}
+
 func (r *ServiceReconciler) InflateTemplates(ctx context.Context, cur, next client.Object, cfg *unstructured.Unstructured) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -173,7 +241,19 @@ func (r *ServiceReconciler) InflateTemplates(ctx context.Context, cur, next clie
 	}
 	status := getStatus(next)
 
-	res, err := r.k.Run(cfg, templateName(cur), clairImage)
+	var addtlFilter kio.Filter
+	if r.options.Proxy {
+		var pr configv1.Proxy
+		err := r.Get(ctx, clusterProxy, &pr)
+		switch {
+		case errors.Is(err, nil):
+			addtlFilter = &proxyFilter{&pr}
+		case apierrors.IsNotFound(err): // skip
+		default:
+			return ctrl.Result{}, err
+		}
+	}
+	res, err := r.k.Run(cfg, templateName(cur), clairImage, addtlFilter)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

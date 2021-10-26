@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 
+	configv1 "github.com/openshift/api/config/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/kustomize/api/filesys"
 	"sigs.k8s.io/kustomize/api/krusty"
@@ -68,7 +69,7 @@ func findDeployment(r resid.ResId) bool {
 	return r.IsSelected(test)
 }
 
-func (k *kustomize) Run(cfg *unstructured.Unstructured, which string, image string) (resmap.ResMap, error) {
+func (k *kustomize) Run(cfg *unstructured.Unstructured, which string, image string, filter kio.Filter) (resmap.ResMap, error) {
 	if image == "" {
 		return nil, errors.New("kustomize: no image provided")
 	}
@@ -144,6 +145,12 @@ func (k *kustomize) Run(cfg *unstructured.Unstructured, which string, image stri
 		return nil, fmt.Errorf("kustomize: pipeline error: %w", err)
 	}
 
+	if filter != nil {
+		if err := d.ApplyFilter(filter); err != nil {
+			return nil, fmt.Errorf("kustomize: pipeline error: %w", err)
+		}
+	}
+
 	if _, err := res.Replace(d); err != nil {
 		return nil, fmt.Errorf("kustomize: node replace error: %w", err)
 	}
@@ -161,3 +168,41 @@ func (k *kustomize) Database(image string) (resmap.ResMap, error) {
 	_ = res
 	return nil, nil
 }
+
+type proxyFilter struct {
+	*configv1.Proxy
+}
+
+func (p *proxyFilter) Filter(ns []*kyaml.RNode) ([]*kyaml.RNode, error) {
+	g := kyaml.Lookup("spec", "template", "spec", "containers", "[name=clair]", "env")
+	var fs []kyaml.Filter
+	for _, p := range [][2]string{
+		{`HTTP_PROXY`, p.Spec.HTTPProxy},
+		{`HTTPS_PROXY`, p.Spec.HTTPSProxy},
+		{`NO_PROXY`, p.Spec.NoProxy},
+	} {
+		k, v := p[0], p[1]
+		if v == "" {
+			continue
+		}
+		fs = append(fs, kyaml.Tee(
+			kyaml.ElementMatcher{
+				Keys:   []string{"name"},
+				Values: []string{k},
+				Create: kyaml.NewMapRNode(&map[string]string{
+					"name":  k,
+					"value": "",
+				}),
+			},
+			kyaml.SetField("value", kyaml.NewScalarRNode(v)),
+		))
+	}
+	for _, n := range ns {
+		if err := n.PipeE(g, kyaml.Tee(fs...)); err != nil {
+			return nil, err
+		}
+	}
+	return ns, nil
+}
+
+var _ kio.Filter = (*proxyFilter)(nil)

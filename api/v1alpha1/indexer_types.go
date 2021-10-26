@@ -45,12 +45,6 @@ const (
 	IndexerReasonNeedService IndexerConditionReason = `NeedService`
 )
 
-// GetCondition returns a Condition associated with the provided type or nil if
-// not found.
-func (i *Indexer) GetCondition(t string) (c *metav1.Condition) {
-	return findCondition(i.Status.Conditions, t)
-}
-
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 

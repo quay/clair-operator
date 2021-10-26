@@ -86,8 +86,15 @@ type ServiceSpec struct {
 }
 
 type ServiceStatus struct {
+	// ConfigVersion is the last observed version on the Object referenced by
+	// the Spec's Config member.
+	ConfigVersion string `json:"configVersion,omitempty"`
+
+	// Image is the image any created deployments should use.
+	Image string `json:"image,omitempty"`
+
 	// Represents the observations of a Clair Service's current state.
-	// Known .status.conditions.type are: "Available", "Progressing"
+	// Known .status.conditions.type are: "Ready"
 	//
 	// +patchMergeKey=type
 	// +patchStrategy=merge
@@ -102,13 +109,6 @@ type ServiceStatus struct {
 	// +listType=map
 	// +listMapKey=name
 	Refs []corev1.TypedLocalObjectReference `json:"refs,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
-
-	// ConfigVersion is the last observed version on the Object referenced by
-	// the Spec's Config member.
-	ConfigVersion string `json:"configVersion,omitempty"`
-
-	// Image is the image any created deployments should use.
-	Image string `json:"image,omitempty"`
 }
 
 // AddRef adds a reference to the Refs slice.
@@ -143,12 +143,12 @@ type ConfigMapReference corev1.LocalObjectReference
 // If given a choice of arbitrary URI or a ServiceReference in an API, the
 // latter should be preferred.
 type ServiceReference struct {
-	corev1.LocalObjectReference `json:",inline"`
-
 	// Port ...
 	// Defaults to 443.
 	// +optional
 	Port *int32 `json:"port,omitempty"`
+
+	corev1.LocalObjectReference `json:",inline"`
 }
 
 func (r *ServiceReference) From(s *corev1.Service) error {
