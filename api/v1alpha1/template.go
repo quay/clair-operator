@@ -104,7 +104,7 @@ func (m *ConfigMutator) templateV1(ctx context.Context, tmpl *tmpl, in []byte, d
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	log := logr.FromContext(ctx)
+	log := logr.FromContextOrDiscard(ctx)
 
 	var n yaml.Node
 	if err := yaml.Unmarshal(in, &n); err != nil {
@@ -159,7 +159,7 @@ func (m *ConfigMutator) templateV1(ctx context.Context, tmpl *tmpl, in []byte, d
 // ResolveURIs looks for special URIs and then attempts to resolve them in the
 // current context.
 func (m *ConfigMutator) resolveURIs(ctx context.Context, d *configDetails, in string) (string, error) {
-	log := logr.FromContext(ctx)
+	log := logr.FromContextOrDiscard(ctx)
 	oops := newWarnErr // a better name for local use.
 
 	u, err := url.Parse(in)

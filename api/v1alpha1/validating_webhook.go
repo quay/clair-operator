@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/quay/clair/v4/config"
+	"github.com/quay/clair/config"
 	"gopkg.in/yaml.v3"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -103,10 +103,18 @@ func validateConfig(ctx context.Context, v string, b []byte) error {
 		if err := yaml.Unmarshal(b, &c); err != nil {
 			return err
 		}
+		var err error
 		for _, m := range []string{"indexer", "matcher", "notifier"} {
-			c.Mode = m
-			if err := config.Validate(c); err != nil {
+			c.Mode, err = config.ParseMode(m)
+			if err != nil {
 				return err
+			}
+			ws, err := config.Validate(&c)
+			if err != nil {
+				return err
+			}
+			for _, w := range ws {
+				log.V(1).Info("lint", "msg", w.Error())
 			}
 			log.V(1).Info("validated", "mode", m)
 		}
