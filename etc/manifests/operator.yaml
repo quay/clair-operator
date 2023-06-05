@@ -1,0 +1,55 @@
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+  name: clair-operator.v0.1.0
+spec:
+  description: This is an operator for Clair.
+  displayName: Clair Operator
+  keywords:
+  - clair
+  - security
+  maintainers:
+  - email: hdonnay@redhat.com
+    name: Hank Donnay
+  maturity: alpha
+  provider:
+    name: Example
+    url: www.example.com
+  version: 0.1.0
+  minKubeVersion: 1.25.0
+  installModes:
+  - supported: true
+    type: OwnNamespace
+  install:
+    strategy: deployment
+    spec:
+      permissions:
+      - serviceAccountName: clair-operator
+        rules: []
+      clusterPermissions: []
+      deployments:
+      - name: clair-operator
+        spec:
+          replicas: 1
+  customresourcedefinitions:
+    owned:
+    - name: 'clairs.projectclair.io'
+      version: 'v1alpha1'
+      kind: 'Clair'
+    - name: 'indexers.projectclair.io'
+      version: 'v1alpha1'
+      kind: 'Indexer'
+    - name: 'matchers.projectclair.io'
+      version: 'v1alpha1'
+      kind: 'Matcher'
+    - name: 'updaters.projectclair.io'
+      version: 'v1alpha1'
+      kind: 'Updater'
+    - name: 'notifiers.projectclair.io'
+      version: 'v1alpha1'
+      kind: 'Notifier'
+  nativeAPIs: []
+  apiservicedefinitions: []
+  webhookdefinitions: []

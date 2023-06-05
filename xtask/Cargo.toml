@@ -1,0 +1,16 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+api = { path = "../api" }
+kube = { workspace = true }
+json-patch = { workspace = true }
+k8s-openapi = { workspace = true, features = ["v1_25"] }
+clap = { workspace = true }
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
