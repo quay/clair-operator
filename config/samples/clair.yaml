@@ -1,0 +1,13 @@
+---
+apiVersion: projectclair.io/v1alpha1
+kind: Clair
+metadata:
+  name: example
+spec:
+  databases:
+    indexer:
+      name: databaseSecret
+      key: database.json
+    matcher:
+      name: databaseSecret
+      key: database.json

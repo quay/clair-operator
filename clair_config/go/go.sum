@@ -1,0 +1,3 @@
+github.com/google/go-cmp v0.5.9 h1:O2Tfq5qg4qc4AmwVlvv0oLiVAGB7enBSJ2x2DqQFi38=
+github.com/quay/clair/config v1.3.0 h1:UqJIwvgHaWj6yTWrpVnYnlEIKcVYxJItlEF2EsCnw5s=
+github.com/quay/clair/config v1.3.0/go.mod h1:XrxQFjAt0W+TUk5GkkSjNPxu1QgfycdRJr/+GVqUxBw=

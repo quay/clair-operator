@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ⚠️
+  labels:
+    app.kubernetes.io/name: clair
+    app.kubernetes.io/managed-by: clair-operator
+spec:
+  ports:
+  - name: api
+    port: 80
+    targetPort: api
+  selector:
+    app.kubernetes.io/name: clair
+    app.kubernetes.io/managed-by: clair-operator

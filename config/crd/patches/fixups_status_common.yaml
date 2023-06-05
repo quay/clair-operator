@@ -1,0 +1,39 @@
+# Conditions:
+- op: add
+  path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/conditions/items/properties/observedGeneration/minimum'
+  value: 0
+- op: add
+  path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/conditions/items/properties/message/maxLength'
+  value: 32768
+- op: add
+  path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/conditions/items/properties/reason/minLength'
+  value: 1
+- op: add
+  path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/conditions/items/properties/reason/maxLength'
+  value: 1024
+- op: add
+  path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/conditions/items/properties/reason/pattern'
+  value: '^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$'
+- op: add
+  path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/conditions/items/properties/status/enum'
+  value: ['True', 'False', 'Unknown']
+- op: add
+  path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/conditions/items/properties/type/maxLength'
+  value: 316
+- op: add
+  path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/conditions/items/properties/type/pattern'
+  value: '^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$'
+- op: add
+  path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/conditions/x-kubernetes-list-type'
+  value: map
+- op: add
+  path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/conditions/x-kubernetes-list-map-keys'
+  value: ['type']
+
+# Refs:
+- op: add
+  path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/refs/x-kubernetes-list-type'
+  value: map
+- op: add
+  path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/refs/x-kubernetes-list-map-keys'
+  value: ['kind']

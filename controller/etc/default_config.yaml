@@ -1,0 +1,11 @@
+http_listen_addr: ':6060'
+introspection_addr: ':8089'
+log_level: debug
+matcher:
+  migrations: true
+indexer:
+  migrations: true
+notifier:
+  migrations: true
+metrics:
+  name: prometheus

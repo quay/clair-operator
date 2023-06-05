@@ -1,0 +1,6 @@
+- op: add
+  path: /spec/selector/app.kubernetes.io~1component
+  value: matcher
+- op: add
+  path: /metadata/labels/app.kubernetes.io~1component
+  value: matcher

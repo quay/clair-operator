@@ -1,0 +1,129 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgresql-config
+  labels:
+    app: postgresql
+data:
+  POSTGRES_DB: clair
+  POSTGRES_USER: clair
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: database
+  labels:
+    app: postgresql
+stringData:
+  POSTGRES_PASSWORD: psqltest
+  90-database.json-patch: >
+    [
+      {
+        "op": "add",
+        "path": "/indexer/connstring",
+        "value": "host=postgresql user=clair dbname=clair password=psqltest sslmode=disable"
+      },
+      {
+        "op": "add",
+        "path": "/matcher/connstring",
+        "value": "host=postgresql user=clair dbname=clair password=psqltest sslmode=disable"
+      }
+    ]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+  labels:
+    app: postgresql
+spec:
+  ports:
+    - name: postgres
+      protocol: TCP
+      port: 5432
+      targetPort: postgres
+  selector:
+    app: postgresql
+---
+kind: PersistentVolume
+apiVersion: v1
+metadata:
+  name: postgresql-pv
+  labels:
+    type: local
+    app: postgresql
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/tmp/data"
+---
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: postgresql-pvc
+  labels:
+    app: postgresql
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgresql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgresql
+  template:
+    metadata:
+      labels:
+        app: postgresql
+    spec:
+      containers:
+      - name: postgres-server
+        image: docker.io/library/postgres:15
+        ports:
+        - name: postgres
+          containerPort: 5432
+        envFrom:
+        - configMapRef:
+            name: postgresql-config
+        env:
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: database
+              key: POSTGRES_PASSWORD
+        volumeMounts:
+        - mountPath: /var/lib/postgresql/data
+          name: dbdata
+      volumes:
+      - name: dbdata
+        persistentVolumeClaim:
+          claimName: postgresql-pvc
+---
+apiVersion: projectclair.io/v1alpha1
+kind: Clair
+metadata:
+  name: basic
+spec:
+  endpoint:
+    hostname: example.com
+  databases:
+    indexer:
+      name: database
+      key: 90-database.json-patch
+    matcher:
+      name: database
+      key: 90-database.json-patch

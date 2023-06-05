@@ -1,0 +1,15 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- clair_editor_role.yaml
+- clair_viewer_role.yaml
+- indexer_editor_role.yaml
+- indexer_viewer_role.yaml
+- matcher_editor_role.yaml
+- matcher_viewer_role.yaml
+- notifier_editor_role.yaml
+- notifier_viewer_role.yaml
+- role.yaml
+- updater_editor_role.yaml
+- updater_viewer_role.yaml

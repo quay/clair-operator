@@ -1,0 +1,13 @@
+- op: add
+  path: /spec/conversion
+  value:
+    strategy: Webhook
+    webhook:
+      conversionReviewVersions:
+      - v1
+      - v1alpha1
+      clientConfig:
+        service:
+          namespace: system
+          name: webhook-service
+          path: /convert

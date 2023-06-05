@@ -1,0 +1,49 @@
+[package]
+name = "controller"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+default = []
+test_ci = []
+
+[dependencies]
+clair_config = { path = "../clair_config" }
+api = { path = "../api" }
+kube = { workspace = true, features = ["runtime", "client", "config", "admission", "openssl-tls", "ws", "gzip", "jsonpatch"] }
+k8s-openapi = { workspace = true, features = ["v1_25"] }
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
+json-patch = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+futures = "0.3.28"
+thiserror = "1.0.40"
+tracing = "0.1.37"
+tracing-subscriber = { version = "0.3.17", features = ["json", "env-filter"] }
+anyhow = "1.0.71"
+lazy_static = "1.4.0"
+libc = "0.2.144"
+chrono = { version = "0.4.26", features = ["clock", "serde", "time"], default-features = false }
+metrics = "0.21.0"
+metrics-exporter-prometheus = "0.12.1"
+warp = { version = "0.3.5", features = ["multipart"], default-features = false }
+bytes = "1.4.0"
+iftree = "1.0.4"
+tokio-util = { version = "0.7.8" }
+tokio-stream = { version = "0.1.14", features = ["net", "signal"] }
+tokio-native-tls = "0.3.1"
+is-terminal = "0.4.7"
+
+[build-dependencies]
+bindgen = "0.65"
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+reqwest = { version = "0.11.18", features = ["json"] }
+test-log = { version = "0.2.11", default-features = false, features = ["trace"] }
