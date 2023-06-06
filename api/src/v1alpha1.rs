@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
-use super::*;
+pub use crate::RefConfigOrSecret;
 
 /// ClairSpec describes the desired state of a Clair instance.
 #[derive(

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, env, str::FromStr, sync::Arc};
+use std::{collections::BTreeMap, env, sync::Arc};
 
 use chrono::Utc;
 use futures::StreamExt;
@@ -8,8 +8,8 @@ use k8s_openapi::{
     NamespaceResourceScope,
 };
 use kube::{
-    api::{Api, DynamicObject, Patch, PatchParams, PostParams},
-    core::{GroupVersion, GroupVersionKind, ObjectMeta, PartialObjectMetaExt},
+    api::{Api, Patch, PatchParams, PostParams},
+    core::{GroupVersionKind, ObjectMeta},
     runtime::{
         controller::{Action, Controller},
         events::{Event, EventType, Recorder, Reporter},
@@ -406,45 +406,4 @@ pub fn controller(set: &mut task::JoinSet<Result<()>>, client: Client) {
             .await;
         Ok(())
     });
-}
-
-async fn update_annotation<K, S: AsRef<str>>(
-    client: Client,
-    rev: S,
-    objref: &core::v1::TypedLocalObjectReference,
-) -> Result<()>
-where
-    K: Resource<DynamicType = ()> + std::fmt::Debug,
-{
-    let gv = match objref.api_group.as_ref() {
-        Some(gv) => gv,
-        None => "",
-    };
-    let gv = GroupVersion::from_str(gv)?;
-    if v1alpha1::Clair::api_version(&()) != gv.api_version() {
-        return Ok(());
-    }
-    let gvk = gv.with_kind(&objref.kind);
-    let (ar, _) = kube::discovery::pinned_kind(&client, &gvk).await?;
-    let api: Api<DynamicObject> = Api::default_namespaced_with(client.clone(), &ar);
-    let meta = match api.get_metadata_opt(&objref.name).await? {
-        Some(meta) => meta,
-        None => return Ok(()),
-    };
-    if let Some(got) = get_rev_annotation(meta.meta()) {
-        if got == rev.as_ref() {
-            return Ok(());
-        }
-    };
-
-    let partial = ObjectMeta {
-        labels: Some([("TODO-real-key".to_string(), String::from(rev.as_ref()))].into()),
-        ..Default::default()
-    }
-    .into_request_partial::<K>();
-    let params = PatchParams::apply(&OPERATOR_NAME);
-
-    api.patch_metadata(&objref.name, &params, &Patch::Apply(&partial))
-        .await?;
-    Ok(())
 }

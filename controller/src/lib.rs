@@ -1,4 +1,5 @@
 // Use block for this module
+use anyhow::anyhow;
 use lazy_static::lazy_static;
 use serde_json;
 use serde_yaml;
@@ -6,11 +7,13 @@ use serde_yaml;
 // Re-exports for everyone's easy use.
 pub(crate) use api::v1alpha1;
 pub(crate) use k8s_openapi::{api::core, apimachinery::pkg::apis::meta};
+pub(crate) use kube;
 pub(crate) use tracing::{debug, error, info};
 
 pub mod clairs;
 pub mod config;
 pub mod updaters;
+pub mod webhook;
 
 // NB The docs are unclear, but backtraces are unsupported on stable.
 #[derive(thiserror::Error, Debug)]
@@ -50,6 +53,32 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 pub fn get_rev_annotation(metadata: &meta::v1::ObjectMeta) -> Option<&str> {
     let annotations = metadata.annotations.as_ref()?;
     annotations.get(REV_ANNOTATION.as_str()).map(String::as_str)
+}
+
+pub fn next_config(c: &v1alpha1::Clair) -> Result<v1alpha1::ConfigSource> {
+    let mut dropins = c.spec.dropins.clone();
+    if let Some(db) = &c.spec.databases {
+        dropins.push(v1alpha1::RefConfigOrSecret {
+            secret: Some(db.indexer.clone()),
+            config_map: None,
+        });
+        dropins.push(v1alpha1::RefConfigOrSecret {
+            secret: Some(db.matcher.clone()),
+            config_map: None,
+        });
+        if let Some(db) = &db.notifier {
+            dropins.push(v1alpha1::RefConfigOrSecret {
+                secret: Some(db.clone()),
+                config_map: None,
+            });
+        };
+    };
+    let status = c.status.as_ref().ok_or(anyhow!("no status field"))?;
+    let cfgsrc = status.config.as_ref().ok_or(anyhow!("no config field"))?;
+    Ok(v1alpha1::ConfigSource {
+        root: cfgsrc.root.clone(),
+        dropins,
+    })
 }
 
 // Condition is like keyify, but does not force lower-case.
