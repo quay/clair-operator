@@ -1,4 +1,7 @@
-use tracing::{error, info};
+use std::{path::PathBuf, sync::Arc};
+
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info, warn};
 
 use controller::*;
 
@@ -7,22 +10,21 @@ fn main() {
         crate_authors, crate_description, crate_name, crate_version, Arg, ArgAction, Command,
     };
     use std::process;
-    let image_default = format!("quay.io/projectquay/clair:{}", env!("DEFAULT_CLAIR_TAG"));
     let cmd = Command::new(crate_name!())
         .version(crate_version!())
         .author(crate_authors!())
         .about(crate_description!())
         .subcommand_required(true)
-        .args([
+        .subcommands([Command::new("run").about("run controller").args([
             Arg::new("introspection_address")
                 .long("introspection-bind-address")
                 .help("tk")
-                .default_value(":8089"),
+                .default_value("[::]:8089"),
             Arg::new("image")
                 .long("image-clair")
                 .env("RELATED_IMAGE_CLAIR")
                 .help("tk")
-                .default_value(image_default),
+                .default_value(DEFAULT_IMAGE.to_string()),
             Arg::new("leader_elect")
                 .long("leader-elect")
                 .help("tk")
@@ -30,9 +32,15 @@ fn main() {
             Arg::new("webhook_address")
                 .long("webhook-bind-address")
                 .help("tk")
-                .default_value(":8080"),
-        ])
-        .subcommands([Command::new("run").about("run controller")]);
+                .default_value("[::]:8080"),
+            Arg::new("template_dir")
+                .long("template-dir")
+                .help("directory to consult for resource templates")
+                .default_value("etc/templates"),
+            Arg::new("controllers")
+                .action(ArgAction::Append)
+                .default_values(&["clair", "indexer"]),
+        ])]);
 
     if let Err(e) = match cmd.get_matches().subcommand() {
         Some(("run", m)) => match Args::try_from(m) {
@@ -48,8 +56,10 @@ fn main() {
 
 struct Args {
     image: String,
+    controllers: Vec<String>,
     introspection_address: std::net::SocketAddr,
     _leader_elect: bool,
+    template_dir: PathBuf,
     webhook_address: std::net::SocketAddr,
 }
 
@@ -58,20 +68,37 @@ impl TryFrom<&clap::ArgMatches> for Args {
 
     fn try_from(m: &clap::ArgMatches) -> std::result::Result<Self, Self::Error> {
         Ok(Self {
-            image: m.get_one::<&str>("image").unwrap().to_string(),
-            webhook_address: m.get_one::<&str>("webhook_address").unwrap().parse()?,
+            image: m.get_one::<String>("image").unwrap().clone(),
+            webhook_address: m.get_one::<String>("webhook_address").unwrap().parse()?,
             introspection_address: m
-                .get_one::<&str>("introspection_address")
+                .get_one::<String>("introspection_address")
                 .unwrap()
                 .parse()?,
             _leader_elect: m.get_flag("leader_elect"),
+            template_dir: m.get_one::<String>("template_dir").unwrap().into(),
+            controllers: m
+                .get_many::<String>("controllers")
+                .unwrap()
+                .map(Clone::clone)
+                .collect(),
+        })
+    }
+}
+
+impl Args {
+    fn context(&self, client: kube::Client) -> Arc<Context> {
+        use controller::templates::Assets;
+        Arc::new(Context {
+            client,
+            image: self.image.clone(),
+            assets: Assets::new(&self.template_dir),
         })
     }
 }
 
 fn startup(args: Args) -> controller::Result<()> {
     use metrics_exporter_prometheus::PrometheusBuilder;
-    use tokio::runtime;
+    use tokio::{runtime, signal};
     use tracing_subscriber::filter::EnvFilter;
     use tracing_subscriber::prelude::*;
     use warp::Filter;
@@ -85,11 +112,14 @@ fn startup(args: Args) -> controller::Result<()> {
     let prom = PrometheusBuilder::new().with_http_listener(args.introspection_address);
 
     let rt = runtime::Builder::new_multi_thread().enable_all().build()?;
+    let token = CancellationToken::new();
     rt.handle().spawn(async move {
         if let Err(e) = prom.install() {
             error!("error setting up prometheus endpoint: {e}");
         }
     });
+    let srvstop = token.clone();
+    let ctlstop = token.clone();
     rt.handle().spawn(async move {
         let client = match kube::Client::try_default().await {
             Ok(c) => c,
@@ -103,29 +133,56 @@ fn startup(args: Args) -> controller::Result<()> {
                 .header("content-type", "text/plain; charset=utf-8")
                 .body("hello from clair-operator\n")
         });
-        let routes = index.or(webhook::validate_clair(client));
-        warp::serve(routes).run(args.webhook_address).await;
+        let routes = index
+            .or(webhook::validate(client.clone()))
+            .or(webhook::mutate(client));
+        let srv = warp::serve(routes)
+            .try_bind_with_graceful_shutdown(args.webhook_address, srvstop.cancelled_owned());
+        let (addr, srv) = match srv {
+            Ok(srv) => srv,
+            Err(err) => {
+                error!("error starting webhook server: {err}");
+                return;
+            }
+        };
+        info!(%addr, "started webhook server");
+        srv.await
     });
-    rt.block_on(run(args.image))
+    rt.handle().spawn(async move {
+        if let Err(err) = signal::ctrl_c().await {
+            error!("error reading SIGTERM: {err}");
+        }
+        token.cancel();
+    });
+    rt.block_on(run(args, ctlstop))
 }
 
-async fn run(_img: String) -> controller::Result<()> {
+async fn run(args: Args, token: CancellationToken) -> controller::Result<()> {
     use tokio::task;
 
-    let client = kube::Client::try_default().await?;
+    let config = kube::Config::infer().await?;
+    let client = kube::client::ClientBuilder::try_from(config.clone())?.build();
     // TODO(hank) Will eventually need to use the more manual construction of controllers to make
     // sure the caches are used optimally.
 
     info!("setup done, starting controllers");
+    let ctx = args.context(client);
     let mut ctrls = task::JoinSet::new();
-    clairs::controller(&mut ctrls, client.clone());
-    updaters::controller(&mut ctrls, client.clone());
+    for name in args.controllers {
+        match name.to_lowercase().as_str() {
+            "clair" | "clairs" => clairs::controller(&mut ctrls, token.clone(), ctx.clone()),
+            "indexer" | "indexers" => indexers::controller(&mut ctrls, token.clone(), ctx.clone()),
+            "updater" | "updaters" => updaters::controller(&mut ctrls, ctx.clone()),
+            other => warn!(name = other, "unrecognized controller name, skipping"),
+        };
+    }
     while let Some(res) = ctrls.join_next().await {
         match res {
             Err(e) => error!("error starting controller: {e}"),
             Ok(res) => {
                 if let Err(e) = res {
                     error!("error from controller: {e}");
+                    token.cancel();
                 }
             }
         };

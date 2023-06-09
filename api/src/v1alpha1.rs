@@ -17,17 +17,20 @@ pub use crate::RefConfigOrSecret;
     namespaced,
     status = "ClairStatus",
     derive = "PartialEq",
-    shortname = "cl",
+    shortname = "clair",
     category = "apps"
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ClairSpec {
     /// Databases indicates the Secret keys holding config drop-ins that services should connect
     /// to.
-    ///
-    /// If not provided, a database engine will be started and used on the default storage class.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub databases: Option<Databases>,
+    /// Endpoint indicates how the Ingress should be created.
+    ///
+    /// If unspecified, the resulting endpoint will need to be read out of the status subresource.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<Endpoint>,
     /// Notifier enables the notifier subsystem.
     ///
     /// The operator does not start the notifier by default. If it's configured via a drop-in, this
@@ -48,11 +51,24 @@ pub struct ClairSpec {
     pub config_dialect: Option<ConfigDialect>,
 }
 
+impl std::fmt::Display for Clair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "Clair({})",
+            self.metadata
+                .uid
+                .as_ref()
+                .map(String::as_str)
+                .unwrap_or("<>")
+        ))
+    }
+}
+
 /// Databases specifies the config drop-ins for the various databases needed.
 ///
 /// It's fine for all the fields to point to the same Secret key if it contains all the relevant
 /// configuration.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Validate, JsonSchema)]
+#[derive(Clone, Default, Debug, Deserialize, PartialEq, Serialize, Validate, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Databases {
     /// Indexer references the Secret key holding database details for the indexer database.
@@ -64,6 +80,15 @@ pub struct Databases {
     /// This is only required if the ClairSpec's "notifier" field is set to "true".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notifier: Option<core::v1::SecretKeySelector>,
+}
+
+#[derive(Clone, Default, Debug, Deserialize, PartialEq, Serialize, Validate, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Endpoint {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls: Option<core::v1::LocalObjectReference>,
 }
 
 /// ClairStatus describes the observed state of a Clair instance.
@@ -138,21 +163,34 @@ pub enum ConfigDialect {
     kind = "Indexer",
     namespaced,
     status = "IndexerStatus",
-    derive = "PartialEq"
+    shortname = "indexer",
+    derive = "PartialEq",
+    derive = "Default"
 )]
 #[serde(rename_all = "camelCase")]
 pub struct IndexerSpec {
-    pub info: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// Config is configuration sources for the Clair instance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<ConfigSource>,
 }
 
 /// IndexerStatus describes the observed state of a Indexer instance.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Validate, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Default, PartialEq, Serialize, Validate, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexerStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     //#[schemars(schema_with = "conditions")]
     pub conditions: Vec<meta::v1::Condition>,
+    // Misc other refs we may need to hold onto, like Ingresses, Deployments, etc.
+    /// Refs holds on to references to objects needed by this instance.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<core::v1::TypedLocalObjectReference>,
+    /// Config is configuration sources for the Clair instance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<ConfigSource>,
 }
 
 /// MatcherSpec describes the desired state of an Matcher instance.
@@ -165,11 +203,16 @@ pub struct IndexerStatus {
     kind = "Matcher",
     namespaced,
     status = "MatcherStatus",
-    derive = "PartialEq"
+    shortname = "matcher",
+    derive = "PartialEq",
+    derive = "Default"
 )]
 #[serde(rename_all = "camelCase")]
 pub struct MatcherSpec {
-    pub info: String,
+    pub image: Option<String>,
+    /// Config is configuration sources for the Clair instance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<ConfigSource>,
 }
 /// MatcherStatus describes the observed state of a Matcher instance.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Validate, JsonSchema)]
@@ -179,6 +222,10 @@ pub struct MatcherStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     //#[schemars(schema_with = "conditions")]
     pub conditions: Vec<meta::v1::Condition>,
+    // Misc other refs we may need to hold onto, like Ingresses, Deployments, etc.
+    /// Refs holds on to references to objects needed by this instance.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<core::v1::TypedLocalObjectReference>,
 }
 
 /// UpdaterSpec describes the desired state of an Updater instance.
@@ -191,7 +238,9 @@ pub struct MatcherStatus {
     kind = "Updater",
     namespaced,
     status = "UpdaterStatus",
+    shortname = "updater",
     derive = "PartialEq",
+    derive = "Default",
     printcolumn = r#"{"name":"Suspended","type":"boolean","jsonPath":".spec.suspend"}"#,
     printcolumn = r#"{"name":"Last Success","type":"date","format":"date-time","jsonPath":".status.cronJob.status.last_successful_time"}"#,
     printcolumn = r#"{"name":"Last Schedule","type":"date","format":"date-time","jsonPath":".status.cronJob.status.last_schedule_time"}"#
@@ -206,6 +255,8 @@ pub struct UpdaterSpec {
     /// Suspend subsequent runs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suspend: Option<bool>,
+
+    pub image: Option<String>,
 }
 
 /// UpdaterStatus describes the observed state of a Updater instance.
@@ -216,7 +267,10 @@ pub struct UpdaterStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     //#[schemars(schema_with = "conditions")]
     pub conditions: Vec<meta::v1::Condition>,
-
+    // Misc other refs we may need to hold onto, like Ingresses, Deployments, etc.
+    /// Refs holds on to references to objects needed by this instance.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<core::v1::TypedLocalObjectReference>,
     /// CronJob the operator has configured for this Updater.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cron_job: Option<core::v1::TypedLocalObjectReference>,
@@ -232,11 +286,16 @@ pub struct UpdaterStatus {
     kind = "Notifier",
     namespaced,
     status = "NotifierStatus",
-    derive = "PartialEq"
+    shortname = "notifier",
+    derive = "PartialEq",
+    derive = "Default"
 )]
 #[serde(rename_all = "camelCase")]
 pub struct NotifierSpec {
-    pub info: String,
+    pub image: Option<String>,
+    /// Config is configuration sources for the Clair instance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<ConfigSource>,
 }
 /// NotifierStatus describes the observed state of a Notifier instance.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Validate, JsonSchema)]
@@ -246,4 +305,8 @@ pub struct NotifierStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     //#[schemars(schema_with = "conditions")]
     pub conditions: Vec<meta::v1::Condition>,
+    // Misc other refs we may need to hold onto, like Ingresses, Deployments, etc.
+    /// Refs holds on to references to objects needed by this instance.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<core::v1::TypedLocalObjectReference>,
 }

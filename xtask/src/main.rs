@@ -44,10 +44,16 @@ type DynError = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, DynError>;
 
 fn ci() -> Result<()> {
-    use std::{env, process::Command};
+    use std::{
+        env,
+        process::{Command, Stdio},
+    };
     env::set_var("CI", "true");
     env::set_var("KUBECONFIG", workspace().join("kubeconfig"));
+    env::set_var("RUST_TEST_TIME_INTEGRATION", "30000,3000000");
+    env::set_var("RUST_LOG", "controller=debug");
     let _guard = KIND::new()?;
+    eprintln!("waiting for pods to ready");
     let _ = Command::new("kubectl")
         .args(&[
             "wait",
@@ -58,16 +64,46 @@ fn ci() -> Result<()> {
             "--all-namespaces",
         ])
         .status();
+    eprintln!("adding CI label");
     let _ = Command::new("kubectl")
         .args(&[
             "label",
             "namespace",
             "default",
-            "clair.projectquay.io/safe-to-run-tests=true",
+            "projectclair.io/safe-to-run-tests=true",
         ])
         .status();
+    eprintln!("running CI tests");
+    let use_nextest = Command::new(env::var_os("CARGO").unwrap())
+        .args(&["nextest", "help"])
+        .stderr(Stdio::null())
+        .stdout(Stdio::null())
+        .status()?
+        .success();
+    let ar = workspace().join("tests.tar.zst");
+    let mut test_args = vec![];
+    if use_nextest {
+        eprintln!("using nextest");
+        test_args.push("nextest");
+        test_args.push("run");
+        if ar.exists() {
+            eprintln!("using archive \"{}\"", ar.display());
+            test_args.push("--archive-file");
+            test_args.push(ar.to_str().unwrap());
+        }
+    } else {
+        test_args.push("test");
+    }
+    if !use_nextest || !ar.exists() {
+        test_args.push("--features");
+        test_args.push("test_ci");
+    }
+    if !use_nextest {
+        test_args.push("--");
+        test_args.push("--ensure-time");
+    }
     let status = Command::new(env::var_os("CARGO").unwrap())
-        .args(&["test"])
+        .args(test_args)
         .current_dir(workspace())
         .status()?;
     if !status.success() {

@@ -1,0 +1,33 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ⚠️
+  labels:
+    app.kubernetes.io/name: clair
+    app.kubernetes.io/managed-by: clair-operator
+spec:
+  rules:
+  - host: ⚠️
+    http:
+      paths:
+      - path: /indexer
+        pathType: Prefix
+        backend:
+          service:
+            name: ⚠️-indexer
+            port:
+              name: api
+      - path: /matcher
+        pathType: Prefix
+        backend:
+          service:
+            name: ⚠️-matcher
+            port:
+              name: api
+      - path: /notifier
+        pathType: Prefix
+        backend:
+          service:
+            name: ⚠️-notifier
+            port:
+              name: api

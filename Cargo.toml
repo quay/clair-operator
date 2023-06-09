@@ -24,3 +24,5 @@ serde_json = "1.0.96"
 
 [workspace.metadata]
 clair-config-ref = "main"
+[workspace.metadata.ci]
+kind-version = ['1.25']
