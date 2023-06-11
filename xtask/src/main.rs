@@ -21,14 +21,14 @@ fn main() {
                     .long_help("Bundle output directory. If unspecified, `bundle` inside the workspace root will be used.")
                     .value_hint(ValueHint::DirPath),
                 ]),
-            Command::new("ci").about("run CI setup, then tests"),
+            Command::new("ci").about("run CI setup, then tests").arg(Arg::new("pass").trailing_var_arg(true)),
             Command::new("manifests")
                 .about("generate CRD manifests"),
         ]);
 
     if let Err(e) = match cmd.get_matches().subcommand() {
         Some(("bundle", m)) => bundle(crate_version!(), BundleOpts::from(m)),
-        Some(("ci", _)) => ci(),
+        Some(("ci", m)) => ci(CiOpts::from(m)),
         Some(("manifests", _)) => manifests(),
         _ => unreachable!(),
     } {
@@ -40,7 +40,7 @@ fn main() {
 type DynError = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, DynError>;
 
-fn ci() -> Result<()> {
+fn ci(opts: CiOpts) -> Result<()> {
     use std::{
         env,
         process::{Command, Stdio},
@@ -95,9 +95,12 @@ fn ci() -> Result<()> {
         test_args.push("--features");
         test_args.push("test_ci");
     }
+    test_args.push("--");
     if !use_nextest {
-        test_args.push("--");
         test_args.push("--ensure-time");
+    }
+    for v in &opts.pass {
+        test_args.push(&v);
     }
     let status = Command::new(env::var_os("CARGO").unwrap())
         .args(test_args)
@@ -107,6 +110,22 @@ fn ci() -> Result<()> {
         return Err("tests failed".into());
     }
     Ok(())
+}
+
+struct CiOpts {
+    pass: Vec<String>,
+}
+
+impl From<&clap::ArgMatches> for CiOpts {
+    fn from(m: &clap::ArgMatches) -> Self {
+        CiOpts {
+            pass: m
+                .get_many::<String>("pass")
+                .unwrap()
+                .map(ToString::to_string)
+                .collect(),
+        }
+    }
 }
 
 struct KIND {
