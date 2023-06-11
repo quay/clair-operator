@@ -29,12 +29,6 @@
 - op: add
   path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/conditions/x-kubernetes-list-map-keys'
   value: ['type']
-- op: add
-  path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/conditions/x-kubernetes-patch-merge-key'
-  value: type
-- op: add
-  path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/conditions/x-kubernetes-patch-strategy'
-  value: merge
 
 # Refs:
 - op: add
@@ -43,9 +37,3 @@
 - op: add
   path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/refs/x-kubernetes-list-map-keys'
   value: ['name']
-- op: add
-  path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/refs/x-kubernetes-patch-merge-key'
-  value: name
-- op: add
-  path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/refs/x-kubernetes-patch-strategy'
-  value: merge

@@ -1,16 +1,27 @@
-//! Build script for building and linking the go config helper.
+//! Build script.
+//!
+//! This builds and links the config wrapper at `go/config`.
+//! It also populates the `DEFAULT_IMAGE_TAG` environment variable based on the project metadata.
+//! *NB* Changing the metadata requires forcing a rebuild to pick up the change.
 
 use std::{
+    collections::BTreeMap,
     env,
     path::PathBuf,
     process::{self, Command},
 };
 
+use serde::Deserialize;
+
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let src_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
 
-    println!("cargo:rustc-env=DEFAULT_CLAIR_TAG=4.6.1");
+    // Set the magic tag variable.
+    if let Err(err) = export_tag() {
+        eprintln!("{err}");
+        process::exit(1);
+    }
 
     for f in &["go.mod", "main.go"] {
         println!(
@@ -33,8 +44,10 @@ fn main() {
         "GOARCH",
         map_platform(env::var("CARGO_CFG_TARGET_ARCH").unwrap()),
     );
-    cmd.args(&[
+    cmd.args([
         "build",
+        "-ldflags=-s -w",
+        "-trimpath",
         "-buildmode=c-archive",
         &format!("-o={}", out_dir.join("libconfig.a").to_string_lossy()),
         ".",
@@ -62,4 +75,36 @@ fn map_platform<S: AsRef<str>>(p: S) -> &'static str {
         "x86_64" => "amd64",
         _ => panic!("unhandled platform: {}", p.as_ref()),
     }
+}
+
+fn export_tag() -> Result<(), Box<dyn std::error::Error>> {
+    let out = Command::new("cargo")
+        .args(["metadata", "--format-version", "1"])
+        .output()?;
+    let meta: RootMeta = serde_json::from_slice(&out.stdout)?;
+    let meta = meta.metadata;
+    let mut base = meta.controller.get("default").unwrap();
+    let profile = env::var("PROFILE")?;
+
+    if let Some(v) = meta.controller.get(&profile) {
+        base = v;
+    }
+    println!("cargo:rustc-env=DEFAULT_CLAIR_TAG={}", base.clair_image_tag);
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct RootMeta {
+    metadata: ProjectMeta,
+}
+
+#[derive(Deserialize)]
+struct ProjectMeta {
+    controller: BTreeMap<String, ControllerMeta>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct ControllerMeta {
+    clair_image_tag: String,
 }

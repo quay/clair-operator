@@ -2,12 +2,16 @@ use std::path::Path;
 
 use anyhow::anyhow;
 use json_patch;
+pub use k8s_openapi::{api::*, apimachinery::pkg::apis::meta};
 use kube::{api::Api, Client};
 use serde_json;
 use serde_yaml;
 
 use crate::*;
 mod sys;
+
+// TODO(hank) This crate should be split out for build-time reasons. Invoking the go toolchain and
+// then needing to link against the result is slow.
 
 /// Validate calls into [`config.Validate`] and reports the lints for every mode.
 /// This is done by composing the config in-process accoring to the [`cmd.Load`] documentation.
@@ -35,9 +39,9 @@ pub async fn validate(client: Client, cfg: &v1alpha1::ConfigSource) -> Result<Va
         .iter()
         .enumerate()
         .map(|(i, v)| {
-            let key = if let Some(ref cmref) = &v.config_map.as_ref() {
+            let key = if let Some(cmref) = &v.config_map.as_ref() {
                 &cmref.key
-            } else if let Some(ref secref) = &v.secret.as_ref() {
+            } else if let Some(secref) = &v.secret.as_ref() {
                 &secref.key
             } else {
                 panic!("");
@@ -49,9 +53,9 @@ pub async fn validate(client: Client, cfg: &v1alpha1::ConfigSource) -> Result<Va
     for (i, _) in order {
         let r = &cfg.dropins[i];
         let src = if let Some(cmref) = &r.config_map {
-            Source::ConfigMap(&cmref)
+            Source::ConfigMap(cmref)
         } else if let Some(secref) = &r.secret {
-            Source::Secret(&secref)
+            Source::Secret(secref)
         } else {
             return Err(Error::Other(anyhow!("???")));
         };

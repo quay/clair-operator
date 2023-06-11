@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
@@ -7,6 +8,7 @@ use std::{
 use k8s_openapi::serde;
 use tracing::debug;
 
+// TODO(hank) Set up compile-time compression for these assets.
 #[iftree::include_file_tree(
     "
 paths = '*'
@@ -16,12 +18,12 @@ template.identifiers = false
 )]
 pub struct Asset {
     relative_path: &'static str,
-    contents_bytes: &'static [u8],
+    get_bytes: fn() -> Cow<'static, [u8]>,
 }
 
 pub struct Assets {
     dir: Option<PathBuf>,
-    tmpls: HashMap<String, &'static [u8]>,
+    tmpls: HashMap<String, Cow<'static, [u8]>>,
 }
 
 pub type DynError = Box<dyn std::error::Error>;
@@ -39,7 +41,7 @@ impl Assets {
             dir,
             tmpls: ASSETS
                 .iter()
-                .map(|a| (a.relative_path.into(), a.contents_bytes))
+                .map(|a| (a.relative_path.into(), (a.get_bytes)()))
                 .collect(),
         }
     }

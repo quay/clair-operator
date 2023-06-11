@@ -1,0 +1,372 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clairs.projectclair.io
+spec:
+  group: projectclair.io
+  names:
+    categories:
+    - apps
+    kind: Clair
+    plural: clairs
+    shortNames:
+    - clair
+    singular: clair
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ClairSpec via `CustomResource`
+        properties:
+          spec:
+            description: ClairSpec describes the desired state of a Clair instance.
+            properties:
+              configDialect:
+                description: |-
+                  ConfigDialect specifies the format to generate for the main config.
+
+                  This setting affects what format config drop-ins must be in.
+                enum:
+                - json
+                - yaml
+                nullable: true
+                type: string
+              databases:
+                description: Databases indicates the Secret keys holding config drop-ins that services should connect to.
+                nullable: true
+                properties:
+                  indexer:
+                    description: Indexer references the Secret key holding database details for the indexer database.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be a valid secret key.
+                        type: string
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                  matcher:
+                    description: Matcher references the Secret key holding database details for the matcher database.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be a valid secret key.
+                        type: string
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                  notifier:
+                    description: |-
+                      Notifier references the Secret key holding database details for the notifier database.
+
+                      This is only required if the ClairSpec's "notifier" field is set to "true".
+                    nullable: true
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be a valid secret key.
+                        type: string
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                required:
+                - indexer
+                - matcher
+                type: object
+              dropins:
+                description: |-
+                  Dropins references additional config drop-in files.
+
+                  See the Clair documentation for how config drop-ins are handled.
+                items:
+                  description: RefConfigOrSecret references either a ConfigMap key or a Secret key.
+                  properties:
+                    configMap:
+                      description: Selects a key from a ConfigMap.
+                      nullable: true
+                      properties:
+                        key:
+                          description: The key to select.
+                          type: string
+                        name:
+                          description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                          type: string
+                        optional:
+                          description: Specify whether the ConfigMap or its key must be defined
+                          type: boolean
+                      required:
+                      - key
+                      type: object
+                    secret:
+                      description: SecretKeySelector selects a key of a Secret.
+                      nullable: true
+                      properties:
+                        key:
+                          description: The key of the secret to select from.  Must be a valid secret key.
+                          type: string
+                        name:
+                          description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                          type: string
+                        optional:
+                          description: Specify whether the Secret or its key must be defined
+                          type: boolean
+                      required:
+                      - key
+                      type: object
+                  type: object
+                type: array
+              endpoint:
+                description: |-
+                  Endpoint indicates how the Ingress should be created.
+
+                  If unspecified, the resulting endpoint will need to be read out of the status subresource.
+                nullable: true
+                properties:
+                  hostname:
+                    nullable: true
+                    type: string
+                  tls:
+                    description: LocalObjectReference contains enough information to let you locate the referenced object inside the same namespace.
+                    nullable: true
+                    properties:
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                        type: string
+                    type: object
+                type: object
+              notifier:
+                description: |-
+                  Notifier enables the notifier subsystem.
+
+                  The operator does not start the notifier by default. If it's configured via a drop-in, this field should be set to start it.
+                nullable: true
+                type: boolean
+            type: object
+          status:
+            description: ClairStatus describes the observed state of a Clair instance.
+            nullable: true
+            properties:
+              conditions:
+                description: Conditions reports k8s-style conditions for various parts of the system.
+                items:
+                  description: Condition contains details for one aspect of the current state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: message is a human readable message indicating details about the transition. This may be an empty string.
+                      type: string
+                    observedGeneration:
+                      description: observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance.
+                      format: int64
+                      type: integer
+                    reason:
+                      description: reason contains a programmatic identifier indicating the reason for the condition's last transition. Producers of specific condition types may define expected values and meanings for this field, and whether the values are considered a guaranteed API. The value should be a CamelCase string. This field may not be empty.
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              config:
+                description: Config is configuration sources for the Clair instance.
+                nullable: true
+                properties:
+                  dropins:
+                    description: Dropins is a list of references to drop-in configs.
+                    items:
+                      description: RefConfigOrSecret references either a ConfigMap key or a Secret key.
+                      properties:
+                        configMap:
+                          description: Selects a key from a ConfigMap.
+                          nullable: true
+                          properties:
+                            key:
+                              description: The key to select.
+                              type: string
+                            name:
+                              description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                              type: string
+                            optional:
+                              description: Specify whether the ConfigMap or its key must be defined
+                              type: boolean
+                          required:
+                          - key
+                          type: object
+                        secret:
+                          description: SecretKeySelector selects a key of a Secret.
+                          nullable: true
+                          properties:
+                            key:
+                              description: The key of the secret to select from.  Must be a valid secret key.
+                              type: string
+                            name:
+                              description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                              type: string
+                            optional:
+                              description: Specify whether the Secret or its key must be defined
+                              type: boolean
+                          required:
+                          - key
+                          type: object
+                      type: object
+                    type: array
+                  root:
+                    description: Root is a reference to the main config.
+                    properties:
+                      key:
+                        description: The key to select.
+                        type: string
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                        type: string
+                      optional:
+                        description: Specify whether the ConfigMap or its key must be defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                required:
+                - root
+                type: object
+              database:
+                description: Database is the Service for the managed database engine, if used.
+                nullable: true
+                properties:
+                  apiGroup:
+                    description: APIGroup is the group for the resource being referenced. If APIGroup is not specified, the specified Kind must be in the core API group. For any other third-party types, APIGroup is required.
+                    type: string
+                  kind:
+                    description: Kind is the type of resource being referenced
+                    type: string
+                  name:
+                    description: Name is the name of resource being referenced
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              endpoint:
+                description: Endpoint is a reference to whatever object is providing ingress.
+                nullable: true
+                properties:
+                  apiGroup:
+                    description: APIGroup is the group for the resource being referenced. If APIGroup is not specified, the specified Kind must be in the core API group. For any other third-party types, APIGroup is required.
+                    type: string
+                  kind:
+                    description: Kind is the type of resource being referenced
+                    type: string
+                  name:
+                    description: Name is the name of resource being referenced
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              indexer:
+                description: Indexer is the Service for the Indexer component.
+                nullable: true
+                properties:
+                  apiGroup:
+                    description: APIGroup is the group for the resource being referenced. If APIGroup is not specified, the specified Kind must be in the core API group. For any other third-party types, APIGroup is required.
+                    type: string
+                  kind:
+                    description: Kind is the type of resource being referenced
+                    type: string
+                  name:
+                    description: Name is the name of resource being referenced
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              matcher:
+                description: Matcher is the Service for the Matcher component.
+                nullable: true
+                properties:
+                  apiGroup:
+                    description: APIGroup is the group for the resource being referenced. If APIGroup is not specified, the specified Kind must be in the core API group. For any other third-party types, APIGroup is required.
+                    type: string
+                  kind:
+                    description: Kind is the type of resource being referenced
+                    type: string
+                  name:
+                    description: Name is the name of resource being referenced
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              notifier:
+                description: Notifier is the Service for the Notifier component.
+                nullable: true
+                properties:
+                  apiGroup:
+                    description: APIGroup is the group for the resource being referenced. If APIGroup is not specified, the specified Kind must be in the core API group. For any other third-party types, APIGroup is required.
+                    type: string
+                  kind:
+                    description: Kind is the type of resource being referenced
+                    type: string
+                  name:
+                    description: Name is the name of resource being referenced
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              refs:
+                description: Refs holds on to references to objects needed by this instance.
+                items:
+                  description: TypedLocalObjectReference contains enough information to let you locate the typed referenced object inside the same namespace.
+                  properties:
+                    apiGroup:
+                      description: APIGroup is the group for the resource being referenced. If APIGroup is not specified, the specified Kind must be in the core API group. For any other third-party types, APIGroup is required.
+                      type: string
+                    kind:
+                      description: Kind is the type of resource being referenced
+                      type: string
+                    name:
+                      description: Name is the name of resource being referenced
+                      type: string
+                  required:
+                  - kind
+                  - name
+                  type: object
+                type: array
+            type: object
+        required:
+        - spec
+        title: Clair
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

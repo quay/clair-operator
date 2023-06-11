@@ -55,11 +55,7 @@ impl std::fmt::Display for Clair {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!(
             "Clair({})",
-            self.metadata
-                .uid
-                .as_ref()
-                .map(String::as_str)
-                .unwrap_or("<>")
+            self.metadata.uid.as_deref().unwrap_or("<>")
         ))
     }
 }

@@ -1,0 +1,29 @@
+---
+apiVersion: projectclair.io/v1alpha1
+kind: Clair
+metadata:
+  name: example
+spec:
+  configDialect: json
+  databases:
+    indexer:
+      name: indexerDatabase
+      key: database-indexer.json
+    matcher:
+      name: matcherDatabase
+      key: database-matcher.json
+    notifier:
+      name: notifierDatabase
+      key: database-notifier.json
+  dropins:
+    - configMap:
+        name: clairConfig
+        key: notifier.json
+    - configMap:
+        name: clairConfig
+        key: overrides.json-patch
+  endpoint:
+    hostname: clair.cluster.local
+    tls:
+      name: tlsSecret
+  notifier: true

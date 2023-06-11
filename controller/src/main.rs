@@ -1,13 +1,23 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
+use futures::prelude::*;
+use tokio::net::TcpListener;
+use tokio_native_tls::{native_tls, TlsAcceptor};
+use tokio_stream::wrappers::TcpListenerStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+use warp::Filter;
 
 use controller::*;
 
 fn main() {
     use clap::{
         crate_authors, crate_description, crate_name, crate_version, Arg, ArgAction, Command,
+        ValueHint,
     };
     use std::process;
     let cmd = Command::new(crate_name!())
@@ -37,9 +47,22 @@ fn main() {
                 .long("template-dir")
                 .help("directory to consult for resource templates")
                 .default_value("etc/templates"),
+            Arg::new("cert_dir")
+                .long("cert-dir")
+                .help("tk")
+                .value_hint(ValueHint::DirPath)
+                .default_value(DEFAULT_CERT_DIR.as_os_str()),
+            Arg::new("cert_name")
+                .long("cert-name")
+                .help("tk")
+                .default_value("tls.crt"),
+            Arg::new("key_name")
+                .long("key-name")
+                .help("tk")
+                .default_value("tls.key"),
             Arg::new("controllers")
                 .action(ArgAction::Append)
-                .default_values(&["clair", "indexer"]),
+                .default_values(["clair", "indexer"]),
         ])]);
 
     if let Err(e) = match cmd.get_matches().subcommand() {
@@ -55,10 +78,13 @@ fn main() {
 }
 
 struct Args {
-    image: String,
-    controllers: Vec<String>,
-    introspection_address: std::net::SocketAddr,
     _leader_elect: bool,
+    cert_dir: PathBuf,
+    cert_name: String,
+    controllers: Vec<String>,
+    image: String,
+    introspection_address: std::net::SocketAddr,
+    key_name: String,
     template_dir: PathBuf,
     webhook_address: std::net::SocketAddr,
 }
@@ -81,6 +107,9 @@ impl TryFrom<&clap::ArgMatches> for Args {
                 .unwrap()
                 .map(Clone::clone)
                 .collect(),
+            cert_dir: m.get_one::<PathBuf>("cert_dir").unwrap().clone(),
+            cert_name: m.get_one::<String>("cert_name").unwrap().into(),
+            key_name: m.get_one::<String>("key_name").unwrap().into(),
         })
     }
 }
@@ -101,7 +130,6 @@ fn startup(args: Args) -> controller::Result<()> {
     use tokio::{runtime, signal};
     use tracing_subscriber::filter::EnvFilter;
     use tracing_subscriber::prelude::*;
-    use warp::Filter;
 
     let logger = tracing_subscriber::fmt::layer().json();
     let env_filter = EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new("info"))?;
@@ -118,36 +146,13 @@ fn startup(args: Args) -> controller::Result<()> {
             error!("error setting up prometheus endpoint: {e}");
         }
     });
-    let srvstop = token.clone();
     let ctlstop = token.clone();
-    rt.handle().spawn(async move {
-        let client = match kube::Client::try_default().await {
-            Ok(c) => c,
-            Err(e) => {
-                error!("error starting webhook server: {e}");
-                return;
-            }
-        };
-        let index = warp::path::end().map(|| {
-            warp::http::Response::builder()
-                .header("content-type", "text/plain; charset=utf-8")
-                .body("hello from clair-operator\n")
-        });
-        let routes = index
-            .or(webhook::validate(client.clone()))
-            .or(webhook::mutate(client));
-        let srv = warp::serve(routes)
-            .try_bind_with_graceful_shutdown(args.webhook_address, srvstop.cancelled_owned());
-        let (addr, srv) = match srv {
-            Ok(srv) => srv,
-            Err(err) => {
-                error!("error starting webhook server: {err}");
-                return;
-            }
-        };
-        info!(%addr, "started webhook server");
-        srv.await
-    });
+    rt.handle().spawn(webhooks(
+        args.webhook_address,
+        args.cert_dir.join(&args.cert_name),
+        args.cert_dir.join(&args.key_name),
+        token.clone(),
+    ));
     rt.handle().spawn(async move {
         if let Err(err) = signal::ctrl_c().await {
             error!("error reading SIGTERM: {err}");
@@ -168,7 +173,7 @@ async fn run(args: Args, token: CancellationToken) -> controller::Result<()> {
     info!("setup done, starting controllers");
     let ctx = args.context(client);
     let mut ctrls = task::JoinSet::new();
-    for name in args.controllers {
+    for name in &args.controllers {
         match name.to_lowercase().as_str() {
             "clair" | "clairs" => clairs::controller(&mut ctrls, token.clone(), ctx.clone()),
             "indexer" | "indexers" => indexers::controller(&mut ctrls, token.clone(), ctx.clone()),
@@ -187,5 +192,52 @@ async fn run(args: Args, token: CancellationToken) -> controller::Result<()> {
             }
         };
     }
+    Ok(())
+}
+
+async fn webhooks<A, Pa, Pb>(
+    addr: A,
+    certfile: Pa,
+    keyfile: Pb,
+    cancel: CancellationToken,
+) -> controller::Result<()>
+where
+    A: Into<SocketAddr>,
+    Pa: AsRef<Path>,
+    Pb: AsRef<Path>,
+{
+    // TODO(hank) Just rewrite all the warp bits into hyper.
+    let certfile = certfile.as_ref();
+    let keyfile = keyfile.as_ref();
+    let addr = addr.into();
+    let client = kube::Client::try_default().await?;
+    let index = warp::path::end().map(|| {
+        warp::http::Response::builder()
+            .header("content-type", "text/plain; charset=utf-8")
+            .body("hello from clair-operator\n")
+    });
+    let routes = index
+        .or(webhook::validate(client.clone()))
+        .or(webhook::mutate(client));
+    let srv = warp::serve(routes);
+    let l = TcpListener::bind(addr).await?;
+    info!(%addr, "started webhook server");
+    // I can't figure out how to name the listener type such that it's either
+    // TryStream<TcpStream> or TryStream<TlsStream<TcpStream>>.
+    if certfile.exists() && keyfile.exists() {
+        let (cert, key) = tokio::join!(tokio::fs::read(certfile), tokio::fs::read(keyfile));
+        let id = native_tls::Identity::from_pkcs8(&cert?, &key?)?;
+        let acceptor = TlsAcceptor::from(native_tls::TlsAcceptor::new(id)?);
+        let l = TcpListenerStream::new(l)
+            .map_err(Error::from)
+            .map_ok(|s| (s, acceptor.clone()))
+            .and_then(|(s, a)| async move { a.accept(s).await.map_err(Error::from) });
+        srv.serve_incoming_with_graceful_shutdown(l, cancel.cancelled_owned())
+            .await
+    } else {
+        let l = TcpListenerStream::new(l).map_err(Error::from);
+        srv.serve_incoming_with_graceful_shutdown(l, cancel.cancelled_owned())
+            .await
+    };
     Ok(())
 }

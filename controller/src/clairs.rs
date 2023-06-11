@@ -1,26 +1,20 @@
 use std::{collections::BTreeMap, env, sync::Arc};
 
-use futures::StreamExt;
-use k8s_openapi::{
-    api::{core::v1::TypedLocalObjectReference, networking},
-    serde::{de::DeserializeOwned, ser::Serialize},
-    NamespaceResourceScope,
-};
+use k8s_openapi::{api::core::v1::TypedLocalObjectReference, NamespaceResourceScope};
 use kube::{
     api::{Api, Patch, PatchParams, PostParams},
     core::{GroupVersionKind, ObjectMeta},
     discovery::oneshot,
-    runtime::{
-        controller::{Action, Controller},
-        watcher,
-    },
-    Resource,
 };
+use serde::{de::DeserializeOwned, ser::Serialize};
 use tokio::{task, time::Duration};
 
-use crate::*;
+use crate::{
+    clair_condition, config, prelude::*, want_dropins, COMPONENT_LABEL, DEFAULT_CONFIG_JSON,
+    DEFAULT_CONFIG_YAML,
+};
 
-static COMPONENT: &'static str = "clair";
+static COMPONENT: &str = "clair";
 
 #[instrument(skip_all)]
 pub fn controller(
@@ -34,7 +28,7 @@ pub fn controller(
         .clone()
         .labels(format!("{}={COMPONENT}", COMPONENT_LABEL.as_str()).as_str());
     let root: Api<v1alpha1::Clair> = Api::default_namespaced(client.clone());
-    let ctl = Controller::new(root, ctlcfg.clone())
+    let ctl = Controller::new(root, ctlcfg)
         .owns(
             Api::<core::v1::Secret>::default_namespaced(client.clone()),
             wcfg.clone(),
@@ -123,7 +117,7 @@ async fn initialize(
         check_config(&obj, &mut next, &ctx, &recorder).await?;
     }
     let indexer = v1alpha1::Indexer::new(
-        &name,
+        name,
         v1alpha1::IndexerSpec {
             image: Some(ctx.image.clone()),
             config: next.config.clone(),
@@ -131,7 +125,7 @@ async fn initialize(
     );
     next.indexer = initialize_subresource(&obj, &ctx, &recorder, indexer).await?;
     let matcher = v1alpha1::Matcher::new(
-        &name,
+        name,
         v1alpha1::MatcherSpec {
             image: Some(ctx.image.clone()),
             config: next.config.clone(),
@@ -139,7 +133,7 @@ async fn initialize(
     );
     next.matcher = initialize_subresource(&obj, &ctx, &recorder, matcher).await?;
     let notifier = v1alpha1::Notifier::new(
-        &name,
+        name,
         v1alpha1::NotifierSpec {
             image: Some(ctx.image.clone()),
             config: next.config.clone(),
@@ -149,9 +143,13 @@ async fn initialize(
     next.endpoint = initialize_endpoint(&obj, &ctx, &recorder).await?;
 
     let api: Api<v1alpha1::Clair> = Api::default_namespaced(ctx.client.clone());
+    let params = PostParams {
+        field_manager: Some(OPERATOR_NAME.to_string()),
+        ..Default::default()
+    };
     let mut c = v1alpha1::Clair::clone(&obj);
     c.status = Some(next);
-    api.replace_status(name, &post_params(), serde_json::to_vec(&c)?)
+    api.replace_status(name, &params, serde_json::to_vec(&c)?)
         .await?;
     debug!("initialized new Clair");
     Ok(Action::await_change())
@@ -284,7 +282,7 @@ async fn initialize_endpoint(
         GroupVersionKind::gvk("networking.k8s.io", "v1", "Ingress"),
         GroupVersionKind::gvk("gateway.networking.k8s.io", "v1beta1", "Gateway"),
     ])
-    .filter_map(|ref gvk| async { oneshot::pinned_kind(&ctx.client, gvk).await.ok() })
+    .filter_map(|gvk| async { oneshot::pinned_kind(&ctx.client, gvk).await.ok() })
     .collect::<Vec<_>>()
     .await;
     let ar = if let Some((ar, _)) = avail.first() {
@@ -298,7 +296,7 @@ async fn initialize_endpoint(
         "Gateway" => unimplemented!(), // TODO(hank) Support a Gateway.
         "Ingress" => {
             let action = String::from("IngressCreation");
-            let ingress = new_ingress(&obj, &ctx, recorder).await?;
+            let ingress = new_ingress(obj, ctx, recorder).await?;
             let api = Api::<networking::v1::Ingress>::default_namespaced(ctx.client.clone());
             let ingress = api.create(&params, &ingress).await;
             match ingress {
@@ -358,35 +356,29 @@ async fn new_ingress(
     // Attach TLS config if provided.
     if let Some(ref endpoint) = obj.spec.endpoint {
         if let Some(ref tls) = endpoint.tls {
-            spec.tls.get_or_insert_with(|| vec![]).push(IngressTLS {
-                hosts: if let Some(ref name) = endpoint.hostname {
-                    Some(vec![name.into()])
-                } else {
-                    None
-                },
+            spec.tls.get_or_insert_with(Vec::new).push(IngressTLS {
+                hosts: endpoint.hostname.as_ref().map(|name| vec![name.into()]),
                 secret_name: tls.name.clone(),
             });
         }
     }
     // Swap the hostname if provided.
     if let Some(rules) = spec.rules.as_mut() {
-        for r in rules.iter_mut() {
-            if r.host.as_ref().is_some_and(|h| h == "⚠️") {
-                let mut ok = false;
-                if let Some(ref endpoint) = obj.spec.endpoint {
-                    if let Some(ref name) = endpoint.hostname {
-                        r.host = Some(name.clone());
-                        ok = true;
-                    }
+        for r in rules.iter_mut().filter(|r| r.host == Some("⚠️".to_string())) {
+            let mut ok = false;
+            if let Some(ref endpoint) = obj.spec.endpoint {
+                if let Some(ref name) = endpoint.hostname {
+                    r.host = Some(name.clone());
+                    ok = true;
                 }
-                if !ok {
-                    r.host = None;
-                }
-                if let Some(http) = r.http.as_mut() {
-                    for p in http.paths.iter_mut() {
-                        if let Some(srv) = p.backend.service.as_mut() {
-                            srv.name = srv.name.replace("⚠️", &obj.name_any());
-                        }
+            }
+            if !ok {
+                r.host = None;
+            }
+            if let Some(http) = r.http.as_mut() {
+                for p in http.paths.iter_mut() {
+                    if let Some(srv) = p.backend.service.as_mut() {
+                        srv.name = srv.name.replace("⚠️", &obj.name_any());
                     }
                 }
             }
@@ -410,7 +402,7 @@ async fn check_config(
     let action = String::from("ConfigValidation");
     let reason = String::from("ConfigAdded");
 
-    let want = want_dropins(&spec);
+    let want = want_dropins(spec);
     let needs_update = want.iter().any(|d| !config.dropins.contains(d));
     debug!(needs_update, "ConfigSource status");
     if !needs_update {
@@ -470,7 +462,7 @@ async fn check_config(
     let ok = next
         .conditions
         .iter()
-        .filter_map(|ref cnd| {
+        .filter_map(|cnd| {
             if cnd.type_ == type_ {
                 Some(cnd.status == "True")
             } else {

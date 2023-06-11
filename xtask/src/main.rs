@@ -20,19 +20,16 @@ fn main() {
                     .help("bundle output directory")
                     .long_help("Bundle output directory. If unspecified, `bundle` inside the workspace root will be used.")
                     .value_hint(ValueHint::DirPath),
-                    Arg::new("patch_dir")
-                    .long("patch_dir")
-                    .value_name("DIR")
-                    .help("CRD patch directory")
-                    .long_help("CRD patch directory. If unspecified, `api/patch` inside the workspace root will be used.")
-                    .value_hint(ValueHint::DirPath),
                 ]),
             Command::new("ci").about("run CI setup, then tests"),
+            Command::new("manifests")
+                .about("generate CRD manifests"),
         ]);
 
     if let Err(e) = match cmd.get_matches().subcommand() {
         Some(("bundle", m)) => bundle(crate_version!(), BundleOpts::from(m)),
         Some(("ci", _)) => ci(),
+        Some(("manifests", _)) => manifests(),
         _ => unreachable!(),
     } {
         eprintln!("{e}");
@@ -153,6 +150,14 @@ impl KIND {
     }
 }
 
+macro_rules! write_crds {
+    ($out_dir:expr,  $($kind:ty),+ $(,)?) =>{
+        let out = $out_dir;
+        println!("writing to dir: {}", out.display());
+        $( write_crd::<$kind, _>(out)?; )+
+    }
+}
+
 fn bundle(v: &str, opts: BundleOpts) -> Result<()> {
     use api::v1alpha1;
     use std::fs::create_dir_all;
@@ -163,38 +168,42 @@ fn bundle(v: &str, opts: BundleOpts) -> Result<()> {
     let manifests = &out_dir.join(v).join("manifests");
     create_dir_all(manifests)?;
     create_dir_all(out_dir.join(v).join("tests"))?;
-    let patches = &opts.patch_dir;
 
-    // TODO(hank) Could write a macro to spit all these out.
-    write_crd::<v1alpha1::Clair, _>(manifests, patches)?;
-    write_crd::<v1alpha1::Indexer, _>(manifests, patches)?;
-    write_crd::<v1alpha1::Matcher, _>(manifests, patches)?;
-    write_crd::<v1alpha1::Updater, _>(manifests, patches)?;
-    write_crd::<v1alpha1::Notifier, _>(manifests, patches)?;
+    write_crds!(
+        out_dir,
+        v1alpha1::Clair,
+        v1alpha1::Indexer,
+        v1alpha1::Matcher,
+        v1alpha1::Updater,
+        v1alpha1::Notifier,
+    );
+    Ok(())
+}
 
+fn manifests() -> Result<()> {
+    use api::v1alpha1;
+    write_crds!(
+        &workspace().join("config/crd"),
+        v1alpha1::Clair,
+        v1alpha1::Indexer,
+        v1alpha1::Matcher,
+        v1alpha1::Updater,
+        v1alpha1::Notifier,
+    );
     Ok(())
 }
 
 use kube::{CustomResourceExt, Resource};
 
-fn write_crd<K, P>(out_dir: P, patch_dir: P) -> Result<()>
+fn write_crd<K, P>(out_dir: P) -> Result<()>
 where
     K: Resource<DynamicType = ()> + CustomResourceExt,
     P: AsRef<Path>,
 {
     use std::fs::File;
-    let patch_dir = patch_dir.as_ref();
     let out_dir = out_dir.as_ref();
 
-    let mut doc = serde_json::to_value(K::crd())?;
-    let patchfile = patch_dir
-        .join(K::version(&()).as_ref())
-        .join(K::kind(&()).as_ref())
-        .with_extension("yaml");
-    if let Ok(mut f) = File::open(&patchfile) {
-        let p: json_patch::Patch = serde_yaml::from_reader(&mut f)?;
-        json_patch::patch(&mut doc, &p)?;
-    };
+    let doc = serde_json::to_value(K::crd())?;
     let out = out_dir.join(format!("{}.yaml", K::crd_name()));
     let w = File::create(&out)?;
     serde_yaml::to_writer(&w, &doc)?;
@@ -204,8 +213,6 @@ where
 
 struct BundleOpts {
     out_dir: PathBuf,
-    /// Needed because the kube crate doesn't have annotations for some features.
-    patch_dir: PathBuf,
 }
 impl From<&clap::ArgMatches> for BundleOpts {
     fn from(m: &clap::ArgMatches) -> Self {
@@ -214,10 +221,6 @@ impl From<&clap::ArgMatches> for BundleOpts {
                 .get_one::<String>("out_dir")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| workspace().join("bundle")),
-            patch_dir: m
-                .get_one::<String>("patch_dir")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| workspace().join("api/patch")),
         }
     }
 }

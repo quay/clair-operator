@@ -2,14 +2,13 @@ use std::{env, sync::Arc};
 
 use kube::{
     api::{Patch, PostParams},
-    runtime::{controller::Action, watcher, Controller},
     Api,
 };
 use tokio::{task, time::Duration};
 
-use crate::*;
+use crate::{clair_condition, prelude::*, COMPONENT_LABEL};
 
-static COMPONENT: &'static str = "indexer";
+static COMPONENT: &str = "indexer";
 
 #[instrument(skip_all)]
 pub fn controller(
@@ -77,7 +76,10 @@ async fn reconcile(obj: Arc<v1alpha1::Indexer>, ctx: Arc<Context>) -> Result<Act
                 status: "False".into(),
                 type_: clair_condition("Initialized"),
             });
-            let params = patch_params();
+            let params = PatchParams {
+                field_manager: Some(OPERATOR_NAME.to_string()),
+                ..Default::default()
+            };
             let patch = Patch::Apply(v1alpha1::Indexer {
                 metadata: meta::v1::ObjectMeta {
                     name: Some(obj.name_any()),
@@ -103,7 +105,7 @@ async fn initialize(
     ctx: Arc<Context>,
     recorder: Recorder,
 ) -> Result<Action> {
-    use crate::core::v1::TypedLocalObjectReference;
+    use self::core::v1::TypedLocalObjectReference;
     let client = &ctx.client;
     let now = meta::v1::Time(Utc::now());
     let params = PostParams {
@@ -193,7 +195,7 @@ async fn new_deployment(
         Ok(v) => v,
         Err(err) => return Err(Error::Assets(err.to_string())),
     };
-    let (vols, mounts, config) = make_volumes(&cfgsrc);
+    let (vols, mounts, config) = make_volumes(cfgsrc);
     if let Some(ref mut spec) = v.spec {
         if let Some(ref mut spec) = spec.template.spec {
             spec.volumes = Some(vols);
@@ -223,8 +225,7 @@ fn make_volumes(
 
     let root = String::from("/etc/clair/");
     let rootname = String::from("root-config");
-    let mut filename = root.clone();
-    filename.push_str(&cfgsrc.root.key);
+    let filename = root + &cfgsrc.root.key;
     assert!(filename.ends_with(".json") || filename.ends_with(".yaml"));
     vols.push(Volume {
         name: rootname.clone(),

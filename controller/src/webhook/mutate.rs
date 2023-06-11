@@ -12,12 +12,12 @@ use kube::{
 use warp::{filters::BoxedFilter, Filter, Reply};
 
 use super::{predicate, DynError};
-use crate::*;
+use crate::prelude::*;
 
 pub fn webhook(client: Client) -> BoxedFilter<(impl Reply,)> {
     let client = warp::any().map(move || client.clone());
     predicate("mutate")
-        .and(client.clone())
+        .and(client)
         .and(warp::body::bytes())
         .and_then(mutate_v1alpha1)
         .map(|reply| warp::reply::with_header(reply, "content-type", "application/json"))

@@ -17,12 +17,24 @@ edition = "2021"
 [workspace.dependencies]
 kube = { version = "0.83", default-features = false }
 k8s-openapi = { version = "0.18", default-features = false }
-json-patch = "1.0.0"
-clap = { version = "4.3.1", features = ["cargo", "env", "string"] }
-serde_yaml = "0.9.21"
-serde_json = "1.0.96"
+json-patch = "1.0"
+clap = { version = "4.3", features = ["cargo", "env", "string"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
 
-[workspace.metadata]
-clair-config-ref = "main"
+[profile.dev]
+split-debuginfo = "unpacked"
+[profile.dev.build-override]
+opt-level = 3
+[profile.release]
+debug = 1
+lto = "thin"
+
+[workspace.metadata.controller.default]
+clair-image-tag = "nightly"
+[workspace.metadata.controller.release]
+clair-image-tag = "4.6.1"
+
 [workspace.metadata.ci]
 kind-version = ['1.25']

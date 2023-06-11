@@ -1,24 +1,30 @@
 // Use block for this module
 use anyhow::anyhow;
+use api::v1alpha1;
 use lazy_static::lazy_static;
-use serde_json;
-use serde_yaml;
 
 // Re-exports for everyone's easy use.
-pub(crate) use api::v1alpha1;
-pub(crate) use chrono::Utc;
-pub(crate) use futures::StreamExt;
-pub(crate) use k8s_openapi::{
-    api::{apps, autoscaling, core},
-    apimachinery::pkg::apis::meta,
-};
-pub(crate) use kube::{
-    self,
-    runtime::events::{Event, EventType, Recorder, Reporter},
-    Resource, ResourceExt,
-};
-pub(crate) use tokio_util::sync::CancellationToken;
-pub(crate) use tracing::{debug, error, info, instrument, trace, warn};
+pub(crate) mod prelude {
+    pub use api::v1alpha1;
+    pub use chrono::Utc;
+    pub use futures::prelude::*;
+    pub use k8s_openapi::{api::*, apimachinery::pkg::apis::meta};
+    pub use kube::{
+        self,
+        api::{Api, PatchParams, PostParams},
+        runtime::{
+            controller::{Action, Controller},
+            events::{Event, EventType, Recorder, Reporter},
+            watcher,
+        },
+        Resource, ResourceExt,
+    };
+    pub use tokio_util::sync::CancellationToken;
+    pub use tracing::{debug, error, info, instrument, trace, warn};
+
+    pub use super::OPERATOR_NAME;
+    pub use super::{Context, Error, Result};
+}
 
 pub mod clairs;
 pub mod config;
@@ -60,6 +66,8 @@ pub enum Error {
     AddrParse(#[from] std::net::AddrParseError),
     #[error("assets error: {0}")]
     Assets(String),
+    #[error("tls error: {0}")]
+    TLS(#[from] tokio_native_tls::native_tls::Error),
 }
 
 /// Result typedef for the controller.
@@ -74,12 +82,6 @@ impl std::fmt::Debug for Context {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ctx")
     }
-}
-
-/// Get_rev_annotation reports the revision annotation used throughout the controller.
-pub fn get_rev_annotation(metadata: &meta::v1::ObjectMeta) -> Option<&str> {
-    let annotations = metadata.annotations.as_ref()?;
-    annotations.get(REV_ANNOTATION.as_str()).map(String::as_str)
 }
 
 pub fn next_config(c: &v1alpha1::Clair) -> Result<v1alpha1::ConfigSource> {
@@ -145,16 +147,6 @@ pub fn k8s_label<S: AsRef<str>>(s: S) -> String {
     keyify("app.kubernetes.io/", s)
 }
 
-pub fn patch_params() -> kube::api::PatchParams {
-    kube::api::PatchParams::apply(OPERATOR_NAME.as_str())
-}
-pub fn post_params() -> kube::api::PostParams {
-    kube::api::PostParams {
-        field_manager: Some(OPERATOR_NAME.to_string()),
-        ..Default::default()
-    }
-}
-
 pub fn want_dropins(spec: &v1alpha1::ClairSpec) -> Vec<v1alpha1::RefConfigOrSecret> {
     let mut want = spec.dropins.clone();
     if let Some(dbs) = &spec.databases {
@@ -176,23 +168,23 @@ pub fn want_dropins(spec: &v1alpha1::ClairSpec) -> Vec<v1alpha1::RefConfigOrSecr
 }
 
 lazy_static! {
-    static ref REV_ANNOTATION: String = clair_label("TODO-real-name");
-
     /// OPERATOR_NAME is the name the controller uses whenever it needs a human-readable name.
     pub static ref OPERATOR_NAME: String = format!("clair-operator-{}", env!("CARGO_PKG_VERSION"));
 
     /// DEFAULT_CONFIG_JSON is the JSON version of the default config.
-    pub static ref DEFAULT_CONFIG_JSON: String = (|| {
+    pub static ref DEFAULT_CONFIG_JSON: String = {
             let v = serde_yaml::from_str::<serde_json::Value>(DEFAULT_CONFIG_YAML).unwrap();
             serde_json::to_string(&v).unwrap()
-    })();
+    };
 
     pub static ref COMPONENT_LABEL: String = k8s_label("component");
 
     pub static ref APP_NAME_LABEL: String = k8s_label("clair");
 
     pub static ref DEFAULT_IMAGE: String = format!("quay.io/projectquay/clair:{}", env!("DEFAULT_CLAIR_TAG"));
+
+    pub static ref DEFAULT_CERT_DIR: std::path::PathBuf = std::env::temp_dir().join("k8s-webhook-server/serving-certs");
 }
 
 /// DEFAULT_CONFIG_YAML is the YAML version of the default config.
-pub const DEFAULT_CONFIG_YAML: &'static str = include_str!("../etc/default_config.yaml");
+pub const DEFAULT_CONFIG_YAML: &str = include_str!("../etc/default_config.yaml");

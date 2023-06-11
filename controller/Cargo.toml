@@ -18,6 +18,7 @@ serde_yaml = { workspace = true }
 serde_json = { workspace = true }
 json-patch = { workspace = true }
 clap = { workspace = true }
+serde = { workspace = true }
 tokio = { version = "1.28.2", features = ["macros", "rt-multi-thread", "io-util", "net"] }
 futures = "0.3.28"
 thiserror = "1.0.40"
@@ -29,13 +30,17 @@ libc = "0.2.144"
 chrono = { version = "0.4.26", features = ["clock", "serde", "time"], default-features = false }
 metrics = "0.21.0"
 metrics-exporter-prometheus = "0.12.1"
-warp = { version = "0.3.5" }
+warp = { version = "0.3.5", features = ["multipart"], default-features = false }
 bytes = "1.4.0"
 iftree = "1.0.4"
-tokio-util = "0.7.8"
+tokio-util = { version = "0.7.8" }
+tokio-stream = { version = "0.1.14", features = ["net"] }
+tokio-native-tls = "0.3.1"
 
 [build-dependencies]
 bindgen = "0.65"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 reqwest = { version = "0.11.18", features = ["json"] }

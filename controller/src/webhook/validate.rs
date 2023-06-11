@@ -11,12 +11,13 @@ use warp::{filters::BoxedFilter, Filter, Reply};
 
 use super::{predicate, DynError};
 use crate::config;
-use crate::*;
+use crate::next_config;
+use crate::prelude::*;
 
 pub fn webhook(client: Client) -> BoxedFilter<(impl Reply,)> {
     let client = warp::any().map(move || client.clone());
     predicate("validate")
-        .and(client.clone())
+        .and(client)
         .and(warp::body::json())
         .and_then(validate_v1alpha1)
         .map(|reply| warp::reply::with_header(reply, "content-type", "application/json"))
@@ -125,7 +126,7 @@ async fn check_clair_required(req: &AdmissionRequest<v1alpha1::Clair>) -> Result
     if spec.databases.is_none() {
         return Err("field \"/spec/databases\" must be provided".into());
     }
-    if spec.notifier.is_some_and(|n| n) && spec.databases.as_ref().unwrap().notifier.is_none() {
+    if spec.notifier == Some(true) && spec.databases.as_ref().unwrap().notifier.is_none() {
         return Err(
             "field \"/spec/notifier\" is set but \"/spec/databases/notifier\" is not".into(),
         );

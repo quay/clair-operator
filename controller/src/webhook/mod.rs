@@ -35,7 +35,7 @@ fn predicate<S: ToString>(prefix: S) -> BoxedFilter<()> {
                 .and_then(|ct: HeaderValue| async move {
                     let ct = ct
                         .to_str()
-                        .map_err(|e| ValidationFailure(format!("header error: {e}").into()))?;
+                        .map_err(|e| ValidationFailure(format!("header error: {e}")))?;
                     if ct.starts_with("application/json") {
                         Ok(())
                     } else {
@@ -49,7 +49,7 @@ fn predicate<S: ToString>(prefix: S) -> BoxedFilter<()> {
                 .and_then(|ct: HeaderValue| async move {
                     let ct = ct
                         .to_str()
-                        .map_err(|e| ValidationFailure(format!("header error: {e}").into()))?;
+                        .map_err(|e| ValidationFailure(format!("header error: {e}")))?;
                     if ct.contains("application/json") {
                         Ok(())
                     } else {

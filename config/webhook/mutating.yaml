@@ -1,0 +1,27 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: mutate.projectclair.io
+webhooks:
+- name: v1alpha1.mutate.projectclair.io
+  matchPolicy: Equivalent
+  sideEffects: None
+  failurePolicy: Fail
+  admissionReviewVersions: [v1]
+  rules:
+  - operations: [CREATE]
+    apiGroups: [projectclair.io]
+    apiVersions: [v1alpha1]
+    resources:
+    - clairs
+    - indexers
+    - matchers
+    - updaters
+    - notifiers
+    scope: Namespaced
+  clientConfig:
+    service:
+      name: webhook-projectquay-io
+      namespace: system
+      path: /mutate/v1alpha1
