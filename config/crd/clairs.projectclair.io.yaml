@@ -257,23 +257,6 @@ spec:
                 required:
                 - root
                 type: object
-              database:
-                description: Database is the Service for the managed database engine, if used.
-                nullable: true
-                properties:
-                  apiGroup:
-                    description: APIGroup is the group for the resource being referenced. If APIGroup is not specified, the specified Kind must be in the core API group. For any other third-party types, APIGroup is required.
-                    type: string
-                  kind:
-                    description: Kind is the type of resource being referenced
-                    type: string
-                  name:
-                    description: Name is the name of resource being referenced
-                    type: string
-                required:
-                - kind
-                - name
-                type: object
               endpoint:
                 description: Endpoint is a reference to whatever object is providing ingress.
                 nullable: true

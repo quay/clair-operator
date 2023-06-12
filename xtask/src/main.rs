@@ -1,7 +1,12 @@
 use std::{
+    env,
+    io::Read,
+    os::unix::net::UnixStream,
     path::{Path, PathBuf},
-    process,
+    process::{self, Command, Stdio},
 };
+
+use signal_hook::{consts::SIGINT, low_level::pipe};
 
 fn main() {
     use clap::{crate_authors, crate_name, crate_version, Arg, Command, ValueHint};
@@ -12,6 +17,7 @@ fn main() {
         .subcommand_required(true)
         .subcommands(&[
             Command::new("bundle")
+                .hide(true) // Not ready yet.
                 .about("generate OLM bundle")
                 .args(&[
                     Arg::new("out_dir")
@@ -23,13 +29,16 @@ fn main() {
                 ]),
             Command::new("ci").about("run CI setup, then tests").arg(Arg::new("pass").trailing_var_arg(true).num_args(..)),
             Command::new("manifests")
-                .about("generate CRD manifests"),
+                .about("generate CRD manifests into config/crd"),
+            Command::new("demo")
+                .about("spin up a kind instance with CRDs loaded and controller running"),
         ]);
 
     if let Err(e) = match cmd.get_matches().subcommand() {
         Some(("bundle", m)) => bundle(crate_version!(), BundleOpts::from(m)),
         Some(("ci", m)) => ci(CiOpts::from(m)),
         Some(("manifests", _)) => manifests(),
+        Some(("demo", _)) => demo(),
         _ => unreachable!(),
     } {
         eprintln!("{e}");
@@ -40,11 +49,62 @@ fn main() {
 type DynError = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, DynError>;
 
+fn demo() -> Result<()> {
+    let (mut rd, wr) = UnixStream::pair()?;
+    pipe::register(SIGINT, wr)?;
+
+    let cfgpath = workspace().join("kubeconfig");
+    eprintln!("putting KUBECONFIG at {cfgpath:?}");
+    env::set_var("KUBECONFIG", &cfgpath);
+    env::set_var("RUST_LOG", "controller=debug,clair_config=debug");
+    let _guard = KIND::new()?;
+    eprintln!("regenerating CRDs");
+    let _ = Command::new(env::var_os("CARGO").unwrap())
+        .args(["xtask", "manifests"])
+        .stderr(Stdio::null())
+        .stdout(Stdio::null())
+        .status();
+    eprintln!("waiting for pods to ready");
+    let _ = Command::new("kubectl")
+        .args(&[
+            "wait",
+            "pods",
+            "--for=condition=Ready",
+            "--timeout=300s",
+            "--all",
+            "--all-namespaces",
+        ])
+        .status();
+    eprintln!("loading CRDs");
+    let kus = Command::new("kustomize")
+        .current_dir(workspace())
+        .stdout(process::Stdio::piped())
+        .args(&["build", "config/crd"])
+        .spawn()?;
+    let _ = Command::new("kubectl")
+        .args(&["apply", "-f", "-"])
+        .stdin(kus.stdout.unwrap())
+        .status()?;
+
+    eprintln!("running controllers");
+    let _ctrl = Command::new(env::var_os("CARGO").unwrap())
+        .current_dir(workspace())
+        .args(["run", "--package", "controller", "--", "run"])
+        .spawn()?;
+
+    eprintln!("take it for a spin:");
+    eprintln!("\tKUBECONFIG={cfgpath:?} kubectl get crds");
+    eprintln!("look in \"config/samples\" for some samples");
+    eprintln!("^C to tear down");
+    let mut _block = [0];
+    rd.read_exact(&mut _block)?;
+
+    eprintln!("");
+    eprintln!("🫠");
+    Ok(())
+}
+
 fn ci(opts: CiOpts) -> Result<()> {
-    use std::{
-        env,
-        process::{Command, Stdio},
-    };
     env::set_var("CI", "true");
     env::set_var("KUBECONFIG", workspace().join("kubeconfig"));
     env::set_var("RUST_TEST_TIME_INTEGRATION", "30000,3000000");
@@ -133,7 +193,6 @@ struct KIND {
 }
 impl Drop for KIND {
     fn drop(&mut self) {
-        use std::process::Command;
         let mut cmd = Command::new("kind");
         cmd.current_dir(workspace());
         cmd.arg("delete");
@@ -145,7 +204,6 @@ impl Drop for KIND {
 }
 impl KIND {
     fn new() -> Result<Self> {
-        use std::process::Command;
         let k8s_ver = std::env::var("KUBE_VERSION").unwrap_or(String::from("1.25"));
         let kind_name = "ci";
         let kind_config = workspace()

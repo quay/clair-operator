@@ -107,7 +107,7 @@ impl TryFrom<&clap::ArgMatches> for Args {
                 .unwrap()
                 .map(Clone::clone)
                 .collect(),
-            cert_dir: m.get_one::<PathBuf>("cert_dir").unwrap().clone(),
+            cert_dir: m.get_one::<String>("cert_dir").unwrap().into(),
             cert_name: m.get_one::<String>("cert_name").unwrap().into(),
             key_name: m.get_one::<String>("key_name").unwrap().into(),
         })
