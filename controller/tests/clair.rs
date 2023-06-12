@@ -1,9 +1,13 @@
+use std::collections::BTreeMap;
+
+use k8s_openapi::{api::core, apimachinery::pkg::apis::meta, ByteString};
+
 use api::v1alpha1::Clair;
 use controller::{clairs, Context, Error};
 mod util;
 use util::prelude::*;
 
-#[crate::test(tokio::test)]
+#[crate::test(tokio::test(flavor = "multi_thread", worker_threads = 1))]
 #[cfg_attr(not(feature = "test_ci"), ignore)]
 async fn initialize() -> Result<(), Error> {
     let ctx = util::test_context().await;
@@ -35,14 +39,43 @@ async fn initialize() -> Result<(), Error> {
 }
 
 async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
+    use self::core::v1::Secret;
+    use self::meta::v1::ObjectMeta;
     const NAME: &'static str = "clair-initialize-test";
-    let client = ctx.client.clone();
-    let api: Api<Clair> = Api::default_namespaced(client);
+    let cfgname = format!("{NAME}-db");
+
+    let dbcfg = json!({
+        "indexers": {"connstring": ""},
+        "matchers": {"connstring": ""},
+    })
+    .to_string();
+    let s: Secret = Secret {
+        metadata: ObjectMeta {
+            name: Some(cfgname.clone()),
+            ..Default::default()
+        },
+        data: Some(BTreeMap::from([(
+            "db.json".into(),
+            ByteString(dbcfg.into()),
+        )])),
+        ..Default::default()
+    };
+    let s = Api::<Secret>::default_namespaced(ctx.client.clone())
+        .create(&PostParams::default(), &s)
+        .await?;
+    eprintln!("created database secret: {s:?}");
+
+    let api: Api<Clair> = Api::default_namespaced(ctx.client.clone());
     let c: Clair = serde_json::from_value(json!({
         "apiVersion": "projectclair.io/v1alpha1",
         "kind": "Clair",
         "metadata": {"name": NAME},
-        "spec": {},
+        "spec": {
+            "databases": {
+                "indexer": { "name": cfgname, "key": "db.json" },
+                "matcher": { "name": cfgname, "key": "db.json" },
+            },
+        },
     }))?;
     eprintln!("attempting to create new Clair");
     api.create(&PostParams::default(), &c).await?;

@@ -64,6 +64,8 @@ impl std::fmt::Display for Clair {
 ///
 /// It's fine for all the fields to point to the same Secret key if it contains all the relevant
 /// configuration.
+// The generated openAPI schema for these SecretKeySelectors are patched to remove the nullability
+// of the "name" member.
 #[derive(Clone, Default, Debug, Deserialize, PartialEq, Serialize, Validate, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Databases {
@@ -119,9 +121,11 @@ pub struct ClairStatus {
     /// Config is configuration sources for the Clair instance.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<ConfigSource>,
+    /*
     /// Database is the Service for the managed database engine, if used.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database: Option<core::v1::TypedLocalObjectReference>,
+    */
 }
 
 /// ConfigSource specifies all the config files that will be arranged for Clair to load.
@@ -141,7 +145,7 @@ pub struct ConfigSource {
 /// ConfigDialect selects between the dialects for a Clair config.
 ///
 /// The default for the operator to create is JSON.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ConfigDialect {
     #[default]

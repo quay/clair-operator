@@ -5,7 +5,7 @@ use controller::{indexers, Context, Error};
 mod util;
 use util::prelude::*;
 
-#[crate::test(tokio::test)]
+#[crate::test(tokio::test(flavor = "multi_thread", worker_threads = 1))]
 #[cfg_attr(not(feature = "test_ci"), ignore)]
 async fn initialize() -> Result<(), Error> {
     let ctx = util::test_context().await;
@@ -36,7 +36,7 @@ async fn initialize() -> Result<(), Error> {
     Ok(())
 }
 async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
-    use crate::core::v1::ConfigMap;
+    use self::core::v1::ConfigMap;
     const NAME: &'static str = "indexers-initialize-test";
     let cm: Api<ConfigMap> = Api::default_namespaced(ctx.client.clone());
     let api: Api<Indexer> = Api::default_namespaced(ctx.client.clone());

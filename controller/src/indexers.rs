@@ -1,11 +1,13 @@
-use std::{env, sync::Arc};
+use std::sync::Arc;
 
 use kube::{
     api::{Patch, PostParams},
     Api,
 };
+use lazy_static::lazy_static;
 use tokio::{task, time::Duration};
 
+use self::core::v1::TypedLocalObjectReference;
 use crate::{clair_condition, prelude::*, COMPONENT_LABEL};
 
 static COMPONENT: &str = "indexer";
@@ -47,128 +49,277 @@ pub fn controller(
 
 #[instrument(skip_all)]
 async fn reconcile(obj: Arc<v1alpha1::Indexer>, ctx: Arc<Context>) -> Result<Action> {
-    let now = meta::v1::Time(Utc::now());
-    let reporter = Reporter {
-        controller: OPERATOR_NAME.clone(),
-        instance: env::var("CONTROLLER_POD_NAME").ok(),
-    };
-    let recorder = Recorder::new(ctx.client.clone(), reporter, obj.object_ref(&()));
-    let mut next = obj.status.clone().unwrap_or_default();
-    let api = Api::<v1alpha1::Indexer>::default_namespaced(ctx.client.clone());
-    debug!("reconcile!");
-
-    if obj.status.is_none() {
-        if obj.spec.config.is_none() {
-            recorder
-                .publish(Event {
-                    type_: EventType::Warning,
-                    reason: "Initialization".into(),
-                    note: Some("missing field \"/spec/config\"".into()),
-                    action: "ConfigValidation".into(),
-                    secondary: None,
-                })
-                .await?;
-            next.conditions.push(meta::v1::Condition {
-                last_transition_time: now.clone(),
-                message: "\"/spec/config\" missing".into(),
-                observed_generation: obj.metadata.generation,
-                reason: "SpecIncomplete".into(),
-                status: "False".into(),
-                type_: clair_condition("Initialized"),
-            });
-            let params = PatchParams {
-                field_manager: Some(OPERATOR_NAME.to_string()),
-                ..Default::default()
-            };
-            let patch = Patch::Apply(v1alpha1::Indexer {
-                metadata: meta::v1::ObjectMeta {
-                    name: Some(obj.name_any()),
-                    ..Default::default()
-                },
-                status: Some(next),
-                ..Default::default()
-            });
-            api.patch_status(obj.name_any().as_str(), &params, &patch)
-                .await?;
-            return Ok(Action::await_change());
-        }
-        return initialize(obj, ctx, recorder).await;
-    }
-
-    debug!("reconcile!");
-    Ok(Action::requeue(Duration::from_secs(300)))
-}
-
-#[instrument(skip_all)]
-async fn initialize(
-    obj: Arc<v1alpha1::Indexer>,
-    ctx: Arc<Context>,
-    recorder: Recorder,
-) -> Result<Action> {
-    use self::core::v1::TypedLocalObjectReference;
-    let client = &ctx.client;
-    let now = meta::v1::Time(Utc::now());
-    let params = PostParams {
-        dry_run: false,
-        field_manager: Some(OPERATOR_NAME.to_string()),
-    };
-    let mut next = if let Some(ref status) = obj.status {
+    trace!("start");
+    let req = Request::new(&ctx.client, obj.object_ref(&()));
+    assert!(obj.meta().name.is_some());
+    let spec = &obj.spec;
+    let mut next = if let Some(status) = &obj.status {
         status.clone()
     } else {
+        trace!("no status present");
         Default::default()
     };
 
-    let cfgsrc = obj
-        .spec
-        .config
+    // Check the spec:
+    let action = "CheckConfig".into();
+    let type_ = clair_condition("SpecOK");
+    trace!("configsource check");
+    if obj.spec.config.is_none() {
+        req.publish(Event {
+            type_: EventType::Warning,
+            reason: "Initialization".into(),
+            note: Some("missing field \"/spec/config\"".into()),
+            action,
+            secondary: None,
+        })
+        .await?;
+        next.conditions.push(meta::v1::Condition {
+            last_transition_time: req.now(),
+            message: "\"/spec/config\" missing".into(),
+            observed_generation: obj.metadata.generation,
+            reason: "SpecIncomplete".into(),
+            status: "False".into(),
+            type_,
+        });
+        return publish(obj, ctx, req, next).await;
+    }
+    trace!("configsource ok");
+    trace!(
+        provided = spec.image.is_some(),
+        image = image_any(spec),
+        "image check"
+    );
+    next.conditions.push(Condition {
+        last_transition_time: req.now(),
+        observed_generation: obj.metadata.generation,
+        message: "".into(),
+        reason: "SpecComplete".into(),
+        status: "True".into(),
+        type_: clair_condition("SpecOK"),
+    });
+    trace!("spec ok");
+
+    macro_rules! check_all {
+        ($($fn:ident),+ $(,)?) => {
+            let mut r#continue = true;
+            $(
+            // Otherwise the compiler will complain about the last assignment:
+            #[allow(unused_assignments)]
+            if !r#continue {
+                trace!(step=stringify!($fn), "skipping check");
+            } else {
+                trace!(step=stringify!($fn), "running check");
+                r#continue = $fn(&obj, &ctx, &req, &mut next).await?;
+            }
+            )+
+        }
+    }
+    check_all!(
+        check_config,
+        check_deployment,
+        check_service,
+        check_hpa,
+        check_creation
+    );
+
+    trace!("done");
+    publish(obj, ctx, req, next).await
+}
+
+fn image_any(spec: &v1alpha1::IndexerSpec) -> String {
+    spec.image
         .as_ref()
-        .expect("missing needed spec field: config");
+        .cloned()
+        .unwrap_or_else(|| crate::DEFAULT_IMAGE.clone())
+}
 
-    let deploy = new_deployment(&obj, &ctx, cfgsrc).await?;
-    let api = Api::<apps::v1::Deployment>::default_namespaced(client.clone());
-    let deploy = api.create(&params, &deploy).await?;
-    debug!(name = deploy.name_unchecked(), "created Deployment");
-    next.refs.push(TypedLocalObjectReference {
-        api_group: Some(apps::v1::Deployment::api_version(&()).to_string()),
-        kind: apps::v1::Deployment::kind(&()).to_string(),
-        name: deploy.name_any(),
-    });
+#[instrument(skip_all)]
+async fn publish(
+    obj: Arc<v1alpha1::Indexer>,
+    ctx: Arc<Context>,
+    _req: Request,
+    mut next: v1alpha1::IndexerStatus,
+) -> Result<Action> {
+    let api: Api<v1alpha1::Indexer> = Api::default_namespaced(ctx.client.clone());
+    let name = &obj.metadata.name.as_ref().unwrap();
+    let changed = obj.status.is_none() || obj.status.as_ref().unwrap() == &next;
+    let mut c = v1alpha1::Indexer::clone(&obj);
+    next.conditions
+        .sort_by_key(|c| -c.observed_generation.unwrap_or_default());
+    next.conditions.dedup_by(|a, b| a.type_ == b.type_);
 
-    let srv = new_service(&obj, &ctx).await?;
-    let api = Api::<core::v1::Service>::default_namespaced(client.clone());
-    let srv = api.create(&params, &srv).await?;
-    debug!(name = srv.name_unchecked(), "created Service");
-    next.refs.push(TypedLocalObjectReference {
-        api_group: Some(core::v1::Service::api_version(&()).to_string()),
-        kind: core::v1::Service::kind(&()).to_string(),
-        name: srv.name_any(),
-    });
+    c.status = Some(next);
+    c.metadata.managed_fields = None; // ???
 
-    let hpa = new_hpa(&obj, &ctx, &deploy).await?;
-    let api = Api::<autoscaling::v2::HorizontalPodAutoscaler>::default_namespaced(client.clone());
-    let hpa = api.create(&params, &hpa).await?;
-    debug!(name = hpa.name_unchecked(), "created HPA");
-    next.refs.push(TypedLocalObjectReference {
-        api_group: Some(autoscaling::v2::HorizontalPodAutoscaler::api_version(&()).to_string()),
-        kind: autoscaling::v2::HorizontalPodAutoscaler::kind(&()).to_string(),
-        name: hpa.name_any(),
-    });
+    api.patch_status(name, &PatchParams::apply(OPERATOR_NAME), &Patch::Apply(c))
+        .await?;
+    trace!(changed, "patched status");
+    if changed {
+        Ok(Action::await_change())
+    } else {
+        Ok(Action::requeue(Duration::from_secs(3600)))
+    }
+}
+
+fn has_ref<K>(status: &Option<v1alpha1::IndexerStatus>) -> Option<TypedLocalObjectReference>
+where
+    K: Resource<DynamicType = ()>,
+{
+    if status.is_none() {
+        return None;
+    }
+    let kind = K::kind(&());
+    status
+        .as_ref()
+        .unwrap()
+        .refs
+        .iter()
+        .find(|r| r.kind == kind)
+        .cloned()
+}
+
+lazy_static! {
+    static ref CREATE_PARAMS: PostParams = PostParams {
+        dry_run: false,
+        field_manager: Some(String::from(OPERATOR_NAME)),
+    };
+}
+
+#[instrument(skip_all)]
+async fn check_config(
+    obj: &v1alpha1::Indexer,
+    _ctx: &Context,
+    _req: &Request,
+    next: &mut v1alpha1::IndexerStatus,
+) -> Result<bool> {
+    if obj.status.is_none() || obj.status.as_ref().unwrap().config.is_none() {
+        next.config = obj.spec.config.clone();
+        return Ok(false);
+    }
+    let want = obj.spec.config.as_ref().unwrap();
+    let got = obj.status.as_ref().unwrap().config.as_ref().unwrap();
+    if got != want {
+        next.config = obj.spec.config.clone();
+        // TODO(hank) Touch the deployment
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+#[instrument(skip_all)]
+async fn check_deployment(
+    obj: &v1alpha1::Indexer,
+    ctx: &Context,
+    _req: &Request,
+    next: &mut v1alpha1::IndexerStatus,
+) -> Result<bool> {
+    let dref = has_ref::<apps::v1::Deployment>(&obj.status);
+    if dref.is_none() {
+        let cfgsrc = obj
+            .spec
+            .config
+            .as_ref()
+            .expect("missing needed spec field: config");
+        let deploy = new_deployment(obj, ctx, cfgsrc).await?;
+        let api = Api::<apps::v1::Deployment>::default_namespaced(ctx.client.clone());
+        let deploy = api.create(&CREATE_PARAMS, &deploy).await?;
+        debug!(name = deploy.name_unchecked(), "created Deployment");
+        next.refs.push(TypedLocalObjectReference {
+            api_group: Some(apps::v1::Deployment::api_version(&()).to_string()),
+            kind: apps::v1::Deployment::kind(&()).to_string(),
+            name: deploy.name_any(),
+        });
+        return Ok(false);
+    }
+    // TODO
+    Ok(true)
+}
+
+#[instrument(skip_all)]
+async fn check_service(
+    obj: &v1alpha1::Indexer,
+    ctx: &Context,
+    _req: &Request,
+    next: &mut v1alpha1::IndexerStatus,
+) -> Result<bool> {
+    let sref = has_ref::<core::v1::Service>(&obj.status);
+    if sref.is_none() {
+        let srv = new_service(obj, ctx).await?;
+        let api = Api::<core::v1::Service>::default_namespaced(ctx.client.clone());
+        let srv = api.create(&CREATE_PARAMS, &srv).await?;
+        debug!(name = srv.name_unchecked(), "created Service");
+        next.refs.push(TypedLocalObjectReference {
+            api_group: Some(core::v1::Service::api_version(&()).to_string()),
+            kind: core::v1::Service::kind(&()).to_string(),
+            name: srv.name_any(),
+        });
+        return Ok(false);
+    }
+    // TODO
+    Ok(true)
+}
+
+#[instrument(skip_all)]
+async fn check_hpa(
+    obj: &v1alpha1::Indexer,
+    ctx: &Context,
+    _req: &Request,
+    next: &mut v1alpha1::IndexerStatus,
+) -> Result<bool> {
+    let href = has_ref::<autoscaling::v2::HorizontalPodAutoscaler>(&obj.status);
+    if href.is_none() {
+        let hpa = new_hpa(obj, ctx).await?;
+        let api =
+            Api::<autoscaling::v2::HorizontalPodAutoscaler>::default_namespaced(ctx.client.clone());
+        let hpa = api.create(&CREATE_PARAMS, &hpa).await?;
+        debug!(name = hpa.name_unchecked(), "created HPA");
+        next.refs.push(TypedLocalObjectReference {
+            api_group: Some(autoscaling::v2::HorizontalPodAutoscaler::api_version(&()).to_string()),
+            kind: autoscaling::v2::HorizontalPodAutoscaler::kind(&()).to_string(),
+            name: hpa.name_any(),
+        });
+        return Ok(false);
+    }
+    // TODO
+    Ok(true)
+}
+
+#[instrument(skip_all)]
+async fn check_creation(
+    obj: &v1alpha1::Indexer,
+    _ctx: &Context,
+    req: &Request,
+    next: &mut v1alpha1::IndexerStatus,
+) -> Result<bool> {
+    let refs = [
+        has_ref::<apps::v1::Deployment>(&obj.status),
+        has_ref::<core::v1::Service>(&obj.status),
+        has_ref::<autoscaling::v2::HorizontalPodAutoscaler>(&obj.status),
+    ];
+    let ok = refs.iter().all(|r| r.is_some());
+    let status = if ok { "True" } else { "False" }.to_string();
+    let message = if ok {
+        "".to_string()
+    } else {
+        format!(
+            "missing: {}",
+            refs.iter()
+                .filter_map(|r| r.as_ref().map(|r| r.kind.as_str()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
 
     next.conditions.push(meta::v1::Condition {
-        last_transition_time: now.clone(),
-        message: "".into(),
+        last_transition_time: req.now(),
         observed_generation: obj.metadata.generation,
         reason: "ObjectsCreated".into(),
-        status: "True".into(),
         type_: clair_condition("Initialized"),
+        message,
+        status,
     });
-    let api = Api::<v1alpha1::Indexer>::default_namespaced(client.clone());
-    let mut obj = v1alpha1::Indexer::clone(&obj);
-    obj.status = Some(next);
-    api.replace_status(&obj.name_any(), &params, serde_json::to_vec(&obj)?)
-        .await?;
-    recorder
-        .publish(Event {
+    if ok {
+        req.publish(Event {
             type_: EventType::Normal,
             reason: "Initialization".into(),
             note: Some("👍".into()),
@@ -176,7 +327,8 @@ async fn initialize(
             secondary: None,
         })
         .await?;
-    Ok(Action::await_change())
+    }
+    Ok(ok)
 }
 
 #[instrument(skip_all)]
@@ -191,7 +343,7 @@ async fn new_deployment(
         .expect("unable to create owner ref");
     let image = obj.spec.image.as_ref().unwrap_or(&ctx.image).clone();
 
-    let mut v: apps::v1::Deployment = match ctx.assets.resource_for("indexer").await {
+    let mut v: apps::v1::Deployment = match templates::resource_for("indexer").await {
         Ok(v) => v,
         Err(err) => return Err(Error::Assets(err.to_string())),
     };
@@ -294,12 +446,12 @@ fn make_volumes(
 }
 
 #[instrument(skip_all)]
-async fn new_service(obj: &v1alpha1::Indexer, ctx: &Context) -> Result<core::v1::Service> {
+async fn new_service(obj: &v1alpha1::Indexer, _ctx: &Context) -> Result<core::v1::Service> {
     let oref = obj
         .controller_owner_ref(&())
         .expect("unable to create owner ref");
 
-    let mut v: core::v1::Service = match ctx.assets.resource_for("indexer").await {
+    let mut v: core::v1::Service = match templates::resource_for("indexer").await {
         Ok(v) => v,
         Err(err) => return Err(Error::Assets(err.to_string())),
     };
@@ -309,22 +461,24 @@ async fn new_service(obj: &v1alpha1::Indexer, ctx: &Context) -> Result<core::v1:
 }
 async fn new_hpa(
     obj: &v1alpha1::Indexer,
-    ctx: &Context,
-    deploy: &apps::v1::Deployment,
+    _ctx: &Context,
 ) -> Result<autoscaling::v2::HorizontalPodAutoscaler> {
     let oref = obj
         .controller_owner_ref(&())
         .expect("unable to create owner ref");
+    let dref = has_ref::<apps::v1::Deployment>(&obj.status)
+        .ok_or(Error::BadName("missing Deployment reference".into()))?; //TODO(hank) use a better
+                                                                        //error
 
     let mut v: autoscaling::v2::HorizontalPodAutoscaler =
-        match ctx.assets.resource_for("indexer").await {
+        match templates::resource_for("indexer").await {
             Ok(v) => v,
             Err(err) => return Err(Error::Assets(err.to_string())),
         };
     v.metadata.owner_references = Some(vec![oref]);
     v.metadata.name = Some(format!("{}-indexer", obj.name_any()));
     if let Some(ref mut spec) = v.spec {
-        spec.scale_target_ref.name = deploy.name_any();
+        spec.scale_target_ref.name = dref.name;
     };
 
     // TODO(hank) Check if the metrics API is enabled and if the frontend supports

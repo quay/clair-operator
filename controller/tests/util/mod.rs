@@ -1,9 +1,8 @@
 #![allow(dead_code)]
-use std::sync::Arc;
+use std::{process::Command, sync::Arc};
 
 use tracing::trace;
 
-use api::v1alpha1;
 use controller::*;
 
 pub async fn test_context() -> Arc<Context> {
@@ -15,43 +14,53 @@ pub async fn test_context() -> Arc<Context> {
         .build();
     Arc::new(Context {
         client,
-        assets: templates::Assets::new("/nonexistent"),
         image: DEFAULT_IMAGE.clone(),
     })
 }
 
-macro_rules! load_each {
-    ($api:ident, $($kind:ty),+) => {
-        use kube::{api::PostParams, CustomResourceExt, ResourceExt};
-        let params = PostParams::default();
-        $({
-        let crd = <$kind>::crd();
-        let name = crd.name_any();
-        trace!(name, "checking CRD");
-        if $api.get_metadata_opt(&name).await?.is_none() {
-            trace!(name, "creating CRD");
-            $api.create(&params, &crd).await?;
-        }
-        trace!(name, "CRD ok");
-        })+
-    }
-}
-
 pub async fn load_crds(client: &kube::Client) -> Result<()> {
     use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
-    use kube::api::Api;
+    use kube::{
+        api::{Api, PostParams},
+        ResourceExt,
+    };
+    use serde::Deserialize;
     let api: Api<CustomResourceDefinition> = Api::all(client.clone());
 
-    load_each!(
-        api,
-        v1alpha1::Clair,
-        v1alpha1::Indexer,
-        v1alpha1::Matcher,
-        v1alpha1::Notifier,
-        v1alpha1::Updater
-    );
+    let dir = workspace().join("config/crd");
+    let out = Command::new("kustomize")
+        .args(["build", dir.to_str().unwrap()])
+        .output()?;
+    let dec = serde_yaml::Deserializer::from_slice(&out.stdout);
+    let params = PostParams::default();
+    for doc in dec {
+        let crd = CustomResourceDefinition::deserialize(doc)?;
+        let name = crd.name_any();
+        trace!(name, "checking CRD");
+        if api.get_metadata_opt(&name).await?.is_none() {
+            trace!(name, "creating CRD");
+            if let Err(err) = api.create(&params, &crd).await {
+                match err {
+                    kube::Error::Api(res) => match res.code {
+                        409 => (),
+                        _ => return Err(Error::from(kube::Error::Api(res))),
+                    },
+                    _ => return Err(Error::from(err)),
+                };
+            };
+        }
+        trace!(name, "CRD ok");
+    }
 
     Ok(())
+}
+
+fn workspace() -> std::path::PathBuf {
+    std::path::Path::new(&env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(1)
+        .unwrap()
+        .to_path_buf()
 }
 
 pub mod prelude {

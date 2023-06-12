@@ -21,7 +21,7 @@ fn main() {
                     .long_help("Bundle output directory. If unspecified, `bundle` inside the workspace root will be used.")
                     .value_hint(ValueHint::DirPath),
                 ]),
-            Command::new("ci").about("run CI setup, then tests").arg(Arg::new("pass").trailing_var_arg(true)),
+            Command::new("ci").about("run CI setup, then tests").arg(Arg::new("pass").trailing_var_arg(true).num_args(..)),
             Command::new("manifests")
                 .about("generate CRD manifests"),
         ]);
@@ -48,7 +48,8 @@ fn ci(opts: CiOpts) -> Result<()> {
     env::set_var("CI", "true");
     env::set_var("KUBECONFIG", workspace().join("kubeconfig"));
     env::set_var("RUST_TEST_TIME_INTEGRATION", "30000,3000000");
-    env::set_var("RUST_LOG", "controller=debug");
+    env::set_var("RUST_LOG", "controller=trace,clair_config=trace");
+    env::set_var("RUST_BACKTRACE", "1");
     let _guard = KIND::new()?;
     eprintln!("waiting for pods to ready");
     let _ = Command::new("kubectl")
@@ -77,16 +78,18 @@ fn ci(opts: CiOpts) -> Result<()> {
         .stdout(Stdio::null())
         .status()?
         .success();
+    let w = workspace().to_string_lossy().to_string();
     let ar = workspace().join("tests.tar.zst");
     let mut test_args = vec![];
     if use_nextest {
         eprintln!("using nextest");
-        test_args.push("nextest");
-        test_args.push("run");
+        test_args.extend_from_slice(&["nextest", "run", "--profile", "ci"]);
         if ar.exists() {
             eprintln!("using archive \"{}\"", ar.display());
             test_args.push("--archive-file");
             test_args.push(ar.to_str().unwrap());
+            test_args.push("--workspace-remap");
+            test_args.push(&w);
         }
     } else {
         test_args.push("test");
@@ -96,9 +99,6 @@ fn ci(opts: CiOpts) -> Result<()> {
         test_args.push("test_ci");
     }
     test_args.push("--");
-    if !use_nextest {
-        test_args.push("--ensure-time");
-    }
     for v in &opts.pass {
         test_args.push(&v);
     }
@@ -121,7 +121,7 @@ impl From<&clap::ArgMatches> for CiOpts {
         CiOpts {
             pass: m
                 .get_many::<String>("pass")
-                .unwrap()
+                .unwrap_or_default()
                 .map(ToString::to_string)
                 .collect(),
         }

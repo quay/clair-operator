@@ -25,40 +25,42 @@ fn main() {
         .author(crate_authors!())
         .about(crate_description!())
         .subcommand_required(true)
-        .subcommands([Command::new("run").about("run controller").args([
+        .subcommands([Command::new("run").about("run controllers").args([
             Arg::new("introspection_address")
                 .long("introspection-bind-address")
-                .help("tk")
+                .help("address to bind for the HTTP introspection server")
                 .default_value("[::]:8089"),
             Arg::new("image")
                 .long("image-clair")
                 .env("RELATED_IMAGE_CLAIR")
-                .help("tk")
+                .help("container image for Clair containers if not specifed in a CRD")
                 .default_value(DEFAULT_IMAGE.to_string()),
             Arg::new("leader_elect")
                 .long("leader-elect")
-                .help("tk")
+                .help("Flag for if leader election is needed. Currently does nothing.")
+                .hide(true)
                 .action(ArgAction::SetTrue),
             Arg::new("webhook_address")
                 .long("webhook-bind-address")
-                .help("tk")
+                .help("address to bind for the HTTP webhook server")
+                .long_help(concat!(
+                    "Address to bind for the HTTP webhook server.\n",
+                    "If there's a TLS certificate and key at the files specified by ",
+                    "`cert-dir`, `cert-name`, and `key-name` then HTTPS will be served."
+                ))
                 .default_value("[::]:8080"),
-            Arg::new("template_dir")
-                .long("template-dir")
-                .help("directory to consult for resource templates")
-                .default_value("etc/templates"),
             Arg::new("cert_dir")
                 .long("cert-dir")
-                .help("tk")
+                .help("directory containing TLS cert+key pair")
                 .value_hint(ValueHint::DirPath)
                 .default_value(DEFAULT_CERT_DIR.as_os_str()),
             Arg::new("cert_name")
                 .long("cert-name")
-                .help("tk")
+                .help("file inside `cert-dir` containing the TLS certificate")
                 .default_value("tls.crt"),
             Arg::new("key_name")
                 .long("key-name")
-                .help("tk")
+                .help("file inside `cert-dir` containing the TLS certificate key")
                 .default_value("tls.key"),
             Arg::new("controllers")
                 .action(ArgAction::Append)
@@ -85,7 +87,6 @@ struct Args {
     image: String,
     introspection_address: std::net::SocketAddr,
     key_name: String,
-    template_dir: PathBuf,
     webhook_address: std::net::SocketAddr,
 }
 
@@ -101,7 +102,6 @@ impl TryFrom<&clap::ArgMatches> for Args {
                 .unwrap()
                 .parse()?,
             _leader_elect: m.get_flag("leader_elect"),
-            template_dir: m.get_one::<String>("template_dir").unwrap().into(),
             controllers: m
                 .get_many::<String>("controllers")
                 .unwrap()
@@ -116,11 +116,9 @@ impl TryFrom<&clap::ArgMatches> for Args {
 
 impl Args {
     fn context(&self, client: kube::Client) -> Arc<Context> {
-        use controller::templates::Assets;
         Arc::new(Context {
             client,
             image: self.image.clone(),
-            assets: Assets::new(&self.template_dir),
         })
     }
 }

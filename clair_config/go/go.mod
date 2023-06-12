@@ -1,4 +1,4 @@
-module github.com/quay/clair-operator/controller/go/config
+module github.com/quay/clair-operator/clair_config/go
 
 go 1.20
 

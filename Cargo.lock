@@ -281,6 +281,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "clair_config"
+version = "0.1.0"
+dependencies = [
+ "api",
+ "bindgen",
+ "json-patch",
+ "k8s-openapi",
+ "kube",
+ "libc",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "clang-sys"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -335,6 +352,7 @@ dependencies = [
  "bindgen",
  "bytes",
  "chrono",
+ "clair_config",
  "clap",
  "futures",
  "iftree",

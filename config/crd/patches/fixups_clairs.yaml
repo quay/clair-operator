@@ -1,3 +1,14 @@
+# Make the database refs not-nullable:
+- op: add
+  path: '/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/databases/properties/indexer/required/-'
+  value: name
+- op: add
+  path: '/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/databases/properties/matcher/required/-'
+  value: name
+- op: add
+  path: '/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/databases/properties/notifier/required/-'
+  value: name
+
 # Conditions:
 - op: add
   path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/conditions/items/properties/observedGeneration/minimum'

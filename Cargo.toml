@@ -3,10 +3,12 @@ members = [
 	"api",
 	"controller",
 	"xtask",
+	"clair_config",
 ]
 default-members = [
 	"api",
 	"controller",
+	"clair_config",
 ]
 
 [workspace.package]
@@ -22,6 +24,7 @@ clap = { version = "4.3", features = ["cargo", "env", "string"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 serde_json = "1.0"
+tokio = { version = "1.28.2", features = ["macros", "rt-multi-thread", "io-util", "net"] }
 
 [profile.dev]
 split-debuginfo = "unpacked"

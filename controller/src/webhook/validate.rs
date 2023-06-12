@@ -10,9 +10,9 @@ use kube::{
 use warp::{filters::BoxedFilter, Filter, Reply};
 
 use super::{predicate, DynError};
-use crate::config;
 use crate::next_config;
 use crate::prelude::*;
+use clair_config;
 
 pub fn webhook(client: Client) -> BoxedFilter<(impl Reply,)> {
     let client = warp::any().map(move || client.clone());
@@ -93,7 +93,7 @@ async fn validate_clair(
 
     let o = req.object.as_ref().expect("somehow None");
     let cfg = next_config(o)?;
-    let v = config::validate(client.clone(), &cfg).await?;
+    let v = clair_config::validate(client.clone(), &cfg).await?;
     for r in &[&v.indexer, &v.matcher, &v.notifier, &v.updater] {
         if let Err(e) = r {
             return Err(format!("validation failed: {e}").into());

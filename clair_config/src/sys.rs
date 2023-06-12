@@ -3,6 +3,6 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-//! See also `controller/go/config` for the Go functions.
+//! See also `clair_config/go/main.go` for the Go functions.
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
