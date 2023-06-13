@@ -1,0 +1,12 @@
+[
+  {
+    "op": "add",
+    "path": "/matcher/indexer_addr",
+    "value": "⚠️"
+  },
+  {
+    "op": "add",
+    "path": "/notifier/indexer_addr",
+    "value": "⚠️"
+  }
+]

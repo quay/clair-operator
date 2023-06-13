@@ -51,7 +51,7 @@ spec:
   capacity:
     storage: 5Gi
   accessModes:
-    - ReadWriteOne
+    - ReadWriteOnce
   hostPath:
     path: "/tmp/data"
 ---
@@ -64,7 +64,7 @@ metadata:
 spec:
   storageClassName: manual
   accessModes:
-    - ReadWriteOne
+    - ReadWriteOnce
   resources:
     requests:
       storage: 5Gi

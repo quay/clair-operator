@@ -9,7 +9,7 @@ use std::{
 use signal_hook::{consts::SIGINT, low_level::pipe};
 
 fn main() {
-    use clap::{crate_authors, crate_name, crate_version, Arg, Command, ValueHint};
+    use clap::{crate_authors, crate_name, crate_version, Arg, ArgAction, Command, ValueHint};
     let cmd = Command::new(crate_name!())
         .author(crate_authors!())
         .version(crate_version!())
@@ -31,14 +31,17 @@ fn main() {
             Command::new("manifests")
                 .about("generate CRD manifests into config/crd"),
             Command::new("demo")
-                .about("spin up a kind instance with CRDs loaded and controller running"),
+                .about("spin up a kind instance with CRDs loaded and controller running")
+                .args(&[
+                    Arg::new("no_controller").long("no-run").help("don't automatically run controllers").action(ArgAction::SetTrue)
+                ]),
         ]);
 
     if let Err(e) = match cmd.get_matches().subcommand() {
         Some(("bundle", m)) => bundle(crate_version!(), BundleOpts::from(m)),
         Some(("ci", m)) => ci(CiOpts::from(m)),
         Some(("manifests", _)) => manifests(),
-        Some(("demo", _)) => demo(),
+        Some(("demo", m)) => demo(DemoOpts::from(m)),
         _ => unreachable!(),
     } {
         eprintln!("{e}");
@@ -49,7 +52,7 @@ fn main() {
 type DynError = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, DynError>;
 
-fn demo() -> Result<()> {
+fn demo(opts: DemoOpts) -> Result<()> {
     let (mut rd, wr) = UnixStream::pair()?;
     pipe::register(SIGINT, wr)?;
 
@@ -86,11 +89,17 @@ fn demo() -> Result<()> {
         .stdin(kus.stdout.unwrap())
         .status()?;
 
-    eprintln!("running controllers");
-    let _ctrl = Command::new(env::var_os("CARGO").unwrap())
-        .current_dir(workspace())
-        .args(["run", "--package", "controller", "--", "run"])
-        .spawn()?;
+    let _ctrl = if opts.run_controller {
+        eprintln!("running controllers");
+        Some(
+            Command::new(env::var_os("CARGO").unwrap())
+                .current_dir(workspace())
+                .args(["run", "--package", "controller", "--", "run"])
+                .spawn()?,
+        )
+    } else {
+        None
+    };
 
     eprintln!("take it for a spin:");
     eprintln!("\tKUBECONFIG={cfgpath:?} kubectl get crds");
@@ -102,6 +111,18 @@ fn demo() -> Result<()> {
     eprintln!("");
     eprintln!("🫠");
     Ok(())
+}
+
+struct DemoOpts {
+    run_controller: bool,
+}
+
+impl From<&clap::ArgMatches> for DemoOpts {
+    fn from(m: &clap::ArgMatches) -> Self {
+        DemoOpts {
+            run_controller: !m.get_one::<bool>("no_controller").cloned().unwrap_or(false),
+        }
+    }
 }
 
 fn ci(opts: CiOpts) -> Result<()> {

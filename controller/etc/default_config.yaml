@@ -1,2 +1,5 @@
 http_listen_addr: ':6060'
 introspection_addr: ':8089'
+matcher: {}
+indexer: {}
+notifier: {}

@@ -47,4 +47,4 @@
   value: map
 - op: add
   path: '/spec/versions/0/schema/openAPIV3Schema/properties/status/properties/refs/x-kubernetes-list-map-keys'
-  value: ['name']
+  value: ['kind']

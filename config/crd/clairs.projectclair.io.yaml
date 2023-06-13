@@ -151,6 +151,10 @@ spec:
                         type: string
                     type: object
                 type: object
+              image:
+                description: .
+                nullable: true
+                type: string
               notifier:
                 description: |-
                   Notifier enables the notifier subsystem.

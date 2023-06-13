@@ -2,7 +2,7 @@ use std::{borrow::Cow, collections::HashMap};
 
 use k8s_openapi::serde;
 use lazy_static::lazy_static;
-use tracing::debug;
+use tracing::trace;
 
 // TODO(hank) Set up compile-time compression for these assets.
 #[iftree::include_file_tree(
@@ -32,6 +32,18 @@ lazy_static! {
             })
             .collect()
     };
+    static ref DROPINS: HashMap<String, Cow<'static, [u8]>> = {
+        ASSETS
+            .iter()
+            .filter_map(|a| {
+                if a.relative_path.ends_with("_dropin.json-patch") {
+                    Some((a.relative_path.to_string(), (a.get_bytes)()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
 }
 
 pub type DynError = Box<dyn std::error::Error>;
@@ -52,7 +64,7 @@ where
     let kn = K::kind(&()).to_ascii_lowercase();
     let base_file = format!("{kn}.yaml");
     let patch_file = format!("{kn}-{}.yaml-patch", kind.as_ref());
-    debug!(
+    trace!(
         base_file,
         patch_file,
         embed = !FROM_DISK,
@@ -68,8 +80,23 @@ where
         .and_then(|b| serde_yaml::from_slice(b).ok());
 
     if let Some(patch) = patch.as_ref() {
-        debug!("found patch");
+        trace!("found patch");
         json_patch::patch(&mut doc, patch)?;
     }
     serde_json::from_value(doc).map_err(|err| err.into())
+}
+
+/// Returns as json.
+pub async fn dropin_for<S>(kind: S) -> Result<Cow<'static, [u8]>, DynError>
+where
+    S: AsRef<str>,
+{
+    let kind = kind.as_ref();
+    let base_file = format!("{kind}_dropin.json-patch");
+    trace!(base_file, embed = !FROM_DISK, "looking for resource");
+
+    DROPINS
+        .get(&base_file)
+        .map(Clone::clone)
+        .ok_or_else(|| -> DynError { format!("missing dropin: {base_file}").into() })
 }

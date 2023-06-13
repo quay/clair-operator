@@ -13,7 +13,7 @@ async fn initialize() -> Result<(), Error> {
 
     let token = CancellationToken::new();
     let mut ctrls = task::JoinSet::new();
-    indexers::controller(&mut ctrls, token.clone(), ctx.clone());
+    ctrls.spawn(indexers::controller(token.clone(), ctx.clone())?);
     ctrls.spawn(initialize_inner(ctx));
 
     loop {

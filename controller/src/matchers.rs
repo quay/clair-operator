@@ -1,6 +1,10 @@
-use std::sync::Arc;
+#![allow(unused_imports)]
 
-use kube::{api::Patch, runtime::controller::Error as CtrlErr, Api};
+use kube::{
+    api::{Patch, PostParams},
+    runtime::controller::Error as CtrlErr,
+    Api,
+};
 use tokio::{
     signal::unix::{signal, SignalKind},
     time::Duration,
@@ -8,7 +12,6 @@ use tokio::{
 use tokio_stream::wrappers::SignalStream;
 
 use crate::{clair_condition, prelude::*, COMPONENT_LABEL};
-
 static COMPONENT: &str = "indexer";
 
 /// .
@@ -26,7 +29,7 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
     let sig = SignalStream::new(signal(SignalKind::user_defined1())?);
 
     let ctl = Controller::new(
-        Api::<v1alpha1::Indexer>::default_namespaced(client.clone()),
+        Api::<v1alpha1::Matcher>::default_namespaced(client.clone()),
         ctlcfg,
     )
     .owns(
@@ -42,7 +45,7 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
     .graceful_shutdown_on(cancel.cancelled_owned());
 
     Ok(async move {
-        info!("spawning indexer controller");
+        info!("spawning matcher controller");
         ctl.run(reconcile, handle_error, ctx)
             .for_each(|ret| {
                 match ret {
@@ -58,14 +61,14 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
                 futures::future::ready(())
             })
             .await;
-        debug!("indexer controller finished");
+        debug!("matcher controller finished");
         Ok(())
     }
     .boxed())
 }
 
 #[instrument(skip(ctx),fields(%obj))]
-async fn reconcile(obj: Arc<v1alpha1::Indexer>, ctx: Arc<Context>) -> Result<Action> {
+async fn reconcile(obj: Arc<v1alpha1::Matcher>, ctx: Arc<Context>) -> Result<Action> {
     trace!("start");
     let req = Request::new(&ctx.client, obj.object_ref(&()));
     assert!(obj.meta().name.is_some());
@@ -80,9 +83,8 @@ async fn reconcile(obj: Arc<v1alpha1::Indexer>, ctx: Arc<Context>) -> Result<Act
     // Check the spec:
     let action = "CheckConfig".into();
     let type_ = clair_condition("SpecOK");
-    debug!("configsource check");
+    trace!("configsource check");
     if obj.spec.config.is_none() {
-        trace!("configsource missing");
         req.publish(Event {
             type_: EventType::Warning,
             reason: "Initialization".into(),
@@ -91,7 +93,7 @@ async fn reconcile(obj: Arc<v1alpha1::Indexer>, ctx: Arc<Context>) -> Result<Act
             secondary: None,
         })
         .await?;
-        next.add_condition(meta::v1::Condition {
+        next.add_condition(Condition {
             last_transition_time: req.now(),
             message: "\"/spec/config\" missing".into(),
             observed_generation: obj.metadata.generation,
@@ -101,8 +103,8 @@ async fn reconcile(obj: Arc<v1alpha1::Indexer>, ctx: Arc<Context>) -> Result<Act
         });
         return publish(obj, ctx, req, next).await;
     }
-    debug!("configsource ok");
-    debug!(
+    trace!("configsource ok");
+    trace!(
         provided = spec.image.is_some(),
         image = spec.image_default(&crate::DEFAULT_IMAGE),
         "image check"
@@ -115,7 +117,7 @@ async fn reconcile(obj: Arc<v1alpha1::Indexer>, ctx: Arc<Context>) -> Result<Act
         status: "True".into(),
         type_: clair_condition("SpecOK"),
     });
-    debug!("spec ok");
+    trace!("spec ok");
 
     macro_rules! check_all {
         ($($fn:ident),+ $(,)?) => {
@@ -124,16 +126,15 @@ async fn reconcile(obj: Arc<v1alpha1::Indexer>, ctx: Arc<Context>) -> Result<Act
             // Otherwise the compiler will complain about the last assignment:
             #[allow(unused_assignments)]
             if !r#continue {
-                debug!(step=stringify!($fn), "skipping check");
+                trace!(step=stringify!($fn), "skipping check");
             } else {
-                debug!(step=stringify!($fn), "running check");
+                trace!(step=stringify!($fn), "running check");
                 r#continue = $fn(&obj, &ctx, &req, &mut next).await?;
             }
             )+
         }
     }
     check_all!(
-        check_dropin,
         check_config,
         check_deployment,
         check_service,
@@ -146,17 +147,22 @@ async fn reconcile(obj: Arc<v1alpha1::Indexer>, ctx: Arc<Context>) -> Result<Act
 }
 
 #[instrument(skip_all)]
+fn handle_error(_obj: Arc<v1alpha1::Matcher>, _err: &Error, _ctx: Arc<Context>) -> Action {
+    Action::await_change()
+}
+
+#[instrument(skip_all)]
 async fn publish(
-    obj: Arc<v1alpha1::Indexer>,
+    obj: Arc<v1alpha1::Matcher>,
     ctx: Arc<Context>,
     _req: Request,
-    next: v1alpha1::IndexerStatus,
+    next: v1alpha1::MatcherStatus,
 ) -> Result<Action> {
-    let api: Api<v1alpha1::Indexer> = Api::default_namespaced(ctx.client.clone());
+    let api: Api<v1alpha1::Matcher> = Api::default_namespaced(ctx.client.clone());
     let name = &obj.metadata.name.as_ref().unwrap();
 
     let changed = obj.status.is_none() || obj.status.as_ref().unwrap() == &next;
-    let mut c = v1alpha1::Indexer::clone(&obj);
+    let mut c = v1alpha1::Matcher::clone(&obj);
     c.status = Some(next);
     c.metadata.managed_fields = None; // ???
 
@@ -171,91 +177,11 @@ async fn publish(
 }
 
 #[instrument(skip_all)]
-async fn check_dropin(
-    obj: &v1alpha1::Indexer,
-    ctx: &Context,
-    _req: &Request,
-    next: &mut v1alpha1::IndexerStatus,
-) -> Result<bool> {
-    use self::core::v1::{ConfigMap, ConfigMapKeySelector};
-    let owner = match obj
-        .owner_references()
-        .iter()
-        .find(|&r| r.controller.unwrap_or(false))
-    {
-        None => {
-            trace!("not owned, skipping dropin");
-            return Ok(true);
-        }
-        Some(o) => o,
-    };
-    let cmref = obj.status.as_ref().and_then(|s| s.has_ref::<ConfigMap>());
-    if cmref.is_none() {
-        let name = format!(
-            "{}-{}",
-            obj.name_any(),
-            v1alpha1::Indexer::kind(&()).to_ascii_lowercase()
-        );
-        let clair: v1alpha1::Clair = Api::default_namespaced(ctx.client.clone())
-            .get_status(&owner.name)
-            .await?;
-        let flavor = clair.spec.config_dialect.unwrap_or_default();
-        let dropin = clair
-            .status
-            .as_ref()
-            .and_then(|s| s.config.as_ref())
-            .map(|src| &src.dropins)
-            .and_then(|d| {
-                d.iter().find(|&c| {
-                    if let Some(m) = &c.config_map {
-                        return m.name.as_ref().unwrap() == &name;
-                    }
-                    false
-                })
-            })
-            .is_some();
-        if dropin {
-            debug!(name, "found dropin with anticipated name, adopting");
-            let api = Api::default_namespaced(ctx.client.clone());
-            let cm: ConfigMap = api.get(&name).await?;
-            next.add_ref(&cm);
-            return Ok(false);
-        }
-        let (key, mut cm) = default_dropin(obj, flavor, ctx).await?;
-        let api = Api::default_namespaced(ctx.client.clone());
-        crate::set_label(cm.meta_mut(), COMPONENT);
-        let cm = api.create(&CREATE_PARAMS, &cm).await?;
-        next.add_ref(&cm);
-        debug!(name = cm.name_any(), "created ConfigMap");
-        let api = Api::<v1alpha1::Clair>::default_namespaced(ctx.client.clone());
-        let mut clair: v1alpha1::Clair = api.get_status(&owner.name).await?;
-        clair.metadata.managed_fields = None;
-        clair.spec.dropins.push(v1alpha1::RefConfigOrSecret {
-            secret: None,
-            config_map: Some(ConfigMapKeySelector {
-                key,
-                name: Some(cm.name_any()),
-                optional: Some(false),
-            }),
-        });
-        api.patch(
-            &clair.name_any(),
-            &PatchParams::apply(OPERATOR_NAME),
-            &Patch::Apply(&clair),
-        )
-        .await?;
-        debug!("updated owning Clair");
-        return Ok(false);
-    }
-    Ok(true)
-}
-
-#[instrument(skip_all)]
 async fn check_config(
-    obj: &v1alpha1::Indexer,
+    obj: &v1alpha1::Matcher,
     _ctx: &Context,
     _req: &Request,
-    next: &mut v1alpha1::IndexerStatus,
+    next: &mut v1alpha1::MatcherStatus,
 ) -> Result<bool> {
     if obj.status.is_none() || obj.status.as_ref().unwrap().config.is_none() {
         next.config = obj.spec.config.clone();
@@ -270,13 +196,12 @@ async fn check_config(
     }
     Ok(true)
 }
-
 #[instrument(skip_all)]
 async fn check_deployment(
-    obj: &v1alpha1::Indexer,
+    obj: &v1alpha1::Matcher,
     ctx: &Context,
     _req: &Request,
-    next: &mut v1alpha1::IndexerStatus,
+    next: &mut v1alpha1::MatcherStatus,
 ) -> Result<bool> {
     use self::core::v1::EnvVar;
     let dref = obj
@@ -293,12 +218,6 @@ async fn check_deployment(
         let image = obj.spec.image_default(&crate::DEFAULT_IMAGE);
         let (vols, mounts, config) = make_volumes(cfgsrc);
         if let Some(ref mut spec) = deploy.spec {
-            spec.selector
-                .match_labels
-                .as_mut()
-                .unwrap()
-                .insert(COMPONENT_LABEL.to_string(), COMPONENT.into());
-            crate::set_label(spec.template.metadata.as_mut().unwrap(), COMPONENT);
             if let Some(ref mut spec) = spec.template.spec {
                 spec.volumes = Some(vols);
                 let c = &mut spec.containers[0];
@@ -311,7 +230,6 @@ async fn check_deployment(
                 });
             };
         };
-        crate::set_label(deploy.meta_mut(), COMPONENT);
 
         let api = Api::<apps::v1::Deployment>::default_namespaced(ctx.client.clone());
         let deploy = api.create(&CREATE_PARAMS, &deploy).await?;
@@ -319,77 +237,63 @@ async fn check_deployment(
         next.add_ref(&deploy);
         return Ok(false);
     }
-    warn!(kind = dref.unwrap().kind, "TODO: reconcile loop");
+    // TODO
     Ok(true)
 }
 
 #[instrument(skip_all)]
 async fn check_service(
-    obj: &v1alpha1::Indexer,
+    obj: &v1alpha1::Matcher,
     ctx: &Context,
     _req: &Request,
-    next: &mut v1alpha1::IndexerStatus,
+    next: &mut v1alpha1::MatcherStatus,
 ) -> Result<bool> {
     let sref = obj
         .status
         .as_ref()
         .and_then(|s| s.has_ref::<core::v1::Service>());
     if sref.is_none() {
-        let mut srv: core::v1::Service = new_templated(obj, ctx).await?;
+        let srv: core::v1::Service = new_templated(obj, ctx).await?;
         let api = Api::<core::v1::Service>::default_namespaced(ctx.client.clone());
-        crate::set_label(srv.meta_mut(), COMPONENT);
         let srv = api.create(&CREATE_PARAMS, &srv).await?;
         debug!(name = srv.name_unchecked(), "created Service");
         next.add_ref(&srv);
         return Ok(false);
     }
-    warn!(kind = sref.unwrap().kind, "TODO: reconcile loop");
+    // TODO
     Ok(true)
 }
 
 #[instrument(skip_all)]
 async fn check_hpa(
-    obj: &v1alpha1::Indexer,
+    obj: &v1alpha1::Matcher,
     ctx: &Context,
     _req: &Request,
-    next: &mut v1alpha1::IndexerStatus,
+    next: &mut v1alpha1::MatcherStatus,
 ) -> Result<bool> {
     let href = obj
         .status
         .as_ref()
         .and_then(|s| s.has_ref::<autoscaling::v2::HorizontalPodAutoscaler>());
-    let dref = obj
-        .status
-        .as_ref()
-        .and_then(|s| s.has_ref::<apps::v1::Deployment>())
-        .ok_or(Error::BadName("missing Deployment reference".into()))?; //TODO(hank) use a better error
     if href.is_none() {
-        let mut hpa: autoscaling::v2::HorizontalPodAutoscaler = new_templated(obj, ctx).await?;
-        if let Some(ref mut spec) = hpa.spec {
-            spec.scale_target_ref.name = dref.name;
-        };
-        crate::set_label(hpa.meta_mut(), COMPONENT);
-
-        // TODO(hank) Check if the metrics API is enabled and if the frontend supports
-        // request-per-second metrics.
-        //
-        //
-        let api = Api::default_namespaced(ctx.client.clone());
+        let hpa: autoscaling::v2::HorizontalPodAutoscaler = new_templated(obj, ctx).await?;
+        let api =
+            Api::<autoscaling::v2::HorizontalPodAutoscaler>::default_namespaced(ctx.client.clone());
         let hpa = api.create(&CREATE_PARAMS, &hpa).await?;
         debug!(name = hpa.name_unchecked(), "created HPA");
         next.add_ref(&hpa);
         return Ok(false);
     }
-    warn!(kind = href.unwrap().kind, "TODO: reconcile loop");
+    // TODO
     Ok(true)
 }
 
 #[instrument(skip_all)]
 async fn check_creation(
-    obj: &v1alpha1::Indexer,
+    obj: &v1alpha1::Matcher,
     _ctx: &Context,
     req: &Request,
-    next: &mut v1alpha1::IndexerStatus,
+    next: &mut v1alpha1::MatcherStatus,
 ) -> Result<bool> {
     let refs = [
         obj.status
@@ -405,7 +309,7 @@ async fn check_creation(
     let ok = refs.iter().all(|r| r.is_some());
     let status = if ok { "True" } else { "False" }.to_string();
     let message = if ok {
-        "🆗".to_string()
+        "".to_string()
     } else {
         format!(
             "missing: {}",
@@ -416,7 +320,7 @@ async fn check_creation(
         )
     };
 
-    next.add_condition(meta::v1::Condition {
+    next.add_condition(Condition {
         last_transition_time: req.now(),
         observed_generation: obj.metadata.generation,
         reason: "ObjectsCreated".into(),
@@ -435,9 +339,4 @@ async fn check_creation(
         .await?;
     }
     Ok(ok)
-}
-
-#[instrument(skip_all)]
-fn handle_error(_obj: Arc<v1alpha1::Indexer>, _err: &Error, _ctx: Arc<Context>) -> Action {
-    Action::await_change()
 }

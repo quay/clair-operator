@@ -1,34 +1,42 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use k8s_openapi::{api::core::v1::TypedLocalObjectReference, ByteString, NamespaceResourceScope};
+use kube::runtime::controller::Error as CtrlErr;
 use kube::{
     api::{Api, Patch, PatchParams, PostParams},
     core::{GroupVersionKind, ObjectMeta},
     discovery::oneshot,
 };
 use serde::{de::DeserializeOwned, ser::Serialize};
-use tokio::{task, time::Duration};
+use tokio::{
+    signal::unix::{signal, SignalKind},
+    time::Duration,
+};
+use tokio_stream::wrappers::SignalStream;
 
 use crate::{
     clair_condition, prelude::*, want_dropins, COMPONENT_LABEL, DEFAULT_CONFIG_JSON,
-    DEFAULT_CONFIG_YAML,
+    DEFAULT_CONFIG_YAML, PARENT_GENERATION_ANNOTATION,
 };
 use clair_config;
 
 static COMPONENT: &str = "clair";
 
+/// .
+///
+/// # Errors
+///
+/// This function will return an error if .
 #[instrument(skip_all)]
-pub fn controller(
-    set: &mut task::JoinSet<Result<()>>,
-    cancel: CancellationToken,
-    ctx: Arc<Context>,
-) {
+pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<ControllerFuture> {
     let client = ctx.client.clone();
     let ctlcfg = watcher::Config::default();
     let wcfg = ctlcfg
         .clone()
         .labels(format!("{}={COMPONENT}", COMPONENT_LABEL.as_str()).as_str());
     let root: Api<v1alpha1::Clair> = Api::default_namespaced(client.clone());
+    let sig = SignalStream::new(signal(SignalKind::user_defined1())?);
+
     let ctl = Controller::new(root, ctlcfg)
         .owns(
             Api::<core::v1::Secret>::default_namespaced(client.clone()),
@@ -41,15 +49,31 @@ pub fn controller(
         .owns(
             Api::<networking::v1::Ingress>::default_namespaced(client),
             wcfg,
-        );
-    info!("spawning clair controller");
-    set.spawn(async move {
-        tokio::select! {
-            _ = ctl.run(reconcile, error_policy, ctx).for_each(|_| futures::future::ready(())) => debug!("clair controller finished"),
-            _ = cancel.cancelled() => debug!("clair controller cancelled"),
-        }
+        )
+        .reconcile_all_on(sig)
+        .graceful_shutdown_on(cancel.cancelled_owned());
+
+    Ok(async move {
+        info!("starting clair controller");
+        ctl.run(reconcile, error_policy, ctx)
+            .for_each(|ret| {
+                match ret {
+                    Ok(_) => (),
+                    Err(err) => match err {
+                        CtrlErr::ObjectNotFound(objref) => error!(%objref, "object not found"),
+                        CtrlErr::ReconcilerFailed(error, objref) => {
+                            error!(%objref, %error, "reconcile error")
+                        }
+                        CtrlErr::QueueError(error) => error!(%error, "queue error"),
+                    },
+                };
+                futures::future::ready(())
+            })
+            .await;
+        debug!("clair controller finished");
         Ok(())
-    });
+    }
+    .boxed())
 }
 
 #[instrument(skip(_ctx),fields(%obj))]
@@ -90,7 +114,7 @@ async fn reconcile(obj: Arc<v1alpha1::Clair>, ctx: Arc<Context>) -> Result<Actio
             note: Some("\"/spec/databases\" must be populated".into()),
         })
         .await?;
-        next.conditions.push(Condition {
+        next.add_condition(Condition {
             last_transition_time: req.now(),
             observed_generation: obj.metadata.generation,
             message: "\"/spec/databases\" must be populated".into(),
@@ -110,7 +134,7 @@ async fn reconcile(obj: Arc<v1alpha1::Clair>, ctx: Arc<Context>) -> Result<Actio
             note: Some("\"/spec/databases/notifier\" must be populated".into()),
         })
         .await?;
-        next.conditions.push(Condition {
+        next.add_condition(Condition {
             last_transition_time: req.now(),
             observed_generation: obj.metadata.generation,
             message: "\"/spec/databases/notifier\" must be populated".into(),
@@ -122,7 +146,7 @@ async fn reconcile(obj: Arc<v1alpha1::Clair>, ctx: Arc<Context>) -> Result<Actio
         return publish(obj, ctx, req, next).await;
     }
     trace!("databases ok");
-    next.conditions.push(Condition {
+    next.add_condition(Condition {
         last_transition_time: req.now(),
         observed_generation: obj.metadata.generation,
         message: "".into(),
@@ -143,9 +167,9 @@ async fn reconcile(obj: Arc<v1alpha1::Clair>, ctx: Arc<Context>) -> Result<Actio
             // Otherwise the compiler will complain about the last assignment:
             #[allow(unused_assignments)]
             if !r#continue {
-                trace!(step=stringify!($fn), "skipping check");
+                debug!(step=stringify!($fn), "skipping check");
             } else {
-                trace!(step=stringify!($fn), "running check");
+                debug!(step=stringify!($fn), "running check");
                 r#continue = $fn(&obj, &ctx, &req, &mut next).await?;
             }
             )+
@@ -172,6 +196,7 @@ async fn publish(
 ) -> Result<Action> {
     let api: Api<v1alpha1::Clair> = Api::default_namespaced(ctx.client.clone());
     let name = &obj.metadata.name.as_ref().unwrap();
+
     let changed = obj.status.is_none() || obj.status.as_ref().unwrap() == &next;
     let mut c = v1alpha1::Clair::clone(&obj);
     c.status = Some(next);
@@ -237,7 +262,7 @@ async fn initialize_config(
     req.publish(Event {
         type_: EventType::Normal,
         reason: "Success".into(),
-        note: None,
+        note: Some("root config map created".into()),
         action,
         secondary: Some(cfgmap.object_ref(&())),
     })
@@ -315,7 +340,7 @@ async fn initialize_endpoint(
     debug!("initializing endpoint");
     let avail = stream::iter(&[
         GroupVersionKind::gvk("networking.k8s.io", "v1", "Ingress"),
-        GroupVersionKind::gvk("gateway.networking.k8s.io", "v1beta1", "Gateway"),
+        //GroupVersionKind::gvk("gateway.networking.k8s.io", "v1beta1", "Gateway"),
     ])
     .filter_map(|gvk| async { oneshot::pinned_kind(&ctx.client, gvk).await.ok() })
     .collect::<Vec<_>>()
@@ -435,8 +460,6 @@ async fn check_config(
 
     let spec = &obj.spec;
     let config = next.config.as_ref().unwrap();
-    let action = String::from("ConfigValidation");
-    let reason = String::from("ConfigAdded");
 
     let want = want_dropins(spec);
     let needs_update = want.iter().any(|d| !config.dropins.contains(d));
@@ -449,29 +472,32 @@ async fn check_config(
         ..config.clone()
     };
 
-    let type_ = clair_condition("ConfigValidated");
     let v = clair_config::validate(ctx.client.clone(), &config).await?;
     let mut todo = vec![("Indexer", v.indexer), ("Matcher", v.matcher)];
     if spec.notifier.unwrap_or_default() {
         todo.push(("Notifier", v.notifier));
     }
     for (kind, res) in todo {
+        let action = String::from("ConfigValidation");
+        let reason = String::from("ConfigAdded");
+        let type_ = clair_condition(format!("{kind}ConfigValidated"));
+        let message = String::from("🆗");
         let (ev, cnd) = match res {
             Ok(ws) => (
                 Event {
                     type_: EventType::Normal,
-                    reason: reason.clone(),
+                    reason,
                     note: Some(format!("{ws}")),
-                    action: action.clone(),
+                    action,
                     secondary: None, // TODO(hank) Reference the subresource.
                 },
                 meta::v1::Condition {
                     last_transition_time: req.now(),
-                    message: "".to_string(),
+                    message,
                     observed_generation: obj.metadata.generation,
                     reason: format!("{}ValidationSuccess", kind),
                     status: "True".to_string(),
-                    type_: type_.clone(),
+                    type_,
                 },
             ),
             Err(e) => (
@@ -488,18 +514,18 @@ async fn check_config(
                     observed_generation: obj.metadata.generation,
                     reason: format!("{}ValidationFailure", kind),
                     status: "False".to_string(),
-                    type_: type_.clone(),
+                    type_,
                 },
             ),
         };
         req.publish(ev).await?;
-        next.conditions.push(cnd);
+        next.add_condition(cnd);
     }
     let ok = next
         .conditions
         .iter()
         .filter_map(|cnd| {
-            if cnd.type_ == type_ {
+            if cnd.type_.ends_with("ConfigValidated") {
                 Some(cnd.status == "True")
             } else {
                 None
@@ -507,10 +533,42 @@ async fn check_config(
         })
         .all(|x| x);
     debug!(ok, "config validation");
-    if ok {
-        next.config = Some(config);
+    if !ok {
+        return Ok(true);
     }
-    Ok(true)
+    next.config = Some(config.clone());
+    for sub in [
+        obj.status.as_ref().and_then(|s| s.indexer.as_ref()),
+        obj.status.as_ref().and_then(|s| s.matcher.as_ref()),
+        obj.status.as_ref().and_then(|s| s.notifier.as_ref()),
+        //obj.status.as_ref().and_then(|s| s.updater.as_ref()),
+    ] {
+        use std::str::FromStr;
+        let sub = if let Some(sub) = sub { sub } else { continue };
+        let gv = sub
+            .api_group
+            .as_ref()
+            .map(|g| kube::core::GroupVersion::from_str(g.as_str()).unwrap())
+            .unwrap();
+        let gvk = GroupVersionKind::gvk(&gv.group, &gv.version, &sub.kind);
+        let (ar, _) = kube::discovery::pinned_kind(&ctx.client, &gvk).await?;
+        let api = Api::<kube::api::DynamicObject>::default_namespaced_with(ctx.client.clone(), &ar);
+        let patch = serde_json::json!({
+            "apiVersion": sub.api_group,
+            "kind": sub.kind,
+            "metadata": {
+                "name": sub.name,
+            },
+            "spec": {
+                "config": &config,
+            },
+        });
+        let patch = Patch::Apply(patch);
+        let params = PatchParams::apply(OPERATOR_NAME);
+        api.patch(&sub.name, &params, &patch).await?;
+        debug!(name = sub.name, kind = sub.kind, "updated subresource");
+    }
+    Ok(false)
 }
 
 #[instrument(skip_all)]
@@ -541,6 +599,7 @@ async fn check_indexer(
     next: &mut v1alpha1::ClairStatus,
 ) -> Result<bool> {
     if obj.status.is_none() || obj.status.as_ref().unwrap().indexer.is_none() {
+        debug!("creating indexer");
         let new = v1alpha1::Indexer::new(
             &obj.name_any(),
             v1alpha1::IndexerSpec {
@@ -551,7 +610,28 @@ async fn check_indexer(
         next.indexer = initialize_subresource(obj, ctx, req, new).await?;
         return Ok(false);
     }
-    unimplemented!()
+    let status = obj.status.as_ref().unwrap();
+    let idxref = status.indexer.as_ref().unwrap();
+    let api = Api::<v1alpha1::Indexer>::default_namespaced(ctx.client.clone());
+    let mut idx = api.get(&idxref.name).await?;
+    if let Some(ref mut anno) = idx.metadata.annotations {
+        if let Some(rev) = anno.get(PARENT_GENERATION_ANNOTATION.as_str()) {
+            if rev.parse::<i64>().unwrap() < obj.metadata.generation.unwrap() {
+                debug!("indexer out-of-date");
+                anno.insert(
+                    PARENT_GENERATION_ANNOTATION.to_string(),
+                    format!("{}", obj.metadata.generation.unwrap()),
+                );
+                idx.spec.config = next.config.clone();
+                let params = PatchParams::apply(OPERATOR_NAME);
+                let patch = Patch::Apply(&idx);
+                api.patch(&idxref.name, &params, &patch).await?;
+                return Ok(false);
+            }
+        };
+    }
+    debug!("indexer up-to-date");
+    Ok(true)
 }
 #[instrument(skip_all)]
 async fn check_matcher(
@@ -561,6 +641,7 @@ async fn check_matcher(
     next: &mut v1alpha1::ClairStatus,
 ) -> Result<bool> {
     if obj.status.is_none() || obj.status.as_ref().unwrap().matcher.is_none() {
+        debug!("creating matcher");
         let new = v1alpha1::Matcher::new(
             &obj.name_any(),
             v1alpha1::MatcherSpec {
@@ -571,7 +652,28 @@ async fn check_matcher(
         next.matcher = initialize_subresource(obj, ctx, req, new).await?;
         return Ok(false);
     }
-    unimplemented!()
+    let status = obj.status.as_ref().unwrap();
+    let matref = status.indexer.as_ref().unwrap();
+    let api = Api::<v1alpha1::Matcher>::default_namespaced(ctx.client.clone());
+    let mut mat = api.get(&matref.name).await?;
+    if let Some(ref mut anno) = mat.metadata.annotations {
+        if let Some(rev) = anno.get(PARENT_GENERATION_ANNOTATION.as_str()) {
+            if rev.parse::<i64>().unwrap() < obj.metadata.generation.unwrap() {
+                debug!("indexer out-of-date");
+                anno.insert(
+                    PARENT_GENERATION_ANNOTATION.to_string(),
+                    format!("{}", obj.metadata.generation.unwrap()),
+                );
+                mat.spec.config = next.config.clone();
+                let params = PatchParams::apply(OPERATOR_NAME);
+                let patch = Patch::Apply(&mat);
+                api.patch(&matref.name, &params, &patch).await?;
+                return Ok(false);
+            }
+        };
+    }
+    debug!("indexer up-to-date");
+    Ok(true)
 }
 #[instrument(skip_all)]
 async fn check_notifier(
@@ -594,5 +696,6 @@ async fn check_notifier(
         next.notifier = initialize_subresource(obj, ctx, req, new).await?;
         return Ok(false);
     }
-    unimplemented!()
+    error!("TODO");
+    Ok(true)
 }

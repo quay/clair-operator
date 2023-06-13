@@ -15,7 +15,7 @@ async fn initialize() -> Result<(), Error> {
 
     let token = CancellationToken::new();
     let mut ctrls = task::JoinSet::new();
-    clairs::controller(&mut ctrls, token.clone(), ctx.clone());
+    ctrls.spawn(clairs::controller(token.clone(), ctx.clone())?);
     ctrls.spawn(initialize_inner(ctx));
 
     loop {

@@ -5,6 +5,7 @@ use std::{
 };
 
 use futures::prelude::*;
+use is_terminal::IsTerminal;
 use tokio::net::TcpListener;
 use tokio_native_tls::{native_tls, TlsAcceptor};
 use tokio_stream::wrappers::TcpListenerStream;
@@ -64,7 +65,7 @@ fn main() {
                 .default_value("tls.key"),
             Arg::new("controllers")
                 .action(ArgAction::Append)
-                .default_values(["clair", "indexer"]),
+                .default_values(["clair", "indexer", "matcher"]),
         ])]);
 
     if let Err(e) = match cmd.get_matches().subcommand() {
@@ -126,14 +127,21 @@ impl Args {
 fn startup(args: Args) -> controller::Result<()> {
     use metrics_exporter_prometheus::PrometheusBuilder;
     use tokio::{runtime, signal};
-    use tracing_subscriber::filter::EnvFilter;
-    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::{filter::EnvFilter, prelude::*};
 
-    let logger = tracing_subscriber::fmt::layer().json();
     let env_filter = EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new("info"))?;
     let collector = tracing_subscriber::Registry::default()
-        .with(logger)
-        .with(env_filter);
+        .with(env_filter)
+        .with(if std::io::stdout().is_terminal() {
+            Some(tracing_subscriber::fmt::layer())
+        } else {
+            None
+        })
+        .with(if std::io::stdout().is_terminal() {
+            None
+        } else {
+            Some(tracing_subscriber::fmt::layer().json())
+        });
     tracing::subscriber::set_global_default(collector)?;
     let prom = PrometheusBuilder::new().with_http_listener(args.introspection_address);
 
@@ -172,12 +180,18 @@ async fn run(args: Args, token: CancellationToken) -> controller::Result<()> {
     let ctx = args.context(client);
     let mut ctrls = task::JoinSet::new();
     for name in &args.controllers {
-        match name.to_lowercase().as_str() {
-            "clair" | "clairs" => clairs::controller(&mut ctrls, token.clone(), ctx.clone()),
-            "indexer" | "indexers" => indexers::controller(&mut ctrls, token.clone(), ctx.clone()),
-            "updater" | "updaters" => updaters::controller(&mut ctrls, ctx.clone()),
-            other => warn!(name = other, "unrecognized controller name, skipping"),
+        let fut = match name.to_lowercase().as_str() {
+            "clair" | "clairs" => clairs::controller(token.clone(), ctx.clone())?,
+            "indexer" | "indexers" => indexers::controller(token.clone(), ctx.clone())?,
+            "matcher" | "matchers" => matchers::controller(token.clone(), ctx.clone())?,
+            "notifier" | "notifiers" => todo!(),
+            "updater" | "updaters" => todo!(),
+            other => {
+                warn!(name = other, "unrecognized controller name, skipping");
+                continue;
+            }
         };
+        ctrls.spawn(fut);
     }
     while let Some(res) = ctrls.join_next().await {
         match res {

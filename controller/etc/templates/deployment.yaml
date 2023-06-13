@@ -47,7 +47,7 @@ spec:
             cpu: "1"
         startupProbe:
           tcpSocket:
-            port: http
+            port: api
           initialDelaySeconds: 5
           periodSeconds: 1
         livenessProbe:
