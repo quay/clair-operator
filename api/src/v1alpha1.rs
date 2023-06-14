@@ -263,6 +263,9 @@ pub struct UpdaterSpec {
     pub suspend: Option<bool>,
 
     pub image: Option<String>,
+    /// Config is configuration sources for the Clair instance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<ConfigSource>,
 }
 
 /// UpdaterStatus describes the observed state of a Updater instance.
@@ -280,6 +283,9 @@ pub struct UpdaterStatus {
     /// CronJob the operator has configured for this Updater.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cron_job: Option<core::v1::TypedLocalObjectReference>,
+    /// Config is configuration sources for the Clair instance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<ConfigSource>,
 }
 
 /// NotifierSpec describes the desired state of an Notifier instance.
@@ -323,8 +329,8 @@ pub struct NotifierStatus {
 mod private {
     use k8s_openapi::{api::core, apimachinery::pkg::apis::meta};
     pub trait CrdCommon {
-        type Spec;
-        type Status: super::StatusCommon;
+        type Spec: SpecCommon;
+        type Status: StatusCommon;
         fn get_status(&self) -> Option<&Self::Status>;
         fn set_status(&mut self, s: Self::Status);
         fn get_spec(&self) -> &Self::Spec;
@@ -340,9 +346,16 @@ mod private {
         fn get_image(&self) -> Option<&String>;
         fn set_image<S: ToString>(&mut self, img: S);
     }
+    pub trait SubSpecCommon: SpecCommon {
+        fn get_config(&self) -> Option<&super::ConfigSource>;
+        fn set_config(&mut self, cfg: Option<super::ConfigSource>);
+    }
 }
 
-pub trait CrdCommon: private::CrdCommon + kube::Resource<DynamicType = ()> {}
+pub trait CrdCommon: private::CrdCommon + kube::Resource<DynamicType = ()> {
+    type Spec: SpecCommon;
+    type Status: StatusCommon;
+}
 
 macro_rules! impl_crds {
     ($(($kind:ty, $spec:ty, $status:ty)),+ $(,)?) => {
@@ -352,7 +365,7 @@ macro_rules! impl_crds {
                 f.write_fmt(format_args!(
                     "{}({})",
                     stringify!($kind),
-                    self.metadata.uid.as_deref().unwrap_or("<>")
+                    self.metadata.uid.as_deref().unwrap_or("<>"),
                 ))
             }
         }
@@ -372,7 +385,10 @@ macro_rules! impl_crds {
                 self.spec = s;
             }
         }
-        impl CrdCommon for $kind {}
+        impl CrdCommon for $kind {
+            type Status = $status;
+            type Spec = $spec;
+        }
         )+
     };
 }
@@ -505,3 +521,26 @@ impl_spec!(
     NotifierSpec,
     UpdaterSpec,
 );
+
+pub trait SubSpecCommon: private::SubSpecCommon {
+    fn set_values<S: ToString>(&mut self, img: S, cfg: Option<ConfigSource>) {
+        self.set_image(img);
+        self.set_config(cfg);
+    }
+}
+macro_rules! impl_subspec {
+    ($($kind:ty),+ $(,)?) => {
+        $(
+        impl private::SubSpecCommon for $kind {
+            fn get_config(&self) -> Option<&ConfigSource> {
+                self.config.as_ref()
+            }
+            fn set_config(&mut self, cfg: Option<ConfigSource>) {
+                self.config = cfg;
+            }
+        }
+        impl SubSpecCommon for $kind {}
+        )+
+    };
+}
+impl_subspec!(IndexerSpec, MatcherSpec, NotifierSpec);

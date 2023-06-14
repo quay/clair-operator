@@ -1,13 +1,12 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use k8s_openapi::{api::core::v1::TypedLocalObjectReference, ByteString, NamespaceResourceScope};
+use k8s_openapi::api::core::v1::TypedLocalObjectReference;
 use kube::runtime::controller::Error as CtrlErr;
 use kube::{
     api::{Api, Patch, PatchParams, PostParams},
     core::{GroupVersionKind, ObjectMeta},
     discovery::oneshot,
 };
-use serde::{de::DeserializeOwned, ser::Serialize};
 use tokio::{
     signal::unix::{signal, SignalKind},
     time::Duration,
@@ -16,7 +15,7 @@ use tokio_stream::wrappers::SignalStream;
 
 use crate::{
     clair_condition, prelude::*, want_dropins, COMPONENT_LABEL, DEFAULT_CONFIG_JSON,
-    DEFAULT_CONFIG_YAML, PARENT_GENERATION_ANNOTATION,
+    DEFAULT_CONFIG_YAML,
 };
 use clair_config;
 
@@ -37,7 +36,19 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
     let root: Api<v1alpha1::Clair> = Api::default_namespaced(client.clone());
     let sig = SignalStream::new(signal(SignalKind::user_defined1())?);
 
-    let ctl = Controller::new(root, ctlcfg)
+    let ctl = Controller::new(root, ctlcfg.clone())
+        .owns(
+            Api::<v1alpha1::Indexer>::default_namespaced(client.clone()),
+            ctlcfg.clone(),
+        )
+        .owns(
+            Api::<v1alpha1::Matcher>::default_namespaced(client.clone()),
+            ctlcfg.clone(),
+        )
+        .owns(
+            Api::<v1alpha1::Notifier>::default_namespaced(client.clone()),
+            ctlcfg,
+        )
         .owns(
             Api::<core::v1::Secret>::default_namespaced(client.clone()),
             wcfg.clone(),
@@ -76,7 +87,7 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
     .boxed())
 }
 
-#[instrument(skip(_ctx),fields(%obj))]
+#[instrument(skip_all)]
 fn error_policy(obj: Arc<v1alpha1::Clair>, err: &Error, _ctx: Arc<Context>) -> Action {
     error!(
         error = err.to_string(),
@@ -85,7 +96,7 @@ fn error_policy(obj: Arc<v1alpha1::Clair>, err: &Error, _ctx: Arc<Context>) -> A
     Action::await_change()
 }
 
-#[instrument(skip(ctx),fields(%obj))]
+#[instrument(skip_all)]
 async fn reconcile(obj: Arc<v1alpha1::Clair>, ctx: Arc<Context>) -> Result<Action> {
     trace!("start");
     let req = Request::new(&ctx.client, obj.object_ref(&()));
@@ -162,17 +173,18 @@ async fn reconcile(obj: Arc<v1alpha1::Clair>, ctx: Arc<Context>) -> Result<Actio
     // despite having the same signature.
     macro_rules! check_all {
         ($($fn:ident),+ $(,)?) => {
-            let mut r#continue = true;
-            $(
-            // Otherwise the compiler will complain about the last assignment:
-            #[allow(unused_assignments)]
-            if !r#continue {
-                debug!(step=stringify!($fn), "skipping check");
-            } else {
-                debug!(step=stringify!($fn), "running check");
-                r#continue = $fn(&obj, &ctx, &req, &mut next).await?;
+            {
+                'checks: {
+$(
+                    debug!(step = stringify!($fn), "running check");
+                    let cont = $fn(&obj, &ctx, &req, &mut next).await?;
+                    debug!(step = stringify!($fn), "continue" = cont, "ran check");
+                    if !cont {
+                        break 'checks
+                    }
+)+
+                }
             }
-            )+
         }
     }
     check_all!(
@@ -195,134 +207,39 @@ async fn publish(
     next: v1alpha1::ClairStatus,
 ) -> Result<Action> {
     let api: Api<v1alpha1::Clair> = Api::default_namespaced(ctx.client.clone());
-    let name = &obj.metadata.name.as_ref().unwrap();
+    let name = obj.name_any();
 
-    let changed = obj.status.is_none() || obj.status.as_ref().unwrap() == &next;
-    let mut c = v1alpha1::Clair::clone(&obj);
+    let prev = obj.metadata.resource_version.clone().unwrap();
+    let mut cur = None;
+    let mut c = v1alpha1::Clair::new(&name, Default::default());
     c.status = Some(next);
-    c.metadata.managed_fields = None; // ???
-
-    api.patch_status(name, &PatchParams::apply(CONTROLLER_NAME), &Patch::Apply(c))
-        .await?;
-    trace!(changed, "patched status");
-    if changed {
-        Ok(Action::await_change())
-    } else {
-        Ok(Action::requeue(Duration::from_secs(3600)))
+    let mut ct = 0;
+    while ct < 3 {
+        c.metadata.resource_version = obj.metadata.resource_version.clone();
+        ct += 1;
+        let buf = serde_json::to_vec(&c)?;
+        match api.replace_status(&name, &CREATE_PARAMS, buf).await {
+            Ok(c) => {
+                cur = c.resource_version();
+                break;
+            }
+            Err(err) => error!(error=%err, "problem updating status"),
+        }
     }
-}
 
-#[instrument(skip_all)]
-async fn initialize_config(
-    obj: &v1alpha1::Clair,
-    ctx: &Context,
-    req: &Request,
-) -> Result<Option<v1alpha1::ConfigSource>> {
-    let spec = &obj.spec;
-    let params = PostParams {
-        dry_run: false,
-        field_manager: Some(CONTROLLER_NAME.to_string()),
-    };
-    let action = String::from("ConfigCreation");
-    let oref = obj
-        .controller_owner_ref(&())
-        .expect("unable to create owner ref");
-    let name = &obj.metadata.name.as_ref().unwrap();
-
-    debug!("initializing root config");
-    let mut data = BTreeMap::new();
-    let key = match spec.config_dialect.unwrap_or_default() {
-        v1alpha1::ConfigDialect::JSON => {
-            data.insert(
-                "config.json".to_string(),
-                ByteString(DEFAULT_CONFIG_JSON.to_vec()),
-            );
-            "config.json"
+    if let Some(cur) = cur {
+        debug!(attempt = ct, prev, cur, "published status");
+        if cur == prev {
+            // If there was no change, queue out in the future.
+            Ok(Action::requeue(Duration::from_secs(3600)))
+        } else {
+            // Handled, so discard the event.
+            Ok(Action::await_change())
         }
-        v1alpha1::ConfigDialect::YAML => {
-            data.insert(
-                "config.yaml".to_string(),
-                ByteString(DEFAULT_CONFIG_YAML.to_vec()),
-            );
-            "config.yaml"
-        }
-    };
-
-    let cfgmap = core::v1::ConfigMap {
-        metadata: ObjectMeta {
-            name: Some(format!("{}-config", name.as_str())),
-            owner_references: Some(vec![oref]),
-            ..Default::default()
-        },
-        binary_data: Some(data),
-        ..Default::default()
-    };
-    let api: Api<core::v1::ConfigMap> = Api::default_namespaced(ctx.client.clone());
-    let cfgmap = api.create(&params, &cfgmap).await?;
-    req.publish(Event {
-        type_: EventType::Normal,
-        reason: "Success".into(),
-        note: Some("root config map created".into()),
-        action,
-        secondary: Some(cfgmap.object_ref(&())),
-    })
-    .await?;
-    debug!(name = cfgmap.name_any(), "initialized root config");
-    Ok(Some(v1alpha1::ConfigSource {
-        root: core::v1::ConfigMapKeySelector {
-            name: Some(cfgmap.name_any()),
-            key: key.to_string(),
-            optional: Some(false),
-        },
-        dropins: vec![],
-    }))
-}
-
-#[instrument(skip_all)]
-async fn initialize_subresource<K>(
-    obj: &v1alpha1::Clair,
-    ctx: &Context,
-    req: &Request,
-    mut new: K,
-) -> Result<Option<TypedLocalObjectReference>>
-where
-    K: Resource<Scope = NamespaceResourceScope, DynamicType = ()>,
-    K: DeserializeOwned,
-    K: Serialize,
-    K: Clone,
-    K: std::fmt::Debug,
-{
-    let params = PostParams {
-        dry_run: false,
-        field_manager: Some(CONTROLLER_NAME.to_string()),
-    };
-    let action = format!("{}Creation", K::kind(&()));
-    let oref = obj
-        .controller_owner_ref(&())
-        .expect("unable to create owner ref");
-    new.meta_mut().owner_references = Some(vec![oref]);
-    let api: Api<K> = Api::default_namespaced(ctx.client.clone());
-
-    debug!(kind = K::kind(&()).as_ref(), "initializing subresource");
-    let new = api.create(&params, &new).await?;
-    req.publish(Event {
-        type_: EventType::Normal,
-        reason: "Success".into(),
-        note: None,
-        action,
-        secondary: Some(new.object_ref(&())),
-    })
-    .await?;
-    debug!(
-        kind = K::kind(&()).as_ref(),
-        name = new.name_any(),
-        "initialized subresource"
-    );
-    Ok(Some(TypedLocalObjectReference {
-        api_group: Some(K::api_version(&()).to_string()),
-        name: new.name_any(),
-        kind: K::kind(&()).to_string(),
-    }))
+    } else {
+        // Unable to update, so requeue soon.
+        Ok(Action::requeue(Duration::from_secs(5)))
+    }
 }
 
 #[instrument(skip_all)]
@@ -410,6 +327,7 @@ async fn new_ingress(
     };
     v.metadata.owner_references = Some(vec![oref]);
     v.metadata.name = Some(obj.name_any());
+    crate::set_component_label(v.meta_mut(), COMPONENT);
     let spec = v.spec.as_mut().expect("bad Ingress from template");
     // Attach TLS config if provided.
     if let Some(ref endpoint) = obj.spec.endpoint {
@@ -452,99 +370,118 @@ async fn check_config(
     req: &Request,
     next: &mut v1alpha1::ClairStatus,
 ) -> Result<bool> {
-    if obj.status.is_none() || obj.status.as_ref().unwrap().config.is_none() {
-        trace!("initializing ConfigSource");
-        next.config = initialize_config(obj, ctx, req).await?;
-        return Ok(false);
-    }
+    use self::core::v1::ConfigMap;
 
     let spec = &obj.spec;
-    let config = next.config.as_ref().unwrap();
+    let oref = obj
+        .controller_owner_ref(&())
+        .expect("unable to create owner ref");
+    let name = format!("{}-config", obj.name_any());
+    let mut ev: Option<Event> = None;
+    let api: Api<core::v1::ConfigMap> = Api::default_namespaced(ctx.client.clone());
 
+    let flavor = spec.config_dialect.unwrap_or_default();
+
+    let mut entry = api
+        .entry(&name)
+        .await?
+        .or_insert(|| {
+            trace!(owner=?oref, "created ConfigMap");
+            ev = Some(Event {
+                action: "CreateConfig".into(),
+                reason: "Initialization".into(),
+                secondary: None,
+                note: None,
+                type_: EventType::Normal,
+            });
+            ConfigMap {
+                metadata: ObjectMeta {
+                    name: Some(name.clone()),
+                    owner_references: Some(vec![oref]),
+                    labels: Some(BTreeMap::from([(
+                        COMPONENT_LABEL.to_string(),
+                        COMPONENT.into(),
+                    )])),
+                    annotations: Some(BTreeMap::from([(
+                        PARENT_VERSION_ANNOTATION.to_string(),
+                        obj.resource_version().unwrap_or_default(),
+                    )])),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        })
+        .and_modify(|cm| {
+            if let Some(ref mut ev) = &mut ev {
+                ev.secondary = Some(cm.object_ref(&()));
+            };
+            cm.annotations_mut().insert(
+                PARENT_VERSION_ANNOTATION.to_string(),
+                obj.resource_version().unwrap_or_default(),
+            );
+            let data = cm.data.get_or_insert_with(BTreeMap::default);
+            match flavor {
+                v1alpha1::ConfigDialect::JSON => data.insert(
+                    "config.json".into(),
+                    String::from_utf8(DEFAULT_CONFIG_JSON.to_vec())
+                        .expect("programmer error: default config not utf-8"),
+                ),
+                v1alpha1::ConfigDialect::YAML => data.insert(
+                    "config.yaml".into(),
+                    String::from_utf8(DEFAULT_CONFIG_YAML.to_vec())
+                        .expect("programmer error: default config not utf-8"),
+                ),
+            };
+        });
+    entry.commit(&CREATE_PARAMS).await?;
+    let key = format!("config.{flavor}");
+    if next.config.is_none() {
+        debug!("initial creation");
+        next.config = Some(v1alpha1::ConfigSource {
+            root: core::v1::ConfigMapKeySelector {
+                name: Some(name),
+                key: key.clone(),
+                optional: Some(false),
+            },
+            dropins: vec![],
+        });
+        if let Some(ev) = ev {
+            req.publish(ev).await?;
+        };
+    }
+
+    let mut config = next.config.clone().unwrap();
     let want = want_dropins(spec);
     let needs_update = want.iter().any(|d| !config.dropins.contains(d));
     debug!(needs_update, "ConfigSource status");
-    if !needs_update {
-        return Ok(true);
+    if needs_update {
+        config.dropins = want;
     }
-    let config = v1alpha1::ConfigSource {
-        dropins: want,
-        ..config.clone()
-    };
 
     let v = clair_config::validate(ctx.client.clone(), &config).await?;
-    let mut todo = vec![("Indexer", v.indexer), ("Matcher", v.matcher)];
-    if spec.notifier.unwrap_or_default() {
-        todo.push(("Notifier", v.notifier));
-    }
-    for (kind, res) in todo {
-        let action = String::from("ConfigValidation");
-        let reason = String::from("ConfigAdded");
-        let type_ = clair_condition(format!("{kind}ConfigValidated"));
-        let message = String::from("🆗");
-        let (ev, cnd) = match res {
-            Ok(ws) => (
-                Event {
-                    type_: EventType::Normal,
-                    reason,
-                    note: Some(format!("{ws}")),
-                    action,
-                    secondary: None, // TODO(hank) Reference the subresource.
-                },
-                meta::v1::Condition {
-                    last_transition_time: req.now(),
-                    message,
-                    observed_generation: obj.metadata.generation,
-                    reason: format!("{}ValidationSuccess", kind),
-                    status: "True".to_string(),
-                    type_,
-                },
-            ),
-            Err(e) => (
-                Event {
-                    type_: EventType::Warning,
-                    reason: reason.clone(),
-                    note: Some(e.to_string()),
-                    action: action.clone(),
-                    secondary: None, // TODO(hank) Reference the subresource.
-                },
-                meta::v1::Condition {
-                    last_transition_time: req.now(),
-                    message: e.to_string(),
-                    observed_generation: obj.metadata.generation,
-                    reason: format!("{}ValidationFailure", kind),
-                    status: "False".to_string(),
-                    type_,
-                },
-            ),
-        };
-        req.publish(ev).await?;
-        next.add_condition(cnd);
-    }
-    let ok = next
-        .conditions
-        .iter()
-        .filter_map(|cnd| {
-            if cnd.type_.ends_with("ConfigValidated") {
-                Some(cnd.status == "True")
-            } else {
-                None
-            }
-        })
-        .all(|x| x);
-    debug!(ok, "config validation");
-    if !ok {
-        return Ok(true);
-    }
-    next.config = Some(config.clone());
-    for sub in [
-        obj.status.as_ref().and_then(|s| s.indexer.as_ref()),
-        obj.status.as_ref().and_then(|s| s.matcher.as_ref()),
-        obj.status.as_ref().and_then(|s| s.notifier.as_ref()),
+    let action = String::from("ConfigValidation");
+    let reason = String::from("ConfigAdded");
+    let message = String::from("🆗");
+    for (sub, res) in [
+        (
+            obj.status.as_ref().and_then(|s| s.indexer.as_ref()),
+            v.indexer,
+        ),
+        (
+            obj.status.as_ref().and_then(|s| s.matcher.as_ref()),
+            v.matcher,
+        ),
+        (
+            obj.status.as_ref().and_then(|s| s.notifier.as_ref()),
+            v.notifier,
+        ),
         //obj.status.as_ref().and_then(|s| s.updater.as_ref()),
-    ] {
+    ]
+    .iter()
+    .filter(|(sub, _)| sub.is_some())
+    .map(|(sub, res)| (sub.unwrap(), res))
+    {
         use std::str::FromStr;
-        let sub = if let Some(sub) = sub { sub } else { continue };
         let gv = sub
             .api_group
             .as_ref()
@@ -553,6 +490,51 @@ async fn check_config(
         let gvk = GroupVersionKind::gvk(&gv.group, &gv.version, &sub.kind);
         let (ar, _) = kube::discovery::pinned_kind(&ctx.client, &gvk).await?;
         let api = Api::<kube::api::DynamicObject>::default_namespaced_with(ctx.client.clone(), &ar);
+        let type_ = clair_condition(format!("{}ConfigValidated", sub.kind));
+        debug!(
+            kind = sub.kind,
+            name = sub.name,
+            "updating dependent resource"
+        );
+
+        match res {
+            Ok(_) => {
+                next.add_condition(Condition {
+                    last_transition_time: req.now(),
+                    message: message.clone(),
+                    observed_generation: obj.metadata.generation,
+                    reason: format!("{}ValidationSuccess", sub.kind),
+                    status: "True".to_string(),
+                    type_,
+                });
+            }
+            Err(err) => {
+                next.add_condition(Condition {
+                    last_transition_time: req.now(),
+                    message: err.to_string(),
+                    observed_generation: obj.metadata.generation,
+                    reason: format!("{}ValidationFailure", sub.kind),
+                    status: "False".to_string(),
+                    type_,
+                });
+                let _ = req
+                    .publish(Event {
+                        type_: EventType::Warning,
+                        reason: reason.clone(),
+                        note: Some(err.to_string()),
+                        action: action.clone(),
+                        secondary: None, // TODO(hank) Reference the subresource.
+                    })
+                    .await;
+                info!(
+                    kind = sub.kind,
+                    name = sub.name,
+                    "config validation failed, skipping"
+                );
+                continue;
+            }
+        };
+
         let patch = serde_json::json!({
             "apiVersion": sub.api_group,
             "kind": sub.kind,
@@ -560,15 +542,17 @@ async fn check_config(
                 "name": sub.name,
             },
             "spec": {
-                "config": &config,
+                "config": config.clone(),
             },
         });
-        let patch = Patch::Apply(patch);
+        trace!(%patch, "applying patch");
+        let patch = Patch::Merge(patch);
         let params = PatchParams::apply(CONTROLLER_NAME);
         api.patch(&sub.name, &params, &patch).await?;
-        debug!(name = sub.name, kind = sub.kind, "updated subresource");
+        info!(name = sub.name, kind = sub.kind, "updated subresource");
     }
-    Ok(false)
+    next.config = Some(config);
+    Ok(true)
 }
 
 #[instrument(skip_all)]
@@ -578,9 +562,39 @@ async fn check_ingress(
     req: &Request,
     next: &mut v1alpha1::ClairStatus,
 ) -> Result<bool> {
-    if obj.status.is_none() || obj.status.as_ref().unwrap().endpoint.is_none() {
-        next.endpoint = initialize_endpoint(obj, ctx, req).await?;
-        return Ok(false);
+    use self::networking::v1::Ingress;
+
+    let api = Api::<Ingress>::default_namespaced(ctx.client.clone());
+    let name = obj.name_any();
+
+    let mut ct = 0;
+    while ct < 3 {
+        ct += 1;
+
+        let mut entry = api
+            .entry(&name)
+            .await?
+            .or_insert(|| {
+                futures::executor::block_on(new_ingress(obj, ctx, req)).expect("template failed")
+            })
+            .and_modify(|_ing| warn!(TOOD = "hank", "reconcile Ingress"));
+        next.endpoint = {
+            let name = entry.get().name_any();
+            Some(TypedLocalObjectReference {
+                kind: Ingress::kind(&()).to_string(),
+                api_group: Some(Ingress::api_version(&()).to_string()),
+                name,
+            })
+        };
+        match entry.commit(&CREATE_PARAMS).await {
+            Ok(()) => break,
+            Err(err) => match err {
+                CommitError::Validate(reason) => {
+                    debug!(reason = reason.to_string(), "commit failed, retrying")
+                }
+                CommitError::Save(_) => return Err(Error::Commit(err)),
+            },
+        };
     }
 
     // For now, assume that if it exists it's fine.
@@ -595,107 +609,176 @@ async fn check_ingress(
 async fn check_indexer(
     obj: &v1alpha1::Clair,
     ctx: &Context,
-    req: &Request,
+    _req: &Request,
     next: &mut v1alpha1::ClairStatus,
 ) -> Result<bool> {
-    if obj.status.is_none() || obj.status.as_ref().unwrap().indexer.is_none() {
-        debug!("creating indexer");
-        let new = v1alpha1::Indexer::new(
-            &obj.name_any(),
-            v1alpha1::IndexerSpec {
-                image: Some(ctx.image.clone()),
-                config: next.config.clone(),
-            },
-        );
-        next.indexer = initialize_subresource(obj, ctx, req, new).await?;
-        return Ok(false);
-    }
-    let status = obj.status.as_ref().unwrap();
-    let idxref = status.indexer.as_ref().unwrap();
     let api = Api::<v1alpha1::Indexer>::default_namespaced(ctx.client.clone());
-    let mut idx = api.get(&idxref.name).await?;
-    if let Some(ref mut anno) = idx.metadata.annotations {
-        if let Some(rev) = anno.get(PARENT_GENERATION_ANNOTATION.as_str()) {
-            if rev.parse::<i64>().unwrap() < obj.metadata.generation.unwrap() {
-                debug!("indexer out-of-date");
-                anno.insert(
-                    PARENT_GENERATION_ANNOTATION.to_string(),
-                    format!("{}", obj.metadata.generation.unwrap()),
+    let name = obj.name_any();
+
+    let mut ct = 0;
+    while ct < 3 {
+        let mut entry = api
+            .entry(&name)
+            .await?
+            .or_insert(|| {
+                debug!("creating indexer");
+                let mut idx = v1alpha1::Indexer::new(&obj.name_any(), Default::default());
+                idx.labels_mut()
+                    .entry(COMPONENT_LABEL.to_string())
+                    .or_insert_with(|| COMPONENT.to_string());
+                idx.owner_references_mut().push(
+                    obj.controller_owner_ref(&())
+                        .expect("unable to create owner ref"),
                 );
+                idx
+            })
+            .and_modify(|idx| {
+                idx.spec.image = Some(ctx.image.clone());
                 idx.spec.config = next.config.clone();
-                let params = PatchParams::apply(CONTROLLER_NAME);
-                let patch = Patch::Apply(&idx);
-                api.patch(&idxref.name, &params, &patch).await?;
-                return Ok(false);
-            }
+                idx.annotations_mut()
+                    .entry(PARENT_VERSION_ANNOTATION.to_string())
+                    .and_modify(|v| *v = obj.resource_version().unwrap())
+                    .or_insert_with(|| obj.resource_version().unwrap());
+            });
+        next.indexer = {
+            let idx = entry.get();
+            Some(TypedLocalObjectReference {
+                kind: v1alpha1::Indexer::kind(&()).to_string(),
+                api_group: Some(v1alpha1::Indexer::api_version(&()).to_string()),
+                name: idx.name_any(),
+            })
         };
+        match entry.commit(&CREATE_PARAMS).await {
+            Ok(()) => break,
+            Err(err) => match err {
+                CommitError::Validate(reason) => {
+                    debug!(reason = reason.to_string(), "commit failed, retrying")
+                }
+                CommitError::Save(_) => return Err(Error::Commit(err)),
+            },
+        };
+        ct += 1;
     }
     debug!("indexer up-to-date");
     Ok(true)
 }
+
 #[instrument(skip_all)]
 async fn check_matcher(
     obj: &v1alpha1::Clair,
     ctx: &Context,
-    req: &Request,
+    _req: &Request,
     next: &mut v1alpha1::ClairStatus,
 ) -> Result<bool> {
-    if obj.status.is_none() || obj.status.as_ref().unwrap().matcher.is_none() {
-        debug!("creating matcher");
-        let new = v1alpha1::Matcher::new(
-            &obj.name_any(),
-            v1alpha1::MatcherSpec {
-                image: Some(ctx.image.clone()),
-                config: next.config.clone(),
-            },
-        );
-        next.matcher = initialize_subresource(obj, ctx, req, new).await?;
-        return Ok(false);
-    }
-    let status = obj.status.as_ref().unwrap();
-    let matref = status.indexer.as_ref().unwrap();
     let api = Api::<v1alpha1::Matcher>::default_namespaced(ctx.client.clone());
-    let mut mat = api.get(&matref.name).await?;
-    if let Some(ref mut anno) = mat.metadata.annotations {
-        if let Some(rev) = anno.get(PARENT_GENERATION_ANNOTATION.as_str()) {
-            if rev.parse::<i64>().unwrap() < obj.metadata.generation.unwrap() {
-                debug!("indexer out-of-date");
-                anno.insert(
-                    PARENT_GENERATION_ANNOTATION.to_string(),
-                    format!("{}", obj.metadata.generation.unwrap()),
+    let name = obj.name_any();
+
+    let mut ct = 0;
+    while ct < 3 {
+        let mut entry = api
+            .entry(&name)
+            .await?
+            .or_insert(|| {
+                debug!("creating matcher");
+                let mut idx = v1alpha1::Matcher::new(&obj.name_any(), Default::default());
+                idx.labels_mut()
+                    .entry(COMPONENT_LABEL.to_string())
+                    .or_insert_with(|| COMPONENT.to_string());
+                idx.owner_references_mut().push(
+                    obj.controller_owner_ref(&())
+                        .expect("unable to create owner ref"),
                 );
-                mat.spec.config = next.config.clone();
-                let params = PatchParams::apply(CONTROLLER_NAME);
-                let patch = Patch::Apply(&mat);
-                api.patch(&matref.name, &params, &patch).await?;
-                return Ok(false);
-            }
+                idx
+            })
+            .and_modify(|idx| {
+                idx.spec.image = Some(ctx.image.clone());
+                idx.spec.config = next.config.clone();
+                idx.annotations_mut()
+                    .entry(PARENT_VERSION_ANNOTATION.to_string())
+                    .and_modify(|v| *v = obj.resource_version().unwrap())
+                    .or_insert_with(|| obj.resource_version().unwrap());
+            });
+        next.matcher = {
+            let idx = entry.get();
+            Some(TypedLocalObjectReference {
+                kind: v1alpha1::Matcher::kind(&()).to_string(),
+                api_group: Some(v1alpha1::Matcher::api_version(&()).to_string()),
+                name: idx.name_any(),
+            })
         };
+        match entry.commit(&CREATE_PARAMS).await {
+            Ok(()) => break,
+            Err(err) => match err {
+                CommitError::Validate(reason) => {
+                    debug!(reason = reason.to_string(), "commit failed, retrying")
+                }
+                CommitError::Save(_) => return Err(Error::Commit(err)),
+            },
+        };
+        ct += 1;
     }
-    debug!("indexer up-to-date");
+    debug!("matcher up-to-date");
     Ok(true)
 }
+
 #[instrument(skip_all)]
 async fn check_notifier(
     obj: &v1alpha1::Clair,
     ctx: &Context,
-    req: &Request,
+    _req: &Request,
     next: &mut v1alpha1::ClairStatus,
 ) -> Result<bool> {
     if !obj.spec.notifier.unwrap_or(false) {
+        trace!("notifier not asked for");
         return Ok(true);
     }
-    if obj.status.is_none() || obj.status.as_ref().unwrap().notifier.is_none() {
-        let new = v1alpha1::Notifier::new(
-            &obj.name_any(),
-            v1alpha1::NotifierSpec {
-                image: Some(ctx.image.clone()),
-                config: next.config.clone(),
+    let api = Api::<v1alpha1::Notifier>::default_namespaced(ctx.client.clone());
+    let name = obj.name_any();
+
+    let mut ct = 0;
+    while ct < 3 {
+        let mut entry = api
+            .entry(&name)
+            .await?
+            .or_insert(|| {
+                debug!("creating notifier");
+                let mut idx = v1alpha1::Notifier::new(&obj.name_any(), Default::default());
+                idx.labels_mut()
+                    .entry(COMPONENT_LABEL.to_string())
+                    .or_insert_with(|| COMPONENT.to_string());
+                idx.owner_references_mut().push(
+                    obj.controller_owner_ref(&())
+                        .expect("unable to create owner ref"),
+                );
+                idx
+            })
+            .and_modify(|idx| {
+                idx.spec.image = Some(ctx.image.clone());
+                idx.spec.config = next.config.clone();
+                idx.annotations_mut()
+                    .entry(PARENT_VERSION_ANNOTATION.to_string())
+                    .and_modify(|v| *v = obj.resource_version().unwrap())
+                    .or_insert_with(|| obj.resource_version().unwrap());
+            });
+        next.notifier = {
+            let idx = entry.get();
+            Some(TypedLocalObjectReference {
+                kind: v1alpha1::Notifier::kind(&()).to_string(),
+                api_group: Some(v1alpha1::Notifier::api_version(&()).to_string()),
+                name: idx.name_any(),
+            })
+        };
+        match entry.commit(&CREATE_PARAMS).await {
+            Ok(()) => break,
+            Err(err) => match err {
+                CommitError::Validate(reason) => {
+                    debug!(reason = reason.to_string(), "commit failed, retrying")
+                }
+                CommitError::Save(_) => return Err(Error::Commit(err)),
             },
-        );
-        next.notifier = initialize_subresource(obj, ctx, req, new).await?;
-        return Ok(false);
+        };
+        ct += 1;
     }
-    error!("TODO");
+    debug!("notifier up-to-date");
     Ok(true)
 }

@@ -7,13 +7,13 @@ use futures::Future;
 use k8s_openapi::{api::core, apimachinery::pkg::apis::meta};
 use kube::runtime::events;
 use lazy_static::lazy_static;
-use tracing::{debug, instrument, trace};
+use tracing::{instrument, trace};
 
 use api::v1alpha1;
 
 // Re-exports for everyone's easy use.
 pub(crate) mod prelude {
-    pub use std::sync::Arc;
+    pub use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
     pub use chrono::Utc;
     pub use futures::prelude::*;
@@ -23,7 +23,10 @@ pub(crate) mod prelude {
     };
     pub use kube::{
         self,
-        api::{Api, PatchParams, PostParams},
+        api::{
+            entry::{CommitError, Entry},
+            Api, PatchParams, PostParams,
+        },
         runtime::{
             controller::{Action, Controller},
             events::{Event, EventType, Recorder, Reporter},
@@ -39,7 +42,7 @@ pub(crate) mod prelude {
     pub use super::templates;
     pub use super::{default_dropin, make_volumes, new_templated};
     pub use super::{Context, ControllerFuture, Error, Request, Result};
-    pub use super::{CONTROLLER_NAME, CREATE_PARAMS};
+    pub use super::{CONTROLLER_NAME, CREATE_PARAMS, PARENT_VERSION_ANNOTATION, PATCH_PARAMS};
 }
 
 pub mod clairs;
@@ -87,6 +90,8 @@ pub enum Error {
     TLS(#[from] tokio_native_tls::native_tls::Error),
     #[error("clair config error: {0}")]
     Config(#[from] clair_config::Error),
+    #[error("commit error: {0}")]
+    Commit(#[from] kube::api::entry::CommitError),
 }
 
 /// Result typedef for the controller.
@@ -255,6 +260,9 @@ where
     use self::meta::v1::ObjectMeta;
     use self::v1alpha1::ConfigDialect;
 
+    let oref = obj
+        .controller_owner_ref(&())
+        .expect("unable to create owner ref");
     let okind = S::kind(&()).to_ascii_lowercase();
     trace!(kind = okind, "requesting dropin");
     let buf = crate::templates::dropin_for(&okind)
@@ -274,6 +282,8 @@ where
         ConfigMap {
             metadata: ObjectMeta {
                 name: Some(format!("{}-{okind}", obj.name_any(),)),
+                owner_references: Some(vec![oref]),
+                annotations: Some(BTreeMap::from([(DROPIN_LABEL.to_string(), key.clone())])),
                 ..Default::default()
             },
             data: Some(BTreeMap::from([(key, buf)])),
@@ -310,7 +320,7 @@ pub fn make_volumes(
         }),
         ..Default::default()
     });
-    debug!(filename, "arranged for root config to be mounted");
+    trace!(filename, "arranged for root config to be mounted");
     mounts.push(VolumeMount {
         name: rootname,
         mount_path: filename.clone(),
@@ -355,7 +365,7 @@ pub fn make_volumes(
     });
     let mut cfg_d = filename.clone();
     cfg_d.push_str(".d");
-    debug!(dir = cfg_d, "arranged for dropins to be mounted");
+    trace!(dir = cfg_d, "arranged for dropins to be mounted");
     mounts.push(VolumeMount {
         name: "dropins".into(),
         mount_path: cfg_d,
@@ -365,10 +375,20 @@ pub fn make_volumes(
     (vols, mounts, filename)
 }
 
-pub fn set_label(meta: &mut meta::v1::ObjectMeta, c: &str) {
+pub fn set_component_label(meta: &mut meta::v1::ObjectMeta, c: &str) {
     let mut l = meta.labels.take().unwrap_or_default();
     l.insert(COMPONENT_LABEL.to_string(), c.into());
     meta.labels.replace(l);
+}
+pub fn set_version_annotation<K: kube::ResourceExt>(meta: &mut meta::v1::ObjectMeta, obj: &K) {
+    if meta.annotations.is_none() {
+        meta.annotations = Some(Default::default());
+    }
+    let map = meta.annotations.as_mut().unwrap();
+    map.insert(
+        PARENT_VERSION_ANNOTATION.to_string(),
+        obj.resource_version().as_ref().unwrap().to_string(),
+    );
 }
 
 #[cfg(debug_assertions)]
@@ -402,15 +422,16 @@ lazy_static! {
     };
 
     pub static ref COMPONENT_LABEL: String = k8s_label("component");
-
     pub static ref APP_NAME_LABEL: String = k8s_label("clair");
+    pub static ref DROPIN_LABEL: String = clair_label("dropin-key");
 
-    pub static ref PARENT_GENERATION_ANNOTATION: String = clair_label("parent-observed-generation");
+    pub static ref PARENT_VERSION_ANNOTATION: String = clair_label("parent-version");
 
     pub static ref CREATE_PARAMS: kube::api::PostParams = kube::api::PostParams {
         dry_run: false,
         field_manager: Some(String::from(CONTROLLER_NAME)),
     };
+    pub static ref PATCH_PARAMS: kube::api::PatchParams = kube::api::PatchParams::apply(CONTROLLER_NAME);
 }
 
 /// CONTROLLER_NAME is the name the controller uses whenever it needs a human-readable name.

@@ -33,6 +33,67 @@ spec:
           spec:
             description: UpdaterSpec describes the desired state of an Updater instance.
             properties:
+              config:
+                description: Config is configuration sources for the Clair instance.
+                nullable: true
+                properties:
+                  dropins:
+                    description: Dropins is a list of references to drop-in configs.
+                    items:
+                      description: RefConfigOrSecret references either a ConfigMap key or a Secret key.
+                      properties:
+                        configMap:
+                          description: Selects a key from a ConfigMap.
+                          nullable: true
+                          properties:
+                            key:
+                              description: The key to select.
+                              type: string
+                            name:
+                              description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                              type: string
+                            optional:
+                              description: Specify whether the ConfigMap or its key must be defined
+                              type: boolean
+                          required:
+                          - key
+                          type: object
+                        secret:
+                          description: SecretKeySelector selects a key of a Secret.
+                          nullable: true
+                          properties:
+                            key:
+                              description: The key of the secret to select from.  Must be a valid secret key.
+                              type: string
+                            name:
+                              description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                              type: string
+                            optional:
+                              description: Specify whether the Secret or its key must be defined
+                              type: boolean
+                          required:
+                          - key
+                          type: object
+                      type: object
+                    type: array
+                  root:
+                    description: Root is a reference to the main config.
+                    properties:
+                      key:
+                        description: The key to select.
+                        type: string
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                        type: string
+                      optional:
+                        description: Specify whether the ConfigMap or its key must be defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                required:
+                - root
+                type: object
               image:
                 nullable: true
                 type: string
@@ -85,6 +146,67 @@ spec:
                   - type
                   type: object
                 type: array
+              config:
+                description: Config is configuration sources for the Clair instance.
+                nullable: true
+                properties:
+                  dropins:
+                    description: Dropins is a list of references to drop-in configs.
+                    items:
+                      description: RefConfigOrSecret references either a ConfigMap key or a Secret key.
+                      properties:
+                        configMap:
+                          description: Selects a key from a ConfigMap.
+                          nullable: true
+                          properties:
+                            key:
+                              description: The key to select.
+                              type: string
+                            name:
+                              description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                              type: string
+                            optional:
+                              description: Specify whether the ConfigMap or its key must be defined
+                              type: boolean
+                          required:
+                          - key
+                          type: object
+                        secret:
+                          description: SecretKeySelector selects a key of a Secret.
+                          nullable: true
+                          properties:
+                            key:
+                              description: The key of the secret to select from.  Must be a valid secret key.
+                              type: string
+                            name:
+                              description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                              type: string
+                            optional:
+                              description: Specify whether the Secret or its key must be defined
+                              type: boolean
+                          required:
+                          - key
+                          type: object
+                      type: object
+                    type: array
+                  root:
+                    description: Root is a reference to the main config.
+                    properties:
+                      key:
+                        description: The key to select.
+                        type: string
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                        type: string
+                      optional:
+                        description: Specify whether the ConfigMap or its key must be defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                required:
+                - root
+                type: object
               cronJob:
                 description: CronJob the operator has configured for this Updater.
                 nullable: true

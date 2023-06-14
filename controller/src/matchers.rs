@@ -1,10 +1,4 @@
-#![allow(unused_imports)]
-
-use kube::{
-    api::{Patch, PostParams},
-    runtime::controller::Error as CtrlErr,
-    Api,
-};
+use kube::{runtime::controller::Error as CtrlErr, Api};
 use tokio::{
     signal::unix::{signal, SignalKind},
     time::Duration,
@@ -12,7 +6,8 @@ use tokio::{
 use tokio_stream::wrappers::SignalStream;
 
 use crate::{clair_condition, prelude::*, COMPONENT_LABEL};
-static COMPONENT: &str = "indexer";
+
+static COMPONENT: &str = "matcher";
 
 /// .
 ///
@@ -67,7 +62,7 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
     .boxed())
 }
 
-#[instrument(skip(ctx),fields(%obj))]
+#[instrument(skip_all)]
 async fn reconcile(obj: Arc<v1alpha1::Matcher>, ctx: Arc<Context>) -> Result<Action> {
     trace!("start");
     let req = Request::new(&ctx.client, obj.object_ref(&()));
@@ -121,17 +116,18 @@ async fn reconcile(obj: Arc<v1alpha1::Matcher>, ctx: Arc<Context>) -> Result<Act
 
     macro_rules! check_all {
         ($($fn:ident),+ $(,)?) => {
-            let mut r#continue = true;
-            $(
-            // Otherwise the compiler will complain about the last assignment:
-            #[allow(unused_assignments)]
-            if !r#continue {
-                trace!(step=stringify!($fn), "skipping check");
-            } else {
-                trace!(step=stringify!($fn), "running check");
-                r#continue = $fn(&obj, &ctx, &req, &mut next).await?;
+            {
+                'checks: {
+$(
+                    debug!(step = stringify!($fn), "running check");
+                    let cont = $fn(&obj, &ctx, &req, &mut next).await?;
+                    debug!(step = stringify!($fn), "continue" = cont, "ran check");
+                    if !cont {
+                        break 'checks
+                    }
+)+
+                }
             }
-            )+
         }
     }
     check_all!(
@@ -159,20 +155,39 @@ async fn publish(
     next: v1alpha1::MatcherStatus,
 ) -> Result<Action> {
     let api: Api<v1alpha1::Matcher> = Api::default_namespaced(ctx.client.clone());
-    let name = &obj.metadata.name.as_ref().unwrap();
+    let name = obj.name_any();
 
-    let changed = obj.status.is_none() || obj.status.as_ref().unwrap() == &next;
-    let mut c = v1alpha1::Matcher::clone(&obj);
+    let prev = obj.metadata.resource_version.clone().unwrap();
+    let mut cur = None;
+    let mut c = v1alpha1::Matcher::new(&name, Default::default());
     c.status = Some(next);
-    c.metadata.managed_fields = None; // ???
+    let mut ct = 0;
 
-    api.patch_status(name, &PatchParams::apply(CONTROLLER_NAME), &Patch::Apply(c))
-        .await?;
-    trace!(changed, "patched status");
-    if changed {
-        Ok(Action::await_change())
+    while ct < 3 {
+        c.metadata.resource_version = Some(prev.clone());
+        ct += 1;
+        let buf = serde_json::to_vec(&c)?;
+        match api.replace_status(&name, &CREATE_PARAMS, buf).await {
+            Ok(c) => {
+                cur = c.resource_version();
+                break;
+            }
+            Err(err) => error!(error=%err, "problem updating status"),
+        }
+    }
+
+    if let Some(cur) = cur {
+        debug!(attempt = ct, prev, cur, "published status");
+        if cur == prev {
+            // If there was no change, queue out in the future.
+            Ok(Action::requeue(Duration::from_secs(3600)))
+        } else {
+            // Handled, so discard the event.
+            Ok(Action::await_change())
+        }
     } else {
-        Ok(Action::requeue(Duration::from_secs(3600)))
+        // Unable to update, so requeue soon.
+        Ok(Action::requeue(Duration::from_secs(5)))
     }
 }
 
