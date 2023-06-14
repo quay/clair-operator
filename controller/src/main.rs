@@ -54,7 +54,11 @@ fn main() {
                 .long("cert-dir")
                 .help("directory containing TLS cert+key pair")
                 .value_hint(ValueHint::DirPath)
-                .default_value(DEFAULT_CERT_DIR.as_os_str()),
+                .default_value(
+                    std::env::temp_dir()
+                        .join("k8s-webhook-server/serving-certs")
+                        .into_os_string(),
+                ),
             Arg::new("cert_name")
                 .long("cert-name")
                 .help("file inside `cert-dir` containing the TLS certificate")

@@ -160,7 +160,7 @@ async fn publish(
     c.status = Some(next);
     c.metadata.managed_fields = None; // ???
 
-    api.patch_status(name, &PatchParams::apply(OPERATOR_NAME), &Patch::Apply(c))
+    api.patch_status(name, &PatchParams::apply(CONTROLLER_NAME), &Patch::Apply(c))
         .await?;
     trace!(changed, "patched status");
     if changed {
@@ -240,7 +240,7 @@ async fn check_dropin(
         });
         api.patch(
             &clair.name_any(),
-            &PatchParams::apply(OPERATOR_NAME),
+            &PatchParams::apply(CONTROLLER_NAME),
             &Patch::Apply(&clair),
         )
         .await?;

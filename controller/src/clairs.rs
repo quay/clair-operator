@@ -202,7 +202,7 @@ async fn publish(
     c.status = Some(next);
     c.metadata.managed_fields = None; // ???
 
-    api.patch_status(name, &PatchParams::apply(OPERATOR_NAME), &Patch::Apply(c))
+    api.patch_status(name, &PatchParams::apply(CONTROLLER_NAME), &Patch::Apply(c))
         .await?;
     trace!(changed, "patched status");
     if changed {
@@ -221,7 +221,7 @@ async fn initialize_config(
     let spec = &obj.spec;
     let params = PostParams {
         dry_run: false,
-        field_manager: Some(OPERATOR_NAME.to_string()),
+        field_manager: Some(CONTROLLER_NAME.to_string()),
     };
     let action = String::from("ConfigCreation");
     let oref = obj
@@ -294,7 +294,7 @@ where
 {
     let params = PostParams {
         dry_run: false,
-        field_manager: Some(OPERATOR_NAME.to_string()),
+        field_manager: Some(CONTROLLER_NAME.to_string()),
     };
     let action = format!("{}Creation", K::kind(&()));
     let oref = obj
@@ -334,7 +334,7 @@ async fn initialize_endpoint(
     use futures::stream;
     let params = PostParams {
         dry_run: false,
-        field_manager: Some(OPERATOR_NAME.to_string()),
+        field_manager: Some(CONTROLLER_NAME.to_string()),
     };
 
     debug!("initializing endpoint");
@@ -564,7 +564,7 @@ async fn check_config(
             },
         });
         let patch = Patch::Apply(patch);
-        let params = PatchParams::apply(OPERATOR_NAME);
+        let params = PatchParams::apply(CONTROLLER_NAME);
         api.patch(&sub.name, &params, &patch).await?;
         debug!(name = sub.name, kind = sub.kind, "updated subresource");
     }
@@ -623,7 +623,7 @@ async fn check_indexer(
                     format!("{}", obj.metadata.generation.unwrap()),
                 );
                 idx.spec.config = next.config.clone();
-                let params = PatchParams::apply(OPERATOR_NAME);
+                let params = PatchParams::apply(CONTROLLER_NAME);
                 let patch = Patch::Apply(&idx);
                 api.patch(&idxref.name, &params, &patch).await?;
                 return Ok(false);
@@ -665,7 +665,7 @@ async fn check_matcher(
                     format!("{}", obj.metadata.generation.unwrap()),
                 );
                 mat.spec.config = next.config.clone();
-                let params = PatchParams::apply(OPERATOR_NAME);
+                let params = PatchParams::apply(CONTROLLER_NAME);
                 let patch = Patch::Apply(&mat);
                 api.patch(&matref.name, &params, &patch).await?;
                 return Ok(false);

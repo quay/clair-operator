@@ -166,7 +166,7 @@ async fn publish(
     c.status = Some(next);
     c.metadata.managed_fields = None; // ???
 
-    api.patch_status(name, &PatchParams::apply(OPERATOR_NAME), &Patch::Apply(c))
+    api.patch_status(name, &PatchParams::apply(CONTROLLER_NAME), &Patch::Apply(c))
         .await?;
     trace!(changed, "patched status");
     if changed {

@@ -39,7 +39,7 @@ pub(crate) mod prelude {
     pub use super::templates;
     pub use super::{default_dropin, make_volumes, new_templated};
     pub use super::{Context, ControllerFuture, Error, Request, Result};
-    pub use super::{CREATE_PARAMS, OPERATOR_NAME};
+    pub use super::{CONTROLLER_NAME, CREATE_PARAMS};
 }
 
 pub mod clairs;
@@ -112,7 +112,7 @@ pub type ControllerFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
 lazy_static! {
     static ref REPORTER: events::Reporter = {
         events::Reporter {
-            controller: OPERATOR_NAME.to_string(),
+            controller: CONTROLLER_NAME.to_string(),
             instance: env::var("CONTROLLER_POD_NAME").ok(),
         }
     };
@@ -405,15 +405,13 @@ lazy_static! {
 
     pub static ref APP_NAME_LABEL: String = k8s_label("clair");
 
-    pub static ref DEFAULT_CERT_DIR: std::path::PathBuf = std::env::temp_dir().join("k8s-webhook-server/serving-certs");
-
     pub static ref PARENT_GENERATION_ANNOTATION: String = clair_label("parent-observed-generation");
 
     pub static ref CREATE_PARAMS: kube::api::PostParams = kube::api::PostParams {
         dry_run: false,
-        field_manager: Some(String::from(OPERATOR_NAME)),
+        field_manager: Some(String::from(CONTROLLER_NAME)),
     };
 }
 
-/// OPERATOR_NAME is the name the controller uses whenever it needs a human-readable name.
-pub const OPERATOR_NAME: &str = concat!("clair-operator-", env!("CARGO_PKG_VERSION"));
+/// CONTROLLER_NAME is the name the controller uses whenever it needs a human-readable name.
+pub const CONTROLLER_NAME: &str = "clair-controller";
