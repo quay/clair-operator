@@ -1,3 +1,5 @@
+//! Matchers holds the controller for the "Matcher" CRD.
+
 use kube::{runtime::controller::Error as CtrlErr, Api};
 use tokio::{
     signal::unix::{signal, SignalKind},

@@ -1,3 +1,4 @@
+//! Module `v1alpha1` implements the v1alpha1 Clair CRD API.
 use k8s_openapi::{api::core, apimachinery::pkg::apis::meta};
 use kube::CustomResource;
 use schemars::JsonSchema;
@@ -74,11 +75,14 @@ pub struct Databases {
     pub notifier: Option<core::v1::SecretKeySelector>,
 }
 
+/// Endpoint describes how a frontend (e.g. an Ingress) should be configured.
 #[derive(Clone, Default, Debug, Deserialize, PartialEq, Serialize, Validate, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Endpoint {
+    /// Hostname indicates the desired hostname.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
+    /// TLS inicates the `kubernetes.io/tls`-typed Secret that should be used.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls: Option<core::v1::LocalObjectReference>,
 }
@@ -142,8 +146,10 @@ pub struct ConfigSource {
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ConfigDialect {
+    /// JSON indicates a JSON config.
     #[default]
     JSON,
+    /// YAML indicates a YAML config.
     YAML,
 }
 
@@ -172,6 +178,7 @@ impl std::fmt::Display for ConfigDialect {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct IndexerSpec {
+    /// Image is the image that should be used in the managed deployment.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     /// Config is configuration sources for the Clair instance.
@@ -212,6 +219,7 @@ pub struct IndexerStatus {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct MatcherSpec {
+    /// Image is the image that should be used in the managed deployment.
     pub image: Option<String>,
     /// Config is configuration sources for the Clair instance.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -262,6 +270,7 @@ pub struct UpdaterSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suspend: Option<bool>,
 
+    /// Image is the image that should be used in the managed deployment.
     pub image: Option<String>,
     /// Config is configuration sources for the Clair instance.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -304,6 +313,7 @@ pub struct UpdaterStatus {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct NotifierSpec {
+    /// Image is the image that should be used in the managed deployment.
     pub image: Option<String>,
     /// Config is configuration sources for the Clair instance.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -326,6 +336,7 @@ pub struct NotifierStatus {
     pub config: Option<ConfigSource>,
 }
 
+/// Private holds traits that external modules can't name, and so can't implement.
 mod private {
     use k8s_openapi::{api::core, apimachinery::pkg::apis::meta};
     pub trait CrdCommon {
@@ -352,8 +363,11 @@ mod private {
     }
 }
 
+/// CrdCommon is a trait to write generic helper functions for the CRDs in this module.
 pub trait CrdCommon: private::CrdCommon + kube::Resource<DynamicType = ()> {
+    /// Spec is the associated Spec type.
     type Spec: SpecCommon;
+    /// Status is the associated Status type.
     type Status: StatusCommon;
 }
 
@@ -400,7 +414,9 @@ impl_crds!(
     (Updater, UpdaterSpec, UpdaterStatus),
 );
 
+/// StatusCommon is common helpers for dealing with status objects.
 pub trait StatusCommon: private::StatusCommon {
+    /// Add_condition adds a Condition, ensuring the list is deduplicated.
     fn add_condition(&mut self, cnd: meta::v1::Condition) {
         use self::meta::v1::Condition;
         let mut found = false;
@@ -424,6 +440,7 @@ pub trait StatusCommon: private::StatusCommon {
         self.set_conditions(out);
     }
 
+    /// Add_ref adds a reference to `obj`, ensuring the list is deduplicated.
     fn add_ref<K>(&mut self, obj: &K)
     where
         K: kube::Resource<DynamicType = ()>,
@@ -455,6 +472,7 @@ pub trait StatusCommon: private::StatusCommon {
         self.set_refs(out);
     }
 
+    /// Has_ref returns the reference for the type `K`, if present.
     fn has_ref<K>(&self) -> Option<core::v1::TypedLocalObjectReference>
     where
         K: kube::Resource<DynamicType = ()>,
@@ -493,7 +511,9 @@ impl_status!(
     UpdaterStatus,
 );
 
+/// SpecCommon is helpers for working Spec objects.
 pub trait SpecCommon: private::SpecCommon {
+    /// Image_default reports the desired image, or "img" if unspecified.
     fn image_default(&self, img: &String) -> String {
         self.get_image().unwrap_or(img).clone()
     }
@@ -522,7 +542,9 @@ impl_spec!(
     UpdaterSpec,
 );
 
+/// SubSpecCommon is helper for the common "subresource" types.
 pub trait SubSpecCommon: private::SubSpecCommon {
+    /// Set_values sets the common parts of the spec.
     fn set_values<S: ToString>(&mut self, img: S, cfg: Option<ConfigSource>) {
         self.set_image(img);
         self.set_config(cfg);

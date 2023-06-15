@@ -1,3 +1,5 @@
+//! Updaters holds the controller for the "Updater" CRD.
+
 use std::sync::Arc;
 
 use tokio::{task, time::Duration};
@@ -15,6 +17,9 @@ async fn reconcile(_obj: Arc<v1alpha1::Updater>, _ctx: Arc<Context>) -> Result<A
     Ok(Action::requeue(Duration::from_secs(300)))
 }
 
+/// Controller is the Updater controller.
+///
+/// # Broken
 pub fn controller(set: &mut task::JoinSet<Result<()>>, ctx: Arc<Context>) {
     let cfg = watcher::Config::default();
     let client = ctx.client.clone();

@@ -14,6 +14,7 @@ use warp::{filters::BoxedFilter, Filter, Reply};
 use super::{predicate, DynError};
 use crate::prelude::*;
 
+/// Webhook the is MutatingWebhook.
 pub fn webhook(client: Client) -> BoxedFilter<(impl Reply,)> {
     let client = warp::any().map(move || client.clone());
     predicate("mutate")

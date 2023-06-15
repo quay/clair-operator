@@ -1,3 +1,5 @@
+//! Indexers holds the controller for the "Indexer" CRD.
+
 use std::sync::Arc;
 
 use kube::{runtime::controller::Error as CtrlErr, Api};
@@ -11,11 +13,9 @@ use crate::{clair_condition, prelude::*, COMPONENT_LABEL};
 
 static COMPONENT: &str = "indexer";
 
-/// .
+/// Controller is the Indexer controller.
 ///
-/// # Errors
-///
-/// This function will return an error if .
+/// An error is returned if any setup fails.
 #[instrument(skip_all)]
 pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<ControllerFuture> {
     let client = ctx.client.clone();

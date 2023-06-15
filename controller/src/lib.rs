@@ -1,3 +1,9 @@
+#![warn(rustdoc::missing_crate_level_docs)]
+#![warn(missing_docs)]
+
+//! Controller implements common functionality for the controller binary and controller functions
+//! themselves.
+
 use std::{borrow::Cow, env, pin::Pin};
 
 use anyhow::anyhow;
@@ -11,7 +17,7 @@ use tracing::{instrument, trace};
 
 use api::v1alpha1;
 
-// Re-exports for everyone's easy use.
+/// Prelude is the common types for CRD controllers.
 pub(crate) mod prelude {
     pub use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
@@ -54,64 +60,107 @@ pub mod updaters;
 pub mod webhook;
 
 // NB The docs are unclear, but backtraces are unsupported on stable.
+/// Error ...
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    /// TracingConfig indicates the error came from the tracing setup.
     #[error("tracing_subscriber error: {0}")]
     TracingConfig(#[from] tracing_subscriber::filter::ParseError),
+    /// Tracing indicates the error came from installing the tracing subsriber.
     #[error("tracing error: {0}")]
     Tracing(#[from] tracing::subscriber::SetGlobalDefaultError),
+    /// Kube is a generic error from the `kube` crate.
     #[error("kube error: {0}")]
     Kube(#[from] kube::Error),
+    /// KubeConfig inidicates the process was unable to find a kubeconfig.
     #[error("kubeconfig error: {0}")]
     KubeConfig(#[from] kube::config::InferConfigError),
-    #[error("kube error: {0}")]
-    KubeGV(#[from] kube::core::gvk::ParseGroupVersionError),
+    /// Commit inidicates there was an error in a "create-or-get then modify" process.
+    #[error("commit error: {0}")]
+    Commit(#[from] kube::api::entry::CommitError),
+    //#[error("kube error: {0}")]
+    //KubeGV(#[from] kube::core::gvk::ParseGroupVersionError),
+    /// Io inidicates some OS-level I/O error.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("tokio error: {0}")]
-    Tokio(#[from] tokio::task::JoinError),
-    #[error("missing name for kubernetes object: {0}")]
-    MissingName(&'static str),
-    #[error("bad name for kubernetes object: {0}")]
-    BadName(String),
-    #[error("some other error: {0}")]
-    Other(#[from] anyhow::Error),
+    /// JSON inidicates a JSON serialization failed.
     #[error("json error: {0}")]
     JSON(#[from] serde_json::Error),
     #[error("yaml error: {0}")]
+    /// YAML indicates a YAML serialization failed.
     YAML(#[from] serde_yaml::Error),
+    /// JSONPatch indicates a JSON patch failed.
     #[error("json patch error: {0}")]
     JSONPatch(#[from] json_patch::PatchError),
+    /// AddrParse inidicates  the provided string failed to pars into an address.
     #[error("parse error: {0}")]
     AddrParse(#[from] std::net::AddrParseError),
-    #[error("assets error: {0}")]
-    Assets(String),
+    /// Tokio inidicates an error starting tasks.
+    #[error("tokio error: {0}")]
+    Tokio(#[from] tokio::task::JoinError),
+    /// TLS inidicates some TLS error.
     #[error("tls error: {0}")]
     TLS(#[from] tokio_native_tls::native_tls::Error),
+
+    /// MissingName inidcates a name was needed and not provided.
+    #[error("missing name for kubernetes object: {0}")]
+    MissingName(&'static str),
+    /// BadName inidicates a disallowed name for a kubernetes object.
+    #[error("bad name for kubernetes object: {0}")]
+    BadName(String),
+    /// Other is a catch-all error.
+    #[error("some other error: {0}")]
+    Other(#[from] anyhow::Error),
+    /// Assets means there was an error loading an asset needed for a template.
+    #[error("assets error: {0}")]
+    Assets(String),
+    /// Config means the Clair config validation process failed.
     #[error("clair config error: {0}")]
     Config(#[from] clair_config::Error),
-    #[error("commit error: {0}")]
-    Commit(#[from] kube::api::entry::CommitError),
 }
 
-/// Result typedef for the controller.
+/// Result typedef for controllers.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// Context is common context for controllers.
 pub struct Context {
+    /// Client is a k8s client. This should be only ever be `clone()`'d out of the Context.
     pub client: kube::Client,
+    /// Image is the fallback container image to use.
     pub image: String,
 }
+
 impl std::fmt::Debug for Context {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ctx")
     }
 }
 
+/// Request is common per-request data for controllers.
 pub struct Request {
     now: meta::v1::Time,
     recorder: events::Recorder,
 }
 
+impl Request {
+    /// New constructs a Request for the current reconcile request.
+    pub fn new(c: &kube::Client, oref: core::v1::ObjectReference) -> Request {
+        Request {
+            now: meta::v1::Time(Utc::now()),
+            recorder: events::Recorder::new(c.clone(), REPORTER.clone(), oref),
+        }
+    }
+    /// Now reports the "now" of this request.
+    pub fn now(&self) -> meta::v1::Time {
+        self.now.clone()
+    }
+    /// Publish publishes a kubernetes Event.
+    pub async fn publish(&self, ev: events::Event) -> Result<()> {
+        Ok(self.recorder.publish(ev).await?)
+    }
+}
+
+/// ControllerFuture is the type the controller constructors should return.
 pub type ControllerFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
 
 lazy_static! {
@@ -123,21 +172,7 @@ lazy_static! {
     };
 }
 
-impl Request {
-    pub fn new(c: &kube::Client, oref: core::v1::ObjectReference) -> Request {
-        Request {
-            now: meta::v1::Time(Utc::now()),
-            recorder: events::Recorder::new(c.clone(), REPORTER.clone(), oref),
-        }
-    }
-    fn now(&self) -> meta::v1::Time {
-        self.now.clone()
-    }
-    pub async fn publish(&self, ev: events::Event) -> Result<()> {
-        Ok(self.recorder.publish(ev).await?)
-    }
-}
-
+/// Next_config calculates the desired config state from the spec of the passed object.
 pub fn next_config(c: &v1alpha1::Clair) -> Result<v1alpha1::ConfigSource> {
     let mut dropins = c.spec.dropins.clone();
     if let Some(db) = &c.spec.databases {
@@ -164,7 +199,7 @@ pub fn next_config(c: &v1alpha1::Clair) -> Result<v1alpha1::ConfigSource> {
     })
 }
 
-// Condition is like keyify, but does not force lower-case.
+/// Condition is like [keyify], but does not force lower-case.
 fn condition<S: ToString, K: AsRef<str>>(space: S, key: K) -> String {
     let mut out = space.to_string();
     key.as_ref()
@@ -177,6 +212,7 @@ fn condition<S: ToString, K: AsRef<str>>(space: S, key: K) -> String {
     out
 }
 
+/// Keyify sanitizes the key for use in k8s metadata.
 fn keyify<S: ToString, K: AsRef<str>>(space: S, key: K) -> String {
     let mut out = space.to_string();
     key.as_ref()
@@ -189,18 +225,25 @@ fn keyify<S: ToString, K: AsRef<str>>(space: S, key: K) -> String {
     out
 }
 
+/// Clair_condition returns the provided argument as a name in the clair-controller's space,
+/// sutable for use as a condition type.
 pub fn clair_condition<S: AsRef<str>>(s: S) -> String {
     condition("projectclair.io/", s)
 }
 
+/// Clair_label returns the provided argument as a name in the clair-controller's space, sutable
+/// for use as an annotation or label.
 pub fn clair_label<S: AsRef<str>>(s: S) -> String {
     keyify("projectclair.io/", s)
 }
 
+/// K8s_label returns the provided argument as a name in the "app.kubernetes.io" space, sutable for
+/// use as an annotation or label.
 pub fn k8s_label<S: AsRef<str>>(s: S) -> String {
     keyify("app.kubernetes.io/", s)
 }
 
+/// Want_dropins calulates the desired dropin set from the passed spec.
 pub fn want_dropins(spec: &v1alpha1::ClairSpec) -> Vec<v1alpha1::RefConfigOrSecret> {
     let mut want = spec.dropins.clone();
     if let Some(dbs) = &spec.databases {
@@ -221,6 +264,7 @@ pub fn want_dropins(spec: &v1alpha1::ClairSpec) -> Vec<v1alpha1::RefConfigOrSecr
     want
 }
 
+/// New_templated returns a `K` with patches for `S` applied and the owner set to `obj`.
 #[instrument(skip_all)]
 pub async fn new_templated<S, K>(obj: &S, _ctx: &Context) -> Result<K>
 where
@@ -244,6 +288,9 @@ where
 
     Ok(v)
 }
+
+/// Default_dropin creates a default dropin describing the provided object, returning the name of
+/// the ConfigMap key it was placed in and the created ConfigMap.
 #[instrument(skip_all)]
 pub async fn default_dropin<S>(
     obj: &S,
@@ -292,6 +339,8 @@ where
     ))
 }
 
+/// Make_volumes generates the Volumes and VolumeMounts for the provided ConfigSource. The created
+/// Volumes and VolumeMounts are returned, along with the created path of the root config.
 #[instrument(skip_all)]
 pub fn make_volumes(
     cfgsrc: &v1alpha1::ConfigSource,
@@ -375,16 +424,18 @@ pub fn make_volumes(
     (vols, mounts, filename)
 }
 
+/// Set_component_label sets the component label to `c`.
 pub fn set_component_label(meta: &mut meta::v1::ObjectMeta, c: &str) {
     let mut l = meta.labels.take().unwrap_or_default();
     l.insert(COMPONENT_LABEL.to_string(), c.into());
     meta.labels.replace(l);
 }
 
+// Tricks to create the DEFAULT_IMAGE value:
 #[cfg(debug_assertions)]
 const DEFAULT_CONTAINER_TAG: &str = "nightly";
 #[cfg(not(debug_assertions))]
-const DEFAULT_CONTAINER_TAG: &str = "4.6.1";
+const DEFAULT_CONTAINER_TAG: &str = "4.7.0";
 const DEFAULT_CONTAINER_REPOSITORY: &str = "quay.io/projectquay/clair";
 lazy_static! {
     /// DEFAULT_IMAGE is the container image to use for Clair deployments if not specified in a
@@ -411,15 +462,22 @@ lazy_static! {
         (templates::base::DEFAULT_CONFIG_YAML.get_bytes)()
     };
 
+    /// COMPONENT_LABEL is the well-know "component" label.
     pub static ref COMPONENT_LABEL: String = k8s_label("component");
+    /// APP_NAME_LABEL is a label for Clair in the "app.kubernetes.io" space.
     pub static ref APP_NAME_LABEL: String = k8s_label("clair");
+    /// DROPIN_LABEL is a label denoting which key in a ConfigMap is the managed dropin.
+    ///
+    /// TODO(hank): This is actually an annotation.
     pub static ref DROPIN_LABEL: String = clair_label("dropin-key");
 
 
+    /// CREATE_PARAMS is default post paramaters.
     pub static ref CREATE_PARAMS: kube::api::PostParams = kube::api::PostParams {
         dry_run: false,
         field_manager: Some(String::from(CONTROLLER_NAME)),
     };
+    /// PATCH_PARAMS is default patch paramaters.
     pub static ref PATCH_PARAMS: kube::api::PatchParams = kube::api::PatchParams::apply(CONTROLLER_NAME);
 }
 

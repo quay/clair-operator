@@ -1,3 +1,8 @@
+//! Templates holds the templating logic for controllers.
+#![allow(missing_docs)]
+// Comment the above and run clippy when touching this file.
+// The iftree macro doesn't allow the "missing_docs" lint by default.
+
 use std::{borrow::Cow, collections::HashMap};
 
 use k8s_openapi::serde;
@@ -5,6 +10,9 @@ use lazy_static::lazy_static;
 use tracing::trace;
 
 // TODO(hank) Set up compile-time compression for these assets.
+// TODO(hank) Implment a macro that disables the doc warnings.
+
+/// Asset is a template asset.
 #[iftree::include_file_tree(
     "
 paths = '''
@@ -18,6 +26,9 @@ base_folder = 'etc/'
 )]
 pub struct Asset {
     relative_path: &'static str,
+    /// Get_bytes returns a view of the template.
+    ///
+    /// Will be loaded from disk in debug builds.
     pub get_bytes: fn() -> Cow<'static, [u8]>,
 }
 
@@ -46,6 +57,7 @@ lazy_static! {
     };
 }
 
+/// DynError is an alias for any error.
 pub type DynError = Box<dyn std::error::Error>;
 
 // Descibe how Asset.get_bytes will behave:
@@ -54,6 +66,7 @@ const FROM_DISK: bool = true;
 #[cfg(not(debug_assertions))]
 const FROM_DISK: bool = false;
 
+/// Resource_for returns a templated `K` for the provided "kind" of CRD.
 pub async fn resource_for<S, K>(kind: S) -> Result<K, DynError>
 where
     S: AsRef<str>,
@@ -86,7 +99,9 @@ where
     serde_json::from_value(doc).map_err(|err| err.into())
 }
 
-/// Returns as json.
+/// Dropin_for returns the config dropin for the provided "kind" of CRD.
+///
+/// Returns as JSON.
 pub async fn dropin_for<S>(kind: S) -> Result<Cow<'static, [u8]>, DynError>
 where
     S: AsRef<str>,

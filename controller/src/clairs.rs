@@ -1,3 +1,5 @@
+//! Clairs holds the controller for the "Clair" CRD.
+
 use std::{collections::BTreeMap, sync::Arc};
 
 use k8s_openapi::api::core::v1::TypedLocalObjectReference;
@@ -21,11 +23,9 @@ use clair_config;
 
 static COMPONENT: &str = "clair";
 
-/// .
+/// Controller is the Clair controller.
 ///
-/// # Errors
-///
-/// This function will return an error if .
+/// An error is returned if any setup fails.
 #[instrument(skip_all)]
 pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<ControllerFuture> {
     let client = ctx.client.clone();
@@ -440,7 +440,7 @@ async fn check_config(
     }
 
     trace!("checking subresource types");
-    let v = clair_config::validate(ctx.client.clone(), &config).await?;
+    let v = clair_config::validate(&ctx.client, &config).await?;
     let action = String::from("ConfigValidation");
     let reason = String::from("ConfigAdded");
     let message = String::from("🆗");

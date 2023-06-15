@@ -1,3 +1,7 @@
+//! Webhook contains the webhooks for mutating and validating k8s webhooks.
+//!
+//! *NB* A conversion webhook is not implemented yet.
+
 mod mutate;
 mod validate;
 
