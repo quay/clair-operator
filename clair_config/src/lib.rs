@@ -1,3 +1,12 @@
+//! Clair_config is a module for validating a configuration with the
+//! [`github.com/quay/clair/config`] module.
+//!
+//! Building this crate reqires `clang` and `go` toolchains installed.
+//!
+//! [`github.com/quay/clair/config`]: https://pkg.go.dev/github.com/quay/clair/config
+#![warn(rustdoc::missing_crate_level_docs)]
+#![warn(missing_docs)]
+
 use k8s_openapi::api::core;
 use kube::{api::Api, Client};
 use tracing::{debug, trace};
@@ -6,14 +15,24 @@ use api::v1alpha1;
 
 mod sys;
 
+/// Error enumerates the errors reported by this module.
 #[derive(Debug)]
 pub enum Error {
+    /// Configuration is invalid for some reason.
     Invalid(String),
+    /// Validation failed for some reason.
     Validation(String),
+
+    /// YAML deserialization error.
     YAML(serde_yaml::Error),
+    /// JSON serialiization or deserialization error.
     JSON(serde_json::Error),
+    /// JSON Patch error
     Patch(json_patch::PatchError),
+    /// Generic k8s access error.
     Kube(kube::Error),
+
+    /// Error for testing only.
     #[cfg(test)]
     Test(String),
 }
@@ -68,7 +87,7 @@ impl std::fmt::Display for Error {
     }
 }
 
-pub type Result<T, E = Error> = std::result::Result<T, E>;
+type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Validate calls into [`config.Validate`] and reports the lints for every mode.
 /// This is done by composing the config in-process accoring to the [`cmd.Load`] documentation.
@@ -77,7 +96,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 ///
 /// [`config.Validate`]: https://pkg.go.dev/github.com/quay/clair/config#Validate
 /// [`cmd.Load`]: https://pkg.go.dev/github.com/quay/clair/v4/cmd#Load
-pub async fn validate(client: Client, cfg: &v1alpha1::ConfigSource) -> Result<Validate> {
+pub async fn validate(client: &Client, cfg: &v1alpha1::ConfigSource) -> Result<Validate> {
     let flavor = match &cfg.root.key.rsplit_once('.') {
         Some((_, ext)) => match ext {
             &"json" => v1alpha1::ConfigDialect::JSON,
@@ -87,7 +106,7 @@ pub async fn validate(client: Client, cfg: &v1alpha1::ConfigSource) -> Result<Va
         None => return Err(Error::invalid("missing file extension")),
     };
     debug!(?flavor, "config flavor from root name");
-    let (doc, _) = load_config(&client, Source::ConfigMap(&cfg.root)).await?;
+    let (doc, _) = load_config(client, Source::ConfigMap(&cfg.root)).await?;
     let doc = to_json(doc, &flavor).await?;
     let mut doc: serde_json::Value = serde_json::from_slice(&doc)?;
 
@@ -121,7 +140,7 @@ pub async fn validate(client: Client, cfg: &v1alpha1::ConfigSource) -> Result<Va
         } else {
             unreachable!()
         };
-        let (buf, is_patch) = load_config(&client, src).await?;
+        let (buf, is_patch) = load_config(client, src).await?;
         let buf = to_json(buf, &flavor).await?;
         if is_patch {
             let p: json_patch::Patch = serde_json::from_slice(&buf)?;
@@ -145,12 +164,19 @@ pub async fn validate(client: Client, cfg: &v1alpha1::ConfigSource) -> Result<Va
 ///
 /// The "updater" mode is not implemented in the upstream config module yet.
 pub struct Validate {
+    /// Result for validating for the "indexer" mode.
     pub indexer: Result<Warnings>,
+    /// Result for validating for the "matcher" mode.
     pub matcher: Result<Warnings>,
-    pub updater: Result<Warnings>,
+    /// Result for validating for the "notifier" mode.
     pub notifier: Result<Warnings>,
+    /// Result for validating for the "updater" mode.
+    ///
+    /// *NB* Unimplemented.
+    pub updater: Result<Warnings>,
 }
 
+/// Warnings is the non-fatal warnings produced by the validator.
 pub struct Warnings {
     mode: String,
     out: String,
@@ -185,17 +211,7 @@ impl std::fmt::Debug for Warnings {
     }
 }
 
-pub fn fmt_warnings(v: Vec<String>) -> String {
-    let mut s = String::from("warnings:\n");
-    for w in v {
-        s.push('\t');
-        s.push_str(&w);
-        s.push('\n');
-    }
-    s
-}
-
-// To_json returns the bytes jsonified.
+/// To_json returns the bytes jsonified.
 async fn to_json(buf: Vec<u8>, flavor: &v1alpha1::ConfigDialect) -> Result<Vec<u8>> {
     match flavor {
         v1alpha1::ConfigDialect::JSON => Ok(buf),
@@ -206,14 +222,14 @@ async fn to_json(buf: Vec<u8>, flavor: &v1alpha1::ConfigDialect) -> Result<Vec<u
     }
 }
 
-// Source is a discriminator between a ConfigMap and a Secret.
+/// Source is a discriminator between a ConfigMap and a Secret.
 enum Source<'a> {
     ConfigMap(&'a core::v1::ConfigMapKeySelector),
     Secret(&'a core::v1::SecretKeySelector),
 }
 
-// Load_config returns the bytes of the referenced config and whether it should be interpreted as
-// a patch or not.
+/// Load_config returns the bytes of the referenced config and whether it should be interpreted as
+/// a patch or not.
 async fn load_config(client: &Client, config_ref: Source<'_>) -> Result<(Vec<u8>, bool)> {
     trace!("loading config");
     let maps = match config_ref {
