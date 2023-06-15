@@ -1,0 +1,31 @@
+---
+version: 2
+updates:
+- package-ecosystem: github-actions
+  directory: /
+  schedule:
+    interval: weekly
+- package-ecosystem: cargo
+  directory: /
+  schedule:
+    interval: weekly
+- package-ecosystem: cargo
+  directory: /api
+  schedule:
+    interval: weekly
+- package-ecosystem: cargo
+  directory: /clair_config
+  schedule:
+    interval: weekly
+- package-ecosystem: gomod
+  directory: /clair_config/go
+  schedule:
+    interval: weekly
+- package-ecosystem: cargo
+  directory: /controller
+  schedule:
+    interval: weekly
+- package-ecosystem: cargo
+  directory: /xtask
+  schedule:
+    interval: weekly
