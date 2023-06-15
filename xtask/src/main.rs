@@ -181,7 +181,9 @@ fn ci(opts: CiOpts) -> Result<()> {
         test_args.push("--features");
         test_args.push("test_ci");
     }
-    test_args.push("--");
+    if !use_nextest {
+        test_args.push("--");
+    }
     for v in &opts.pass {
         test_args.push(&v);
     }
