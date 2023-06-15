@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use k8s_openapi::api::core::v1::TypedLocalObjectReference;
 use kube::runtime::controller::Error as CtrlErr;
 use kube::{
-    api::{Api, Patch, PatchParams, PostParams},
+    api::{Api, Patch, PostParams},
     core::{GroupVersionKind, ObjectMeta},
     discovery::oneshot,
 };
@@ -30,9 +30,6 @@ static COMPONENT: &str = "clair";
 pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<ControllerFuture> {
     let client = ctx.client.clone();
     let ctlcfg = watcher::Config::default();
-    let wcfg = ctlcfg
-        .clone()
-        .labels(format!("{}={COMPONENT}", COMPONENT_LABEL.as_str()).as_str());
     let root: Api<v1alpha1::Clair> = Api::default_namespaced(client.clone());
     let sig = SignalStream::new(signal(SignalKind::user_defined1())?);
 
@@ -47,19 +44,19 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
         )
         .owns(
             Api::<v1alpha1::Notifier>::default_namespaced(client.clone()),
-            ctlcfg,
+            ctlcfg.clone(),
         )
         .owns(
             Api::<core::v1::Secret>::default_namespaced(client.clone()),
-            wcfg.clone(),
+            ctlcfg.clone(),
         )
         .owns(
             Api::<core::v1::ConfigMap>::default_namespaced(client.clone()),
-            wcfg.clone(),
+            ctlcfg.clone(),
         )
         .owns(
             Api::<networking::v1::Ingress>::default_namespaced(client),
-            wcfg,
+            ctlcfg,
         )
         .reconcile_all_on(sig)
         .graceful_shutdown_on(cancel.cancelled_owned());
@@ -87,13 +84,12 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
     .boxed())
 }
 
-#[instrument(skip_all)]
 fn error_policy(obj: Arc<v1alpha1::Clair>, err: &Error, _ctx: Arc<Context>) -> Action {
     error!(
         error = err.to_string(),
         obj.metadata.name, obj.metadata.uid, "reconcile error"
     );
-    Action::await_change()
+    Action::requeue(Duration::from_secs(1))
 }
 
 #[instrument(skip_all)]
@@ -105,12 +101,7 @@ async fn reconcile(obj: Arc<v1alpha1::Clair>, ctx: Arc<Context>) -> Result<Actio
 
     assert!(obj.meta().name.is_some());
     let spec = &obj.spec;
-    let mut next = if let Some(status) = &obj.status {
-        status.clone()
-    } else {
-        trace!("no status present");
-        Default::default()
-    };
+    let mut next = obj.status.clone().unwrap_or_default();
 
     // First, check that the databases are filled out:
     let action = "CheckDatabases".into();
@@ -195,7 +186,6 @@ $(
         check_notifier,
     );
 
-    trace!("done");
     publish(obj, ctx, req, next).await
 }
 
@@ -206,19 +196,20 @@ async fn publish(
     _req: Request,
     next: v1alpha1::ClairStatus,
 ) -> Result<Action> {
+    trace!("publishing updates");
     let api: Api<v1alpha1::Clair> = Api::default_namespaced(ctx.client.clone());
     let name = obj.name_any();
 
     let prev = obj.metadata.resource_version.clone().unwrap();
     let mut cur = None;
-    let mut c = v1alpha1::Clair::new(&name, Default::default());
-    c.status = Some(next);
     let mut ct = 0;
     while ct < 3 {
-        c.metadata.resource_version = obj.metadata.resource_version.clone();
         ct += 1;
-        let buf = serde_json::to_vec(&c)?;
-        match api.replace_status(&name, &CREATE_PARAMS, buf).await {
+        let patch = serde_json::json!({ "status": &next });
+        match api
+            .patch_status(&name, &PATCH_PARAMS, &Patch::Merge(patch))
+            .await
+        {
             Ok(c) => {
                 cur = c.resource_version();
                 break;
@@ -386,7 +377,7 @@ async fn check_config(
         .entry(&name)
         .await?
         .or_insert(|| {
-            trace!(owner=?oref, "created ConfigMap");
+            trace!("created ConfigMap");
             ev = Some(Event {
                 action: "CreateConfig".into(),
                 reason: "Initialization".into(),
@@ -402,10 +393,6 @@ async fn check_config(
                         COMPONENT_LABEL.to_string(),
                         COMPONENT.into(),
                     )])),
-                    annotations: Some(BTreeMap::from([(
-                        PARENT_VERSION_ANNOTATION.to_string(),
-                        obj.resource_version().unwrap_or_default(),
-                    )])),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -415,23 +402,17 @@ async fn check_config(
             if let Some(ref mut ev) = &mut ev {
                 ev.secondary = Some(cm.object_ref(&()));
             };
-            cm.annotations_mut().insert(
-                PARENT_VERSION_ANNOTATION.to_string(),
-                obj.resource_version().unwrap_or_default(),
-            );
             let data = cm.data.get_or_insert_with(BTreeMap::default);
-            match flavor {
-                v1alpha1::ConfigDialect::JSON => data.insert(
-                    "config.json".into(),
-                    String::from_utf8(DEFAULT_CONFIG_JSON.to_vec())
-                        .expect("programmer error: default config not utf-8"),
-                ),
-                v1alpha1::ConfigDialect::YAML => data.insert(
-                    "config.yaml".into(),
-                    String::from_utf8(DEFAULT_CONFIG_YAML.to_vec())
-                        .expect("programmer error: default config not utf-8"),
-                ),
+            let key = match flavor {
+                v1alpha1::ConfigDialect::JSON => "config.json".into(),
+                v1alpha1::ConfigDialect::YAML => "config.yaml".into(),
             };
+            data.entry(key).or_insert(match flavor {
+                v1alpha1::ConfigDialect::JSON => String::from_utf8(DEFAULT_CONFIG_JSON.to_vec())
+                    .expect("programmer error: default config not utf-8"),
+                v1alpha1::ConfigDialect::YAML => String::from_utf8(DEFAULT_CONFIG_YAML.to_vec())
+                    .expect("programmer error: default config not utf-8"),
+            });
         });
     entry.commit(&CREATE_PARAMS).await?;
     let key = format!("config.{flavor}");
@@ -458,6 +439,7 @@ async fn check_config(
         config.dropins = want;
     }
 
+    trace!("checking subresource types");
     let v = clair_config::validate(ctx.client.clone(), &config).await?;
     let action = String::from("ConfigValidation");
     let reason = String::from("ConfigAdded");
@@ -481,6 +463,7 @@ async fn check_config(
     .filter(|(sub, _)| sub.is_some())
     .map(|(sub, res)| (sub.unwrap(), res))
     {
+        use json_patch::{AddOperation, Patch as JsonPatch, PatchOperation};
         use std::str::FromStr;
         let gv = sub
             .api_group
@@ -535,22 +518,15 @@ async fn check_config(
             }
         };
 
-        let patch = serde_json::json!({
-            "apiVersion": sub.api_group,
-            "kind": sub.kind,
-            "metadata": {
-                "name": sub.name,
-            },
-            "spec": {
-                "config": config.clone(),
-            },
-        });
-        trace!(%patch, "applying patch");
-        let patch = Patch::Merge(patch);
-        let params = PatchParams::apply(CONTROLLER_NAME);
-        api.patch(&sub.name, &params, &patch).await?;
+        let patch = JsonPatch(vec![PatchOperation::Add(AddOperation {
+            path: "/spec/config".into(),
+            value: serde_json::to_value(config.clone())?,
+        })]);
+        let patch = Patch::Json::<()>(patch);
+        api.patch(&sub.name, &PATCH_PARAMS, &patch).await?;
         info!(name = sub.name, kind = sub.kind, "updated subresource");
     }
+    trace!("done");
     next.config = Some(config);
     Ok(true)
 }
@@ -562,10 +538,11 @@ async fn check_ingress(
     req: &Request,
     next: &mut v1alpha1::ClairStatus,
 ) -> Result<bool> {
-    use self::networking::v1::Ingress;
+    use self::networking::v1::{Ingress, IngressTLS};
 
     let api = Api::<Ingress>::default_namespaced(ctx.client.clone());
     let name = obj.name_any();
+    let spec = &obj.spec;
 
     let mut ct = 0;
     while ct < 3 {
@@ -577,7 +554,52 @@ async fn check_ingress(
             .or_insert(|| {
                 futures::executor::block_on(new_ingress(obj, ctx, req)).expect("template failed")
             })
-            .and_modify(|_ing| warn!(TOOD = "hank", "reconcile Ingress"));
+            .and_modify(|ing| {
+                let tgt = ing.spec.as_mut().expect("invalid IngressSpec");
+                if let Some(rules) = &tgt.rules {
+                    if rules.len() != 1 {
+                        info!(
+                            name,
+                            reason = "rules array",
+                            "Ingress in unexepected state, skipping."
+                        );
+                        return;
+                    }
+                }
+                if let Some(tls) = &tgt.tls {
+                    if tls.len() > 1 {
+                        info!(
+                            name,
+                            reason = "tls array",
+                            "Ingress in unexepected state, skipping."
+                        );
+                        return;
+                    }
+                }
+                if let Some(endpoint) = &spec.endpoint {
+                    if let Some(hostname) = &endpoint.hostname {
+                        if let Some(tls) = &endpoint.tls {
+                            if let Some(tgt) = tgt.tls.as_mut() {
+                                match tgt.len() {
+                                    0 => {
+                                        tgt.push(IngressTLS {
+                                            hosts: Some(vec![hostname.clone()]),
+                                            secret_name: tls.name.clone(),
+                                        });
+                                    }
+                                    1 => {
+                                        tgt[0].hosts = Some(vec![hostname.clone()]);
+                                        tgt[0].secret_name = tls.name.clone();
+                                    }
+                                    _ => unreachable!(),
+                                };
+                            }
+                        }
+                        tgt.rules.as_mut().expect("rules missing")[0].host = Some(hostname.clone());
+                    }
+                }
+            });
+
         next.endpoint = {
             let name = entry.get().name_any();
             Some(TypedLocalObjectReference {
@@ -596,12 +618,6 @@ async fn check_ingress(
             },
         };
     }
-
-    // For now, assume that if it exists it's fine.
-    // In the future:
-    // - cross-check the hostname
-    // - cross-check the tls
-
     Ok(true)
 }
 
@@ -635,10 +651,6 @@ async fn check_indexer(
             .and_modify(|idx| {
                 idx.spec.image = Some(ctx.image.clone());
                 idx.spec.config = next.config.clone();
-                idx.annotations_mut()
-                    .entry(PARENT_VERSION_ANNOTATION.to_string())
-                    .and_modify(|v| *v = obj.resource_version().unwrap())
-                    .or_insert_with(|| obj.resource_version().unwrap());
             });
         next.indexer = {
             let idx = entry.get();
@@ -693,10 +705,6 @@ async fn check_matcher(
             .and_modify(|idx| {
                 idx.spec.image = Some(ctx.image.clone());
                 idx.spec.config = next.config.clone();
-                idx.annotations_mut()
-                    .entry(PARENT_VERSION_ANNOTATION.to_string())
-                    .and_modify(|v| *v = obj.resource_version().unwrap())
-                    .or_insert_with(|| obj.resource_version().unwrap());
             });
         next.matcher = {
             let idx = entry.get();
@@ -755,10 +763,6 @@ async fn check_notifier(
             .and_modify(|idx| {
                 idx.spec.image = Some(ctx.image.clone());
                 idx.spec.config = next.config.clone();
-                idx.annotations_mut()
-                    .entry(PARENT_VERSION_ANNOTATION.to_string())
-                    .and_modify(|v| *v = obj.resource_version().unwrap())
-                    .or_insert_with(|| obj.resource_version().unwrap());
             });
         next.notifier = {
             let idx = entry.get();

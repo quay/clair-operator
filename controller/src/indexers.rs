@@ -20,24 +20,21 @@ static COMPONENT: &str = "indexer";
 pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<ControllerFuture> {
     let client = ctx.client.clone();
     let ctlcfg = watcher::Config::default();
-    let wcfg = ctlcfg
-        .clone()
-        .labels(format!("{}={COMPONENT}", COMPONENT_LABEL.as_str()).as_str());
     let sig = SignalStream::new(signal(SignalKind::user_defined1())?);
 
     let ctl = Controller::new(
         Api::<v1alpha1::Indexer>::default_namespaced(client.clone()),
-        ctlcfg,
+        ctlcfg.clone(),
     )
     .owns(
         Api::<apps::v1::Deployment>::default_namespaced(client.clone()),
-        wcfg.clone(),
+        ctlcfg.clone(),
     )
     .owns(
         Api::<autoscaling::v2::HorizontalPodAutoscaler>::default_namespaced(client.clone()),
-        wcfg.clone(),
+        ctlcfg.clone(),
     )
-    .owns(Api::<core::v1::Service>::default_namespaced(client), wcfg)
+    .owns(Api::<core::v1::Service>::default_namespaced(client), ctlcfg)
     .reconcile_all_on(sig)
     .graceful_shutdown_on(cancel.cancelled_owned());
 
@@ -299,16 +296,13 @@ async fn check_dropin(
                 let mut change = false;
                 let mut entry = entry.and_modify(|c| {
                     let v = &mut c.spec.dropins;
-                    if v.iter_mut()
-                        .find(|d| {
-                            if let Some(c) = &d.config_map {
-                                c == &dropin
-                            } else {
-                                false
-                            }
-                        })
-                        .is_none()
-                    {
+                    if v.iter_mut().all(|d| {
+                        if let Some(c) = &d.config_map {
+                            c != &dropin
+                        } else {
+                            true
+                        }
+                    }) {
                         trace!("appending dropin");
                         change = true;
                         v.push(v1alpha1::RefConfigOrSecret {
@@ -395,68 +389,59 @@ async fn check_deployment(
             futures::executor::block_on(new_templated(obj, ctx)).expect("template failed")
         });
         let d = entry.get_mut();
-        if d.annotations().get(PARENT_VERSION_ANNOTATION.as_str())
-            != obj.resource_version().as_ref()
-        {
-            trace!("attempting to update deployment");
-            d.annotations_mut().insert(
-                PARENT_VERSION_ANNOTATION.to_string(),
-                obj.resource_version().unwrap(),
-            );
-            d.labels_mut()
+        trace!("checking deployment");
+        d.labels_mut()
+            .insert(COMPONENT_LABEL.to_string(), COMPONENT.into());
+        let (mut vols, mut mounts, config) = make_volumes(cfgsrc);
+        if let Some(ref mut spec) = d.spec {
+            if spec.selector.match_labels.is_none() {
+                spec.selector.match_labels = Some(Default::default());
+            }
+            spec.selector
+                .match_labels
+                .as_mut()
+                .unwrap()
                 .insert(COMPONENT_LABEL.to_string(), COMPONENT.into());
-            let (mut vols, mut mounts, config) = make_volumes(cfgsrc);
-            if let Some(ref mut spec) = d.spec {
-                if spec.selector.match_labels.is_none() {
-                    spec.selector.match_labels = Some(Default::default());
+            if let Some(ref mut meta) = spec.template.metadata {
+                if meta.labels.is_none() {
+                    meta.labels = Some(Default::default());
                 }
-                spec.selector
-                    .match_labels
+                meta.labels
                     .as_mut()
                     .unwrap()
                     .insert(COMPONENT_LABEL.to_string(), COMPONENT.into());
-                if let Some(ref mut meta) = spec.template.metadata {
-                    if meta.labels.is_none() {
-                        meta.labels = Some(Default::default());
+            }
+            if let Some(ref mut spec) = spec.template.spec {
+                if let Some(ref mut vs) = spec.volumes {
+                    vs.append(&mut vols);
+                    vs.sort_unstable_by_key(|v| v.name.clone());
+                    vs.dedup_by_key(|v| v.name.clone());
+                };
+                if let Some(ref mut c) = spec.containers.iter_mut().find(|c| c.name == "clair") {
+                    c.image = Some(want_image.clone());
+                    if c.volume_mounts.is_none() {
+                        c.volume_mounts = Some(Default::default());
                     }
-                    meta.labels
-                        .as_mut()
-                        .unwrap()
-                        .insert(COMPONENT_LABEL.to_string(), COMPONENT.into());
-                }
-                if let Some(ref mut spec) = spec.template.spec {
-                    if let Some(ref mut vs) = spec.volumes {
-                        vs.append(&mut vols);
-                        vs.sort_unstable_by_key(|v| v.name.clone());
-                        vs.dedup_by_key(|v| v.name.clone());
+                    if let Some(ref mut ms) = c.volume_mounts {
+                        ms.append(&mut mounts);
+                        ms.sort_unstable_by_key(|m| m.name.clone());
+                        ms.dedup_by_key(|m| m.name.clone());
                     };
-                    if let Some(ref mut c) = spec.containers.iter_mut().find(|c| c.name == "clair")
-                    {
-                        c.image = Some(want_image.clone());
-                        if c.volume_mounts.is_none() {
-                            c.volume_mounts = Some(Default::default());
-                        }
-                        if let Some(ref mut ms) = c.volume_mounts {
-                            ms.append(&mut mounts);
-                            ms.sort_unstable_by_key(|m| m.name.clone());
-                            ms.dedup_by_key(|m| m.name.clone());
-                        };
-                        if c.env.is_none() {
-                            c.env = Some(Default::default());
-                        }
-                        if let Some(ref mut es) = c.env {
-                            es.push(EnvVar {
-                                name: "CLAIR_CONF".into(),
-                                value: Some(config),
-                                value_from: None,
-                            });
-                            es.sort_unstable_by_key(|e| e.name.clone());
-                            es.dedup_by_key(|e| e.name.clone());
-                        };
+                    if c.env.is_none() {
+                        c.env = Some(Default::default());
+                    }
+                    if let Some(ref mut es) = c.env {
+                        es.push(EnvVar {
+                            name: "CLAIR_CONF".into(),
+                            value: Some(config),
+                            value_from: None,
+                        });
+                        es.sort_unstable_by_key(|e| e.name.clone());
+                        es.dedup_by_key(|e| e.name.clone());
                     };
-                }
-            };
-        }
+                };
+            }
+        };
         next.add_ref(d);
         match entry.commit(&CREATE_PARAMS).await {
             Ok(()) => break,
@@ -508,10 +493,6 @@ async fn check_service(
                 futures::executor::block_on(new_templated(obj, ctx)).expect("template failed")
             })
             .and_modify(|s| {
-                s.annotations_mut().insert(
-                    PARENT_VERSION_ANNOTATION.to_string(),
-                    obj.resource_version().unwrap(),
-                );
                 s.labels_mut()
                     .insert(COMPONENT_LABEL.to_string(), COMPONENT.into());
             });
@@ -581,10 +562,6 @@ async fn check_hpa(
                 futures::executor::block_on(new_templated(obj, ctx)).expect("template failed")
             })
             .and_modify(|h| {
-                h.annotations_mut().insert(
-                    PARENT_VERSION_ANNOTATION.to_string(),
-                    obj.resource_version().unwrap(),
-                );
                 h.labels_mut()
                     .insert(COMPONENT_LABEL.to_string(), COMPONENT.into());
                 if let Some(ref mut spec) = h.spec {

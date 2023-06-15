@@ -42,7 +42,7 @@ pub(crate) mod prelude {
     pub use super::templates;
     pub use super::{default_dropin, make_volumes, new_templated};
     pub use super::{Context, ControllerFuture, Error, Request, Result};
-    pub use super::{CONTROLLER_NAME, CREATE_PARAMS, PARENT_VERSION_ANNOTATION, PATCH_PARAMS};
+    pub use super::{CONTROLLER_NAME, CREATE_PARAMS, PATCH_PARAMS};
 }
 
 pub mod clairs;
@@ -380,16 +380,6 @@ pub fn set_component_label(meta: &mut meta::v1::ObjectMeta, c: &str) {
     l.insert(COMPONENT_LABEL.to_string(), c.into());
     meta.labels.replace(l);
 }
-pub fn set_version_annotation<K: kube::ResourceExt>(meta: &mut meta::v1::ObjectMeta, obj: &K) {
-    if meta.annotations.is_none() {
-        meta.annotations = Some(Default::default());
-    }
-    let map = meta.annotations.as_mut().unwrap();
-    map.insert(
-        PARENT_VERSION_ANNOTATION.to_string(),
-        obj.resource_version().as_ref().unwrap().to_string(),
-    );
-}
 
 #[cfg(debug_assertions)]
 const DEFAULT_CONTAINER_TAG: &str = "nightly";
@@ -425,7 +415,6 @@ lazy_static! {
     pub static ref APP_NAME_LABEL: String = k8s_label("clair");
     pub static ref DROPIN_LABEL: String = clair_label("dropin-key");
 
-    pub static ref PARENT_VERSION_ANNOTATION: String = clair_label("parent-version");
 
     pub static ref CREATE_PARAMS: kube::api::PostParams = kube::api::PostParams {
         dry_run: false,
