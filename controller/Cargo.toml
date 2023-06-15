@@ -27,7 +27,7 @@ tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.17", features = ["json", "env-filter"] }
 anyhow = "1.0.71"
 lazy_static = "1.4.0"
-libc = "0.2.144"
+libc = "0.2.146"
 chrono = { version = "0.4.26", features = ["clock", "serde", "time"], default-features = false }
 metrics = "0.21.0"
 metrics-exporter-prometheus = "0.12.1"
