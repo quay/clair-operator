@@ -11,9 +11,9 @@ use tokio_native_tls::{native_tls, TlsAcceptor};
 use tokio_stream::wrappers::TcpListenerStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
-use warp::Filter;
 
 use controller::*;
+use webhook;
 
 fn main() {
     use clap::{
@@ -223,20 +223,11 @@ where
     Pa: AsRef<Path>,
     Pb: AsRef<Path>,
 {
-    // TODO(hank) Just rewrite all the warp bits into hyper.
     let certfile = certfile.as_ref();
     let keyfile = keyfile.as_ref();
     let addr = addr.into();
     let client = kube::Client::try_default().await?;
-    let index = warp::path::end().map(|| {
-        warp::http::Response::builder()
-            .header("content-type", "text/plain; charset=utf-8")
-            .body("hello from clair-operator\n")
-    });
-    let routes = index
-        .or(webhook::validate(client.clone()))
-        .or(webhook::mutate(client));
-    let srv = warp::serve(routes);
+    let state = webhook::State::new(client);
     let l = TcpListener::bind(addr).await?;
     info!(%addr, "started webhook server");
     // I can't figure out how to name the listener type such that it's either
@@ -249,12 +240,10 @@ where
             .map_err(Error::from)
             .map_ok(|s| (s, acceptor.clone()))
             .and_then(|(s, a)| async move { a.accept(s).await.map_err(Error::from) });
-        srv.serve_incoming_with_graceful_shutdown(l, cancel.cancelled_owned())
-            .await
+        webhook::run(l, state, cancel).await
     } else {
         let l = TcpListenerStream::new(l).map_err(Error::from);
-        srv.serve_incoming_with_graceful_shutdown(l, cancel.cancelled_owned())
-            .await
-    };
-    Ok(())
+        webhook::run(l, state, cancel).await
+    }
+    .map_err(|err| err.into())
 }

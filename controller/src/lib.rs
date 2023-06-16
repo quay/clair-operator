@@ -6,10 +6,10 @@
 
 use std::{borrow::Cow, env, pin::Pin};
 
-use anyhow::anyhow;
 // TODO(hank) Use std::sync::LazyLock once it stabilizes.
 use chrono::Utc;
 use futures::Future;
+use hyper;
 use k8s_openapi::{api::core, apimachinery::pkg::apis::meta};
 use kube::runtime::events;
 use lazy_static::lazy_static;
@@ -57,7 +57,6 @@ pub mod matchers;
 
 pub mod templates;
 pub mod updaters;
-pub mod webhook;
 
 // NB The docs are unclear, but backtraces are unsupported on stable.
 /// Error ...
@@ -101,6 +100,9 @@ pub enum Error {
     /// TLS inidicates some TLS error.
     #[error("tls error: {0}")]
     TLS(#[from] tokio_native_tls::native_tls::Error),
+    /// ...
+    #[error("webhook server error: {0}")]
+    Webhook(#[from] hyper::Error),
 
     /// MissingName inidcates a name was needed and not provided.
     #[error("missing name for kubernetes object: {0}")]
@@ -170,33 +172,6 @@ lazy_static! {
             instance: env::var("CONTROLLER_POD_NAME").ok(),
         }
     };
-}
-
-/// Next_config calculates the desired config state from the spec of the passed object.
-pub fn next_config(c: &v1alpha1::Clair) -> Result<v1alpha1::ConfigSource> {
-    let mut dropins = c.spec.dropins.clone();
-    if let Some(db) = &c.spec.databases {
-        dropins.push(v1alpha1::DropinSource {
-            secret_key_ref: Some(db.indexer.clone()),
-            config_map_key_ref: None,
-        });
-        dropins.push(v1alpha1::DropinSource {
-            secret_key_ref: Some(db.matcher.clone()),
-            config_map_key_ref: None,
-        });
-        if let Some(db) = &db.notifier {
-            dropins.push(v1alpha1::DropinSource {
-                secret_key_ref: Some(db.clone()),
-                config_map_key_ref: None,
-            });
-        };
-    };
-    let status = c.status.as_ref().ok_or(anyhow!("no status field"))?;
-    let cfgsrc = status.config.as_ref().ok_or(anyhow!("no config field"))?;
-    Ok(v1alpha1::ConfigSource {
-        root: cfgsrc.root.clone(),
-        dropins,
-    })
 }
 
 /// Condition is like [keyify], but does not force lower-case.

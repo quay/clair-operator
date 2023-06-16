@@ -1,0 +1,21 @@
+[package]
+name = "webhook"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+api = { path = "../api" }
+clair_config = { path = "../clair_config" }
+
+futures = { workspace = true }
+hyper = { workspace = true}
+k8s-openapi = { workspace = true }
+kube = { workspace = true }
+tokio = { workspace = true }
+
+axum = "0.6.18"
+bytes = "1.4.0"
+tokio-util = "0.7.8"

@@ -53,6 +53,40 @@ pub struct ClairSpec {
     pub config_dialect: Option<ConfigDialect>,
 }
 
+impl ClairSpec {
+    /// With_root creates the desired ConfigSource, using the provided name as the root config.
+    pub fn with_root<S: ToString>(&self, name: S) -> ConfigSource {
+        let mut dropins = self.dropins.clone();
+        if let Some(db) = &self.databases {
+            dropins.push(DropinSource {
+                secret_key_ref: Some(db.indexer.clone()),
+                config_map_key_ref: None,
+            });
+            dropins.push(DropinSource {
+                secret_key_ref: Some(db.matcher.clone()),
+                config_map_key_ref: None,
+            });
+            if let Some(db) = &db.notifier {
+                dropins.push(DropinSource {
+                    secret_key_ref: Some(db.clone()),
+                    config_map_key_ref: None,
+                });
+            };
+        };
+        dropins.sort();
+        dropins.dedup();
+        let name = name.to_string();
+        let flavor = self.config_dialect.unwrap_or_default();
+        ConfigSource {
+            root: ConfigMapKeySelector {
+                name,
+                key: format!("config.{flavor}"),
+            },
+            dropins,
+        }
+    }
+}
+
 /// Databases specifies the config drop-ins for the various databases needed.
 ///
 /// It's fine for all the fields to point to the same Secret key if it contains all the relevant

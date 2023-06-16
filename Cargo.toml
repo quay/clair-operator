@@ -1,14 +1,16 @@
 [workspace]
 members = [
 	"api",
-	"controller",
-	"xtask",
 	"clair_config",
+	"controller",
+	"webhook",
+	"xtask",
 ]
 default-members = [
 	"api",
-	"controller",
 	"clair_config",
+	"controller",
+	"webhook",
 ]
 
 [workspace.package]
@@ -17,14 +19,18 @@ authors = ["The clair-operator Authors"]
 edition = "2021"
 
 [workspace.dependencies]
-kube = { version = "0.83", default-features = false }
-k8s-openapi = { version = "0.18", default-features = false, features = ["schemars"] }
-json-patch = "1.0"
 clap = { version = "4.3", features = ["cargo", "env", "string"] }
+futures = "0.3.28"
+hyper = { version = "0.14.26", features = ["server", "http1"] }
+json-patch = "1.0"
+k8s-openapi = { version = "0.18", default-features = false, features = ["schemars"] }
+kube = { version = "0.83", features = ["runtime", "derive", "client", "config", "admission", "openssl-tls", "ws", "gzip", "jsonpatch"] }
+metrics = "0.21.0"
+serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
-serde_json = "1.0"
-tokio = { version = "1.28.2", features = ["macros", "rt-multi-thread", "io-util", "net"] }
+tokio = { version = "1.28.2", features = ["full"] }
+tracing = "0.1.37"
 
 [profile.dev]
 split-debuginfo = "unpacked"
