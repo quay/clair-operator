@@ -13,7 +13,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use controller::*;
-use webhook;
 
 fn main() {
     use clap::{

@@ -104,12 +104,12 @@ impl Parts {
             .fold(doc, |mut doc, (name, (buf, patch))| {
                 if *patch {
                     let p: json_patch::Patch =
-                        serde_json::from_slice(&buf).expect("failed to load patch");
+                        serde_json::from_slice(buf).expect("failed to load patch");
                     trace!(name, "applying patch");
                     json_patch::patch(&mut doc, &p).expect("failed to apply patch");
                 } else {
                     let m: serde_json::Value =
-                        serde_json::from_slice(&buf).expect("failed to parse JSON");
+                        serde_json::from_slice(buf).expect("failed to parse JSON");
                     trace!(name, "merging config");
                     json_patch::merge(&mut doc, &m);
                 };

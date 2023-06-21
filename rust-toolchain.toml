@@ -1,0 +1,3 @@
+[toolchain]
+channel = "stable"
+components = ["rustc", "cargo", "rust-std", "rust-src", "rust-docs", "rustfmt", "clippy", "rust-analyzer"]

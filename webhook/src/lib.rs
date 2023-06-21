@@ -165,7 +165,7 @@ async fn validate_v1alpha1_clair(
         Ok(root) => root,
         Err(err) => return Ok(Json(AdmissionResponse::invalid(err).into_review())),
     };
-    let root = if let None = root {
+    let root = if root.is_none() {
         return Ok(Json(res.deny("no such config: {name}").into_review()));
     } else {
         root.unwrap()

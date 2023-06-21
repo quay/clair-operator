@@ -9,7 +9,6 @@ use std::{borrow::Cow, env, pin::Pin};
 // TODO(hank) Use std::sync::LazyLock once it stabilizes.
 use chrono::Utc;
 use futures::Future;
-use hyper;
 use k8s_openapi::{api::core, apimachinery::pkg::apis::meta};
 use kube::runtime::events;
 use lazy_static::lazy_static;
