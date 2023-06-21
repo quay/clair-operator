@@ -28,7 +28,11 @@ fn main() {
                     .long_help("Bundle output directory. If unspecified, `bundle` inside the workspace root will be used.")
                     .value_hint(ValueHint::DirPath),
                 ]),
-            Command::new("ci").about("run CI setup, then tests").arg(Arg::new("pass").trailing_var_arg(true).num_args(..)),
+            Command::new("ci")
+                .about("run CI setup, then tests")
+                .args(&[
+                    Arg::new("pass").trailing_var_arg(true).num_args(..),
+                ]),
             Command::new("manifests")
                 .about("generate CRD manifests into config/crd"),
             Command::new("demo")
@@ -144,6 +148,15 @@ fn ci(opts: CiOpts) -> Result<()> {
         "kubectl label namespace default projectclair.io/safe-to-run-tests=true"
     )
     .run()?;
+
+    let coverage = cmd!(sh, "which grcov").run().is_ok();
+    if coverage {
+        sh.set_var("CARGO_INCREMENTAL", "0");
+        sh.set_var("RUSTFLAGS", "-Cinstrument-coverage");
+        sh.set_var("LLVM_PROFILE_FILE", "ci_test_%m_%p.profraw");
+    } else {
+        eprintln!("# skipping code coverage");
+    };
     eprintln!("# running CI tests");
     let use_nextest = cmd!(sh, "{cargo} nextest help")
         .ignore_stdout()
@@ -173,6 +186,16 @@ fn ci(opts: CiOpts) -> Result<()> {
         test_args.push(&v);
     }
     cmd!(sh, "{cargo} {test_args...}").run()?;
+    if coverage {
+        let out_dir = "target/debug/coverage";
+        sh.create_dir(out_dir)?;
+        cmd!(
+            sh,
+            "grcov . --binary-path ./target/debug --source-dir . --output-types html,lcov,markdown --branch --ignore-not-existing --keep-only '*/src/*' --ignore xtask --output-path {out_dir}"
+        )
+        .run()?;
+        cmd!(sh, "git clean --quiet --force :/*.profraw").run()?;
+    }
     Ok(())
 }
 

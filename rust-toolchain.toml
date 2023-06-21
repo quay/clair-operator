@@ -1,3 +1,13 @@
 [toolchain]
 channel = "stable"
-components = ["rustc", "cargo", "rust-std", "rust-src", "rust-docs", "rustfmt", "clippy", "rust-analyzer"]
+components = [
+	"cargo",
+	"clippy",
+	"llvm-tools",
+	"rust-analyzer",
+	"rustc",
+	"rust-docs",
+	"rustfmt",
+	"rust-src",
+	"rust-std",
+]
