@@ -222,12 +222,18 @@ where
     Pa: AsRef<Path>,
     Pb: AsRef<Path>,
 {
+    use axum::Server;
+    use hyper::server::accept;
+
+    use webhook::State;
+
     let certfile = certfile.as_ref();
     let keyfile = keyfile.as_ref();
     let addr = addr.into();
+
     let client = kube::Client::try_default().await?;
-    let state = webhook::State::new(client);
-    let l = TcpListener::bind(addr).await?;
+    let app = webhook::app(State::new(client));
+    let l = TcpListenerStream::new(TcpListener::bind(addr).await?).map_err(Error::from);
     info!(%addr, "started webhook server");
     // I can't figure out how to name the listener type such that it's either
     // TryStream<TcpStream> or TryStream<TlsStream<TcpStream>>.
@@ -235,14 +241,16 @@ where
         let (cert, key) = tokio::join!(tokio::fs::read(certfile), tokio::fs::read(keyfile));
         let id = native_tls::Identity::from_pkcs8(&cert?, &key?)?;
         let acceptor = TlsAcceptor::from(native_tls::TlsAcceptor::new(id)?);
-        let l = TcpListenerStream::new(l)
-            .map_err(Error::from)
+        let l = l
             .map_ok(|s| (s, acceptor.clone()))
             .and_then(|(s, a)| async move { a.accept(s).await.map_err(Error::from) });
-        webhook::run(l, state, cancel).await
+        Server::builder(accept::from_stream(l))
+            .serve(app.into_make_service())
+            .with_graceful_shutdown(cancel.cancelled_owned())
     } else {
-        let l = TcpListenerStream::new(l).map_err(Error::from);
-        webhook::run(l, state, cancel).await
+        Server::builder(accept::from_stream(l))
+            .serve(app.into_make_service())
+            .with_graceful_shutdown(cancel.cancelled_owned())
     }
-    .map_err(|err| err.into())
+    .await?
 }

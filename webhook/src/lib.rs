@@ -3,8 +3,6 @@
 use std::sync::Arc;
 
 use axum::{extract, http::StatusCode, routing::post, Json, Router};
-use futures::Stream;
-use hyper::server::accept;
 use k8s_openapi::api::core;
 use kube::{
     api::Api,
@@ -13,8 +11,6 @@ use kube::{
         DynamicObject, ResourceExt,
     },
 };
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_util::sync::CancellationToken;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, instrument, trace};
 
@@ -41,28 +37,6 @@ pub fn app(srv: State) -> Router {
         .with_state(state);
     trace!("router constructed");
     app
-}
-
-pub async fn run<S, IE, IO>(
-    stream: S,
-    srv: State,
-    cancel: CancellationToken,
-) -> Result<(), hyper::Error>
-where
-    S: Stream<Item = Result<IO, IE>>,
-    IE: Into<Box<dyn std::error::Error + Send + Sync>>,
-    IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    trace!("router constructed");
-    let s = accept::from_stream(stream);
-    trace!("stream constructed");
-    let app = app(srv);
-
-    info!("webhook server starting");
-    axum::Server::builder(s)
-        .serve(app.into_make_service())
-        .with_graceful_shutdown(cancel.cancelled_owned())
-        .await
 }
 
 #[instrument(skip_all)]
@@ -242,6 +216,7 @@ async fn validate_v1alpha1_clair(
                 .into_review(),
         ));
     }
+    info!("OK");
     Ok(Json(res.into_review()))
 }
 
