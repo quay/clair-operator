@@ -4,7 +4,9 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+default = []
+test_ci = []
 
 [dependencies]
 api = { path = "../api" }
@@ -15,7 +17,16 @@ hyper = { workspace = true}
 k8s-openapi = { workspace = true }
 kube = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
 
-axum = "0.6.18"
+axum = { version = "0.6", features = [ "tracing" ] }
 bytes = "1.4.0"
 tokio-util = "0.7.8"
+tower-http = { version = "0.4.1", features = ["trace"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+test-log = { version = "0.2.11", default-features = false, features = ["trace"] }
+tokio-stream = { workspace = true }
+tower = "0.4"
+tracing-subscriber = { version = "0.3.17", features = ["json", "env-filter"] }
