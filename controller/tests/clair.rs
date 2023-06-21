@@ -90,7 +90,7 @@ async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
         gen = cur;
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    eprintln!("Clair settled");
+    eprintln!("Clair settled: {gen}");
 
     // Check Clair members
     let got = api.get(NAME).await?;

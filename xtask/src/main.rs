@@ -2,13 +2,12 @@
 
 use std::{
     env,
-    io::Read,
-    os::unix::net::UnixStream,
     path::{Path, PathBuf},
-    process::{self, Command, Stdio},
+    process,
 };
 
 use signal_hook::{consts::SIGINT, low_level::pipe};
+use xshell::{cmd, Shell};
 
 fn main() {
     use clap::{crate_authors, crate_name, crate_version, Arg, ArgAction, Command, ValueHint};
@@ -55,46 +54,44 @@ type DynError = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, DynError>;
 
 fn demo(opts: DemoOpts) -> Result<()> {
+    use std::{io::Read, os::unix::net::UnixStream, process::Command};
     let (mut rd, wr) = UnixStream::pair()?;
     pipe::register(SIGINT, wr)?;
+    let ws = workspace();
+    let bindir = ws.join(".bin");
+    let cfgpath = ws.join("kubeconfig");
+    let cargo = env::var_os("CARGO").unwrap();
+    let sh = Shell::new()?;
 
-    let cfgpath = workspace().join("kubeconfig");
-    eprintln!("putting KUBECONFIG at {cfgpath:?}");
-    env::set_var("KUBECONFIG", &cfgpath);
-    env::set_var("RUST_LOG", "controller=debug,clair_config=debug");
-    let _guard = KIND::new()?;
-    eprintln!("regenerating CRDs");
-    let _ = Command::new(env::var_os("CARGO").unwrap())
-        .args(["xtask", "manifests"])
-        .stderr(Stdio::null())
-        .stdout(Stdio::null())
-        .status();
-    eprintln!("waiting for pods to ready");
-    let _ = Command::new("kubectl")
-        .args(&[
-            "wait",
-            "pods",
-            "--for=condition=Ready",
-            "--timeout=300s",
-            "--all",
-            "--all-namespaces",
-        ])
-        .status();
-    eprintln!("loading CRDs");
-    let kus = Command::new("kustomize")
-        .current_dir(workspace())
-        .stdout(process::Stdio::piped())
-        .args(&["build", "config/crd"])
-        .spawn()?;
-    let _ = Command::new("kubectl")
-        .args(&["apply", "-f", "-"])
-        .stdin(kus.stdout.unwrap())
-        .status()?;
+    let p = env::var("PATH")?;
+    let paths = std::iter::once(bindir).chain(std::env::split_paths(&p));
+    sh.set_var("PATH", std::env::join_paths(paths)?);
+    sh.change_dir(workspace());
+    sh.set_var("KUBECONFIG", &cfgpath);
+    eprintln!("# putting KUBECONFIG at {cfgpath:?}");
+    sh.set_var(
+        "RUST_LOG",
+        "controller=debug,clair_config=debug,webhook=debug",
+    );
+    check_kubectl(&sh)?;
+    check_kustomize(&sh)?;
+    let _guard = KIND::new(&sh, true);
+
+    eprintln!("# regenerating CRDs");
+    cmd!(sh, "{cargo} xtask manifests")
+        .ignore_stdout()
+        .ignore_stderr()
+        .run()?;
+    eprintln!("# loading CRDs");
+    let _tmp = sh.create_temp_dir()?;
+    let crds = _tmp.path().join("crds");
+    cmd!(sh, "kustomize build config/crd -o {crds}").run()?;
+    cmd!(sh, "kubectl apply -f {crds}").run()?;
 
     let _ctrl = if opts.run_controller {
-        eprintln!("running controllers");
+        eprintln!("# running controllers");
         Some(
-            Command::new(env::var_os("CARGO").unwrap())
+            Command::new(cargo)
                 .current_dir(workspace())
                 .args(["run", "--package", "controller", "--", "run"])
                 .spawn()?,
@@ -103,15 +100,15 @@ fn demo(opts: DemoOpts) -> Result<()> {
         None
     };
 
-    eprintln!("take it for a spin:");
-    eprintln!("\tKUBECONFIG={cfgpath:?} kubectl get crds");
-    eprintln!("look in \"config/samples\" for some samples");
-    eprintln!("^C to tear down");
+    eprintln!("# take it for a spin:");
+    eprintln!("#\tKUBECONFIG={cfgpath:?} kubectl get crds");
+    eprintln!("# look in \"config/samples\" for some samples");
+    eprintln!("# ^C to tear down");
     let mut _block = [0];
     rd.read_exact(&mut _block)?;
 
     eprintln!("");
-    eprintln!("🫠");
+    eprintln!("# 🫠");
     Ok(())
 }
 
@@ -128,72 +125,54 @@ impl From<&clap::ArgMatches> for DemoOpts {
 }
 
 fn ci(opts: CiOpts) -> Result<()> {
-    env::set_var("CI", "true");
-    env::set_var("KUBECONFIG", workspace().join("kubeconfig"));
-    env::set_var("RUST_TEST_TIME_INTEGRATION", "30000,3000000");
-    env::set_var("RUST_LOG", "controller=trace,clair_config=trace");
-    env::set_var("RUST_BACKTRACE", "1");
-    let _guard = KIND::new()?;
-    eprintln!("waiting for pods to ready");
-    let _ = Command::new("kubectl")
-        .args(&[
-            "wait",
-            "pods",
-            "--for=condition=Ready",
-            "--timeout=300s",
-            "--all",
-            "--all-namespaces",
-        ])
-        .status();
-    eprintln!("adding CI label");
-    let _ = Command::new("kubectl")
-        .args(&[
-            "label",
-            "namespace",
-            "default",
-            "projectclair.io/safe-to-run-tests=true",
-        ])
-        .status();
-    eprintln!("running CI tests");
-    let use_nextest = Command::new(env::var_os("CARGO").unwrap())
-        .args(&["nextest", "help"])
-        .stderr(Stdio::null())
-        .stdout(Stdio::null())
-        .status()?
-        .success();
-    let w = workspace().to_string_lossy().to_string();
+    let cargo = env::var_os("CARGO").unwrap();
+    let sh = Shell::new()?;
+    sh.set_var("CI", "true");
+    sh.set_var("KUBECONFIG", workspace().join("kubeconfig"));
+    sh.set_var("RUST_TEST_TIME_INTEGRATION", "30000,3000000");
+    sh.set_var(
+        "RUST_LOG",
+        "controller=trace,clair_config=trace,webhook=trace",
+    );
+    sh.set_var("RUST_BACKTRACE", "1");
+    check_kubectl(&sh)?;
+    let _kind = KIND::new(&sh, false)?;
+
+    eprintln!("# adding CI label");
+    cmd!(
+        sh,
+        "kubectl label namespace default projectclair.io/safe-to-run-tests=true"
+    )
+    .run()?;
+    eprintln!("# running CI tests");
+    let use_nextest = cmd!(sh, "{cargo} nextest help")
+        .ignore_stdout()
+        .ignore_stderr()
+        .run()
+        .is_ok();
     let ar = workspace().join("tests.tar.zst");
     let mut test_args = vec![];
+    let w = workspace().to_string_lossy().to_string();
     if use_nextest {
-        eprintln!("using nextest");
+        eprintln!("# using nextest");
         test_args.extend_from_slice(&["nextest", "run", "--profile", "ci"]);
         if ar.exists() {
-            eprintln!("using archive \"{}\"", ar.display());
+            eprintln!("# using archive \"{}\"", ar.display());
             test_args.push("--archive-file");
             test_args.push(ar.to_str().unwrap());
             test_args.push("--workspace-remap");
             test_args.push(&w);
+        } else {
+            test_args.push("--features");
+            test_args.push("test_ci");
         }
     } else {
-        test_args.push("test");
-    }
-    if !use_nextest || !ar.exists() {
-        test_args.push("--features");
-        test_args.push("test_ci");
-    }
-    if !use_nextest {
-        test_args.push("--");
+        test_args.extend_from_slice(&["test", "--features", "test_ci", "--"]);
     }
     for v in &opts.pass {
         test_args.push(&v);
     }
-    let status = Command::new(env::var_os("CARGO").unwrap())
-        .args(test_args)
-        .current_dir(workspace())
-        .status()?;
-    if !status.success() {
-        return Err("tests failed".into());
-    }
+    cmd!(sh, "{cargo} {test_args...}").run()?;
     Ok(())
 }
 
@@ -213,42 +192,144 @@ impl From<&clap::ArgMatches> for CiOpts {
     }
 }
 
+fn check_kind(sh: &Shell) -> Result<()> {
+    const VERSION: &str = "0.20.0";
+    let os = env::consts::OS;
+    let exe = env::consts::EXE_SUFFIX;
+    let arch = match env::consts::ARCH {
+        "x86_64" => "amd64",
+        arch => panic!("unmapped arch: {arch}"),
+    };
+    match cmd!(sh, "which kind").run() {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            cmd!(
+                sh,
+                "curl -fsSLo .bin/kind{exe} https://kind.sigs.k8s.io/dl/v{VERSION}/kind-{os}-{arch}"
+            )
+            .run()?;
+            cmd!(sh, "chmod +x .bin/kind{exe}").run()?;
+            Ok(())
+        }
+    }
+}
+fn check_kubectl(sh: &Shell) -> Result<()> {
+    let version = k8s_version();
+    let os = env::consts::OS;
+    let exe = env::consts::EXE_SUFFIX;
+    let arch = match env::consts::ARCH {
+        "x86_64" => "amd64",
+        arch => panic!("unmapped arch: {arch}"),
+    };
+    match cmd!(sh, "which kubectl").run() {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            cmd!(
+                sh,
+                "curl -fsSLo .bin/kubectl{exe} https://storage.googleapis.com/kubernetes-release/release/{version}/bin/{os}/{arch}/kubectl{exe}"
+            )
+            .run()?;
+            cmd!(sh, "chmod +x .bin/kubectl{exe}").run()?;
+            Ok(())
+        }
+    }
+}
+fn check_kustomize(sh: &Shell) -> Result<()> {
+    const VERSION: &str = "5.0.3";
+    let os = env::consts::OS;
+    let arch = match env::consts::ARCH {
+        "x86_64" => "amd64",
+        arch => panic!("unmapped arch: {arch}"),
+    };
+    match cmd!(sh, "which kustomize").run() {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            // The kustomize install is excessively dumb.
+            let _tmp = sh.create_temp_dir()?;
+            let tmp = _tmp.path();
+            cmd!(
+                sh,
+                "curl -fsSLo {tmp}/tgz https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv{VERSION}/kustomize_v{VERSION}_{os}_{arch}.tar.gz"
+            )
+            .run()?;
+            cmd!(sh, "tar -xzf -C .bin {tmp}/tgz").run()?;
+            Ok(())
+        }
+    }
+}
+
+fn k8s_version() -> String {
+    std::env::var("KUBE_VERSION").unwrap_or(String::from("1.25"))
+}
+
 struct KIND {
     name: std::ffi::OsString,
 }
 impl Drop for KIND {
     fn drop(&mut self) {
-        let mut cmd = Command::new("kind");
-        cmd.current_dir(workspace());
-        cmd.arg("delete");
-        cmd.arg("cluster");
-        cmd.arg("--name");
-        cmd.arg(&self.name);
-        let _ = cmd.status();
+        let name = &self.name;
+        let sh = Shell::new().unwrap();
+        cmd!(sh, "kind delete cluster --name {name}").run().unwrap();
     }
 }
 impl KIND {
-    fn new() -> Result<Self> {
-        let k8s_ver = std::env::var("KUBE_VERSION").unwrap_or(String::from("1.25"));
-        let kind_name = "ci";
-        let kind_config = workspace()
-            .join("controller/etc/tests/")
-            .join(format!("kind-{}.yaml", k8s_ver));
-        let mut cmd = Command::new("kind");
-        cmd.current_dir(workspace());
-        cmd.arg("--config");
-        cmd.arg(&kind_config);
-        cmd.arg("create");
-        cmd.arg("cluster");
-        cmd.arg("--name");
-        cmd.arg(&kind_name);
-        let status = cmd.status()?;
-        if !status.success() {
-            return Err("kind exit non-zero".into());
+    fn new(sh: &Shell, ingress: bool) -> Result<Self> {
+        use scopeguard::guard;
+        use std::{thread, time};
+        let ingress_manifest  = std::env::var("INGRESS_MANIFEST")
+            .unwrap_or(String::from("https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml"));
+        let k8s_ver = k8s_version();
+        let name = "ci";
+        // TODO(hank) Move the KIND configs out of the controller crate.
+        let config = workspace()
+            .join("etc/tests/")
+            .join(format!("kind-{k8s_ver}.yaml"));
+        sh.change_dir(workspace());
+        check_kind(&sh)?;
+        cmd!(sh, "kind --config {config} create cluster --name {name}").run()?;
+        let mut ok = guard(true, |ok| {
+            if !ok {
+                let _ = cmd!(sh, "kind delete cluster --name {name}").run();
+            }
+        });
+        eprintln!("# waiting for pods to ready");
+        cmd!(
+            sh,
+            "kubectl wait pods --for=condition=Ready --timeout=300s --all --all-namespaces"
+        )
+        .run()
+        .map_err(|err| {
+            *ok = false;
+            err
+        })?;
+        if ingress {
+            cmd!(sh, "kubectl apply -f {ingress_manifest}")
+                .run()
+                .map_err(|err| {
+                    *ok = false;
+                    err
+                })?;
+            'wait: for n in 0..=5 {
+                let exec = cmd!(
+                    sh,
+                    "kubectl wait --namespace ingress-nginx --for=condition=Ready pod --selector=app.kubernetes.io/component=controller --timeout=90s"
+                )
+                .run();
+                match exec {
+                    Ok(_) => break 'wait,
+                    Err(err) => {
+                        if n == 5 {
+                            *ok = false;
+                            return Err(Box::new(err));
+                        } else {
+                            ()
+                        }
+                    }
+                };
+                thread::sleep(time::Duration::from_secs(1));
+            }
         }
-        Ok(Self {
-            name: kind_name.into(),
-        })
+        Ok(Self { name: name.into() })
     }
 }
 

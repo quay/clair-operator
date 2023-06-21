@@ -5,6 +5,9 @@ metadata:
   labels:
     app.kubernetes.io/name: clair
     app.kubernetes.io/managed-by: clair-operator
+  annotations:
+    haproxy.router.openshift.io/timeout: 5m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '300'
 spec:
   rules:
   - host: ⚠️

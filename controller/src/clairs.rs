@@ -270,25 +270,29 @@ async fn initialize_endpoint(
             let ingress = api.create(&params, &ingress).await;
             match ingress {
                 Ok(v) => {
-                    req.publish(Event {
-                        type_: EventType::Warning,
-                        reason: "Success".into(),
-                        note: None,
-                        action,
-                        secondary: Some(v.object_ref(&())),
-                    })
-                    .await?;
+                    let _ = req
+                        .publish(Event {
+                            type_: EventType::Warning,
+                            reason: "Success".into(),
+                            note: None,
+                            action,
+                            secondary: Some(v.object_ref(&())),
+                        })
+                        .await;
+                    debug!(name = v.name_any(), "ingress created");
                     Ok(v.name_any())
                 }
                 Err(e) => {
-                    req.publish(Event {
-                        type_: EventType::Warning,
-                        reason: "Failed".into(),
-                        note: Some(e.to_string()),
-                        action,
-                        secondary: None,
-                    })
-                    .await?;
+                    let _ = req
+                        .publish(Event {
+                            type_: EventType::Warning,
+                            reason: "Failed".into(),
+                            note: Some(e.to_string()),
+                            action,
+                            secondary: None,
+                        })
+                        .await;
+                    error!(error = ?e, "ingress creation failure");
                     Err(e)
                 }
             }
@@ -352,6 +356,7 @@ async fn new_ingress(
             }
         }
     }
+    trace!("created Ingress");
     Ok(v)
 }
 
@@ -450,7 +455,8 @@ async fn check_subs(
         debug!("no config on next config");
         return Ok(true);
     };
-    let v = clair_config::validate(&ctx.client, &config).await?;
+    let p: clair_config::Parts = load_clair_config(&ctx.client, &config).await?;
+    let v = p.validate().await?;
     let action = String::from("ConfigValidation");
     let reason = String::from("ConfigAdded");
     let message = String::from("🆗");
@@ -538,6 +544,43 @@ async fn check_subs(
     }
     trace!("done");
     Ok(true)
+}
+
+#[instrument(skip_all)]
+async fn load_clair_config(
+    client: &kube::Client,
+    cfgsrc: &v1alpha1::ConfigSource,
+) -> Result<clair_config::Parts> {
+    use clair_config::Builder;
+    let cm_api: Api<core::v1::ConfigMap> = Api::default_namespaced(client.clone());
+    let sec_api: Api<core::v1::Secret> = Api::default_namespaced(client.clone());
+
+    let root = cm_api
+        .get_opt(&cfgsrc.root.name)
+        .await?
+        .ok_or_else(|| Error::BadName(format!("no such config: {}", &cfgsrc.root.name)))?;
+
+    let mut b = Builder::from_root(&root, &cfgsrc.root.key)?;
+    for d in cfgsrc.dropins.iter() {
+        if let Some(r) = &d.config_map_key_ref {
+            let name = &r.name;
+            let m = cm_api
+                .get_opt(name)
+                .await?
+                .ok_or_else(|| Error::BadName(format!("no such config: {name}")))?;
+            b = b.add(m, &r.key)?;
+        } else if let Some(r) = &d.secret_key_ref {
+            let name = &r.name;
+            let m = sec_api
+                .get_opt(name)
+                .await?
+                .ok_or_else(|| Error::BadName(format!("no such config: {name}")))?;
+            b = b.add(m, &r.key)?;
+        } else {
+            unreachable!()
+        }
+    }
+    Ok(b.into())
 }
 
 #[instrument(skip_all)]
@@ -656,7 +699,9 @@ async fn check_ingress(
                 CommitError::Validate(reason) => {
                     debug!(reason = reason.to_string(), "commit failed, retrying")
                 }
-                CommitError::Save(_) => return Err(Error::Commit(err)),
+                CommitError::Save(reason) => {
+                    debug!(reason = reason.to_string(), "save failed, retrying")
+                }
             },
         };
     }
