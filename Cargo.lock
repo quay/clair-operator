@@ -405,6 +405,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "api",
+ "axum",
  "bytes",
  "chrono",
  "clair_config",
@@ -3021,6 +3022,7 @@ dependencies = [
  "json-patch",
  "k8s-openapi",
  "kube",
+ "lazy_static",
  "scopeguard",
  "serde_json",
  "serde_yaml",

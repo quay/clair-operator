@@ -247,10 +247,12 @@ where
         Server::builder(accept::from_stream(l))
             .serve(app.into_make_service())
             .with_graceful_shutdown(cancel.cancelled_owned())
+            .await
     } else {
         Server::builder(accept::from_stream(l))
             .serve(app.into_make_service())
             .with_graceful_shutdown(cancel.cancelled_owned())
+            .await
     }
-    .await?
+    .map_err(Error::from)
 }
