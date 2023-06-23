@@ -3,4 +3,9 @@ kind: Namespace
 metadata:
   labels:
     control-plane: controller-manager
+    app.kubernetes.io/name: namespace
+    app.kubernetes.io/instance: system
+    app.kubernetes.io/component: manager
+    app.kubernetes.io/created-by: clair-operator
+    app.kubernetes.io/part-of: clair-operator
   name: system

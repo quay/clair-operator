@@ -2,7 +2,13 @@
 apiVersion: projectclair.io/v1alpha1
 kind: Clair
 metadata:
-  name: example
+  labels:
+    app.kubernetes.io/name: test
+    app.kubernetes.io/instance: test-sample
+    app.kubernetes.io/part-of: clair
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: clair
+  name: test-sample
 spec:
   databases:
     indexer:
@@ -11,3 +17,24 @@ spec:
     matcher:
       name: databaseSecret
       key: database.json
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: databaseSecret
+  labels:
+    app.kubernetes.io/name: test
+    app.kubernetes.io/instance: test-sample
+    app.kubernetes.io/part-of: clair
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: clair
+stringData:
+  database.json: >
+    {
+      "indexer":{
+        "connstring": "host=postgresql user=clair dbname=clair password=psqltest sslmode=disable"
+      },
+      "matcher":{
+        "connstring": "host=postgresql user=clair dbname=clair password=psqltest sslmode=disable"
+      }
+    }

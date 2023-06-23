@@ -6,6 +6,11 @@ metadata:
   namespace: system
   labels:
     control-plane: controller-manager
+    app.kubernetes.io/name: deployment
+    app.kubernetes.io/instance: controller-manager
+    app.kubernetes.io/component: manager
+    app.kubernetes.io/created-by: clair-operator
+    app.kubernetes.io/part-of: clair-operator
 spec:
   selector:
     matchLabels:
@@ -13,18 +18,32 @@ spec:
   replicas: 1
   template:
     metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
       labels:
         control-plane: controller-manager
     spec:
-      terminationGracePeriodSeconds: 10
-      securityContext:
-        runAsUser: 65532
-      shareProcessNamespace: true
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+              - key: kubernetes.io/os
+                operator: In
+                values:
+                - linux
       containers:
       - image: controller:latest
         name: manager
         securityContext:
           allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - "ALL"
         livenessProbe:
           httpGet:
             path: /healthz
@@ -44,3 +63,8 @@ spec:
           requests:
             cpu: 100m
             memory: 20Mi
+      securityContext:
+        runAsNonRoot: true
+      serviceAccountName: controller-manager
+      shareProcessNamespace: true
+      terminationGracePeriodSeconds: 10

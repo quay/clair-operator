@@ -24,6 +24,6 @@ webhooks:
     scope: Namespaced
   clientConfig:
     service:
-      name: webhook-projectquay-io
+      name: webhook-projectclair-io
       namespace: system
       path: /validate/v1alpha1

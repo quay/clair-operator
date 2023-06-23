@@ -22,6 +22,6 @@ webhooks:
     scope: Namespaced
   clientConfig:
     service:
-      name: webhook-projectquay-io
+      name: webhook-projectclair-io
       namespace: system
       path: /mutate/v1alpha1

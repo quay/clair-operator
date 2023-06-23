@@ -1,0 +1,127 @@
+- op: add
+  path: /spec/customresourcedefinitions/owned/-
+  value:
+    name: clairs.projectclair.io
+    version: v1alpha1
+    kind: Clair
+    description: Resource describing a Clair system.
+    displayName: Clair
+    resources:
+    - version: v1
+      kind: ConfigMap
+    - version: v1
+      kind: Secret
+    - version: networking.k8s.io/v1
+      kind: Ingress
+    - version: projectclair.io/v1alpha1
+      kind: Indexer
+      name: indexers
+    - version: projectclair.io/v1alpha1
+      kind: Matcher
+      name: matchers
+    - version: projectclair.io/v1alpha1
+      kind: Notifier
+      name: notifiers
+    - version: projectclair.io/v1alpha1
+      kind: Updater
+      name: updaters
+    specDescriptors:
+    - description: The style of config used for this Clair instance.
+      displayName: Config Dialect
+      path: configDialect
+      x-descriptors:
+      - urn:alm:descriptor:com.tectonic.ui:advanced
+      - urn:alm:descriptor:com.tectonic.ui:select:json
+      - urn:alm:descriptor:com.tectonic.ui:select:yaml
+    - description: ''
+      displayName: ''
+      path: databases.indexer
+      x-descriptors: []
+    - description: ''
+      displayName: Indexer database Secret name
+      path: databases.indexer.name
+      x-descriptors:
+      - urn:alm:descriptor:io.kubernetes:Secret
+    - description: ''
+      displayName: Indexer database Secret key
+      path: databases.indexer.key
+      x-descriptors:
+      - urn:alm:descriptor:com:tectonic.ui:text
+    - description: ''
+      displayName: ''
+      path: databases.matcher
+      x-descriptors: []
+    - description: ''
+      displayName: Matcher database Secret name
+      path: databases.matcher.name
+      x-descriptors:
+      - urn:alm:descriptor:io.kubernetes:Secret
+    - description: ''
+      displayName: Matcher database Secret key
+      path: databases.matcher.key
+      x-descriptors:
+      - urn:alm:descriptor:com:tectonic.ui:text
+    - description: ''
+      displayName: ''
+      path: databases.notifier
+      x-descriptors:
+      - urn:alm:descriptor:com.tectonic.ui:fieldDependency:notifier:true
+    - description: ''
+      displayName: Notifier database Secret name
+      path: databases.notifier.name
+      x-descriptors:
+      - urn:alm:descriptor:io.kubernetes:Secret
+    - description: ''
+      displayName: Notifier database Secret key
+      path: databases.notifier.key
+      x-descriptors:
+      - urn:alm:descriptor:com:tectonic.ui:text
+    - description: Configuration dropins
+      displayName: Dropins
+      path: dropins
+      x-descriptors: []
+    - description: ''
+      displayName: Name of referent
+      path: dropins[0].configMapKeyRef.name
+      x-descriptors:
+      - urn:alm:descriptor:io.kubernetes:ConfigMap
+    - description: ''
+      displayName: ''
+      path: dropins[0].configMapKeyRef.key
+      x-descriptors:
+      - urn:alm:descriptor:com:tectonic.ui:text
+    - description: ''
+      displayName: Name of referent
+      path: dropins[0].secretKeyRef.name
+      x-descriptors:
+      - urn:alm:descriptor:io.kubernetes:ConfigMap
+    - description: ''
+      displayName: ''
+      path: dropins[0].secretKeyRef.key
+      x-descriptors:
+      - urn:alm:descriptor:com:tectonic.ui:text
+    - description: The secret object that stores the TLS certificate.
+      displayName: TLS 
+      path: endpoint.tls
+    - description: Name of referent
+      displayName: TLS Secret
+      path: endpoint.tls.name
+      x-descriptors:
+      - urn:alm:descriptor:io.kubernetes:Secret
+    - description: The name to use in a configured Ingress.
+      displayName: Endpoint hostname
+      path: endpoint.hostname
+      x-descriptors:
+      - urn:alm:descriptor:com:tectonic.ui:text
+    - description: The container image to use for Deployments
+      displayName: Clair container image
+      path: image
+      x-descriptors:
+      - urn:alm:descriptor:com:tectonic.ui:text
+      - urn:alm:descriptor:com.tectonic.ui:advanced
+    - description: Enable the Notifier component.
+      displayName: Notifier
+      path: notifier
+      x-descriptors:
+      - urn:alm:descriptor:com.tectonic.ui:booleanSwitch
+    statusDescriptors: []
