@@ -15,6 +15,7 @@ lazy_static! {
         .nth(1)
         .unwrap()
         .to_path_buf();
+    pub static ref BIN_DIR: PathBuf = WORKSPACE.join(".bin");
     pub static ref KUBE_VERSION: String = env::var("KUBE_VERSION").unwrap_or(String::from("1.25"));
     pub static ref INGRESS_MANIFEST:String  = env::var("INGRESS_MANIFEST")
             .unwrap_or(String::from("https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml"));

@@ -44,10 +44,36 @@ fn main() {
                         .value_hint(ValueHint::DirPath),
                     Arg::new("image")
                         .long("image")
+                        .value_name("REPO")
+                        .help("container image repository")
+                        .long_help("Container image repository to use during build.")
+                        .default_value(BUNDLE_IMAGE),
+                    Arg::new("version")
+                        .long("version")
+                        .value_name("vX.Y.Z")
+                        .help("bundle tag version")
+                        .long_help("Bundle tag version. If not provided, one will be guessed based on git tags."),
+                ]),
+            Command::new("catalog-image")
+                .about("generate OLM catalog image")
+                .args(&[
+                    Arg::new("bundle")
+                        .long("bundle")
                         .value_name("TAG")
-                        .help("container image reference")
-                        .long_help("Container image reference to use during build.")
-                        .default_value(format!("{BUNDLE_IMAGE}:v{}", crate_version!())),
+                        .help("bundle container image reference")
+                        .long_help("Bundle container image reference to use during build.")
+                        .default_value(BUNDLE_IMAGE),
+                    Arg::new("catalog")
+                        .long("catalog")
+                        .value_name("TAG")
+                        .help("catalog container image reference")
+                        .long_help("Catalog container image reference to use during build.")
+                        .default_value(CATALOG_IMAGE),
+                    Arg::new("version")
+                        .long("version")
+                        .value_name("vX.Y.Z")
+                        .help("bundle tag version")
+                        .long_help("Bundle tag version. If not provided, one will be guessed based on git tags."),
                 ]),
             Command::new("ci")
                 .about("run CI setup, then tests")
@@ -62,11 +88,12 @@ fn main() {
         ]);
 
     if let Err(e) = match cmd.get_matches().subcommand() {
-        Some(("bundle", m)) => bundle(crate_version!(), BundleOpts::from(m)),
-        Some(("bundle-image", m)) => bundle_image(BundleImageOpts::from(m)),
-        Some(("ci", m)) => ci(CiOpts::from(m)),
+        Some(("bundle", m)) => bundle(crate_version!(), m.into()),
+        Some(("bundle-image", m)) => bundle_image(m.into()),
+        Some(("catalog-image", m)) => catalog_image(m.into()),
+        Some(("ci", m)) => ci(m.into()),
         Some(("manifests", _)) => manifests(),
-        Some(("demo", m)) => demo(DemoOpts::from(m)),
+        Some(("demo", m)) => demo(m.into()),
         _ => unreachable!(),
     } {
         eprintln!("{e}");
@@ -74,19 +101,27 @@ fn main() {
     }
 }
 
+fn shell() -> xshell::Result<Shell> {
+    let sh = Shell::new()?;
+    let p = env::var("PATH").expect("PATH environment variable missing");
+    let paths = std::iter::once(BIN_DIR.to_path_buf()).chain(std::env::split_paths(&p));
+    sh.set_var(
+        "PATH",
+        std::env::join_paths(paths).expect("unable to reconstruct PATH"),
+    );
+    sh.change_dir(WORKSPACE.as_path());
+
+    Ok(sh)
+}
+
 fn demo(opts: DemoOpts) -> Result<()> {
     use std::{io::Read, os::unix::net::UnixStream, process::Command};
     let (mut rd, wr) = UnixStream::pair()?;
     pipe::register(SIGINT, wr)?;
-    let bindir = WORKSPACE.join(".bin");
     let cfgpath = WORKSPACE.join("kubeconfig");
     let cargo: &Path = &CARGO;
-    let sh = Shell::new()?;
+    let sh = shell()?;
 
-    let p = env::var("PATH")?;
-    let paths = std::iter::once(bindir).chain(std::env::split_paths(&p));
-    sh.set_var("PATH", std::env::join_paths(paths)?);
-    sh.change_dir(WORKSPACE.as_path());
     sh.set_var("KUBECONFIG", &cfgpath);
     eprintln!("# putting KUBECONFIG at {cfgpath:?}");
     sh.set_var(
@@ -146,7 +181,7 @@ impl From<&clap::ArgMatches> for DemoOpts {
 
 fn ci(opts: CiOpts) -> Result<()> {
     let cargo: &Path = &CARGO;
-    let sh = Shell::new()?;
+    let sh = shell()?;
     sh.set_var("CI", "true");
     sh.set_var("KUBECONFIG", WORKSPACE.join("kubeconfig"));
     sh.set_var("RUST_TEST_TIME_INTEGRATION", "30000,3000000");
@@ -237,7 +272,7 @@ struct Kind {
 impl Drop for Kind {
     fn drop(&mut self) {
         let name = &self.name;
-        let sh = Shell::new().unwrap();
+        let sh = shell().unwrap();
         cmd!(sh, "kind delete cluster --name {name}").run().unwrap();
     }
 }
@@ -302,8 +337,7 @@ impl Kind {
 fn bundle(v: &str, opts: BundleOpts) -> Result<()> {
     manifests()?;
     let out_dir = WORKSPACE.join(&opts.out_dir);
-    let sh = Shell::new()?;
-    sh.change_dir(WORKSPACE.as_path());
+    let sh = shell()?;
     check::operator_sdk(&sh)?;
     check::kustomize(&sh)?;
     let _tmp = sh.create_temp_dir()?;
@@ -334,6 +368,17 @@ fn bundle(v: &str, opts: BundleOpts) -> Result<()> {
     }
 
     Ok(())
+}
+
+struct BundleOpts {
+    out_dir: PathBuf,
+}
+impl From<&clap::ArgMatches> for BundleOpts {
+    fn from(m: &clap::ArgMatches) -> Self {
+        Self {
+            out_dir: m.get_one::<String>("out_dir").map(PathBuf::from).unwrap(),
+        }
+    }
 }
 
 macro_rules! write_crds {
@@ -374,15 +419,20 @@ where
     Ok(())
 }
 
-struct BundleOpts {
-    out_dir: PathBuf,
-}
-impl From<&clap::ArgMatches> for BundleOpts {
-    fn from(m: &clap::ArgMatches) -> Self {
-        Self {
-            out_dir: m.get_one::<String>("out_dir").map(PathBuf::from).unwrap(),
-        }
+fn generate_version(sh: &Shell) -> Result<String> {
+    const MANGLE: &str = r#"
+    NF==3{
+        sub(/v/, "", $1)
+        split($1, v, /\./)
+        v[2]++
+        sub(/g/, "", $3)
+        printf "v%d.%d.%d-pre%d.%s", v[1], v[2], v[3], $2, $3
     }
+    NF==1{ print $0 }
+    "#;
+    let desc = cmd!(sh, "git describe --tags --match=v*.*.*").read()?;
+    let v = cmd!(sh, "awk -F - {MANGLE}").stdin(&desc).read()?;
+    Ok(v)
 }
 
 fn bundle_image(opts: BundleImageOpts) -> Result<()> {
@@ -390,14 +440,19 @@ fn bundle_image(opts: BundleImageOpts) -> Result<()> {
     let dir_arg = &opts.out_dir;
     let image = &opts.image;
     let out_dir = WORKSPACE.join(&opts.out_dir);
-    let sh = Shell::new()?;
+    let sh = shell()?;
     let builder = find::builder(&sh)?;
+    let v = if let Some(v) = opts.version {
+        v
+    } else {
+        generate_version(&sh)?
+    };
 
     cmd!(sh, "{cargo} xtask bundle --out_dir={dir_arg}").run()?;
     sh.change_dir(out_dir);
     cmd!(
         sh,
-        "{builder} build --quiet --tag={image} --file=bundle.Dockerfile ."
+        "{builder} build --quiet --tag={image}:{v} --file=bundle.Dockerfile ."
     )
     .run()?;
 
@@ -406,12 +461,78 @@ fn bundle_image(opts: BundleImageOpts) -> Result<()> {
 struct BundleImageOpts {
     out_dir: PathBuf,
     image: String,
+    version: Option<String>,
 }
 impl From<&clap::ArgMatches> for BundleImageOpts {
     fn from(m: &clap::ArgMatches) -> Self {
         Self {
             out_dir: m.get_one::<String>("out_dir").map(PathBuf::from).unwrap(),
             image: m.get_one::<String>("image").unwrap().to_string(),
+            version: m.get_one::<String>("version").cloned(),
+        }
+    }
+}
+
+fn catalog_image(opts: CatalogImageOpts) -> Result<()> {
+    let _cargo: &Path = &CARGO;
+    let bundle = &opts.bundle;
+    let catalog = &opts.catalog;
+    let sh = shell()?;
+    check::opm(&sh)?;
+    let builder = find::builder(&sh)?;
+    let v = if let Some(v) = opts.version {
+        v
+    } else {
+        generate_version(&sh)?
+    };
+    let bundles: String = cmd!(sh, "git tag --list v*.*.*")
+        .read()?
+        .lines()
+        .chain(std::iter::once(v.as_str()))
+        .filter_map(|t| {
+            if t != "v0.0.0" {
+                Some(format!("{bundle}:{t}"))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let tag = format!("{catalog}:{v}");
+    let index = format!("{catalog}:index");
+    let args = [
+        "--container-tool",
+        &builder,
+        "--mode",
+        "semver",
+        "--tag",
+        &tag,
+        "--bundles",
+        &bundles,
+        "--from-index",
+        &index,
+    ];
+    let mut p: Option<String> = None;
+    if v.contains("-") {
+        p.replace("--permissive".into());
+    }
+    cmd!(sh, "opm index add {p...} {args...}").run()?;
+    Ok(())
+}
+
+struct CatalogImageOpts {
+    bundle: String,
+    catalog: String,
+    version: Option<String>,
+}
+
+impl From<&clap::ArgMatches> for CatalogImageOpts {
+    fn from(m: &clap::ArgMatches) -> Self {
+        Self {
+            bundle: m.get_one::<String>("bundle").unwrap().to_string(),
+            catalog: m.get_one::<String>("catalog").unwrap().to_string(),
+            version: m.get_one::<String>("version").cloned(),
         }
     }
 }
