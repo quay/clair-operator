@@ -6,7 +6,6 @@ metadata:
     app.kubernetes.io/name: test
     app.kubernetes.io/instance: test-sample
     app.kubernetes.io/part-of: clair
-    app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/created-by: clair
   name: test-sample
 spec:
