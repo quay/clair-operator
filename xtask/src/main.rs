@@ -54,8 +54,8 @@ fn main() {
                         .help("bundle tag version")
                         .long_help("Bundle tag version. If not provided, one will be guessed based on git tags."),
                 ]),
-            Command::new("catalog-image")
-                .about("generate OLM catalog image")
+            Command::new("catalog")
+                .about("generate OLM catalog")
                 .args(&[
                     Arg::new("bundle")
                         .long("bundle")
@@ -63,17 +63,18 @@ fn main() {
                         .help("bundle container image reference")
                         .long_help("Bundle container image reference to use during build.")
                         .default_value(BUNDLE_IMAGE),
-                    Arg::new("catalog")
-                        .long("catalog")
-                        .value_name("TAG")
-                        .help("catalog container image reference")
-                        .long_help("Catalog container image reference to use during build.")
-                        .default_value(CATALOG_IMAGE),
                     Arg::new("version")
                         .long("version")
                         .value_name("vX.Y.Z")
                         .help("bundle tag version")
                         .long_help("Bundle tag version. If not provided, one will be guessed based on git tags."),
+                    Arg::new("out_dir")
+                        .long("out_dir")
+                        .value_name("DIR")
+                        .help("catalog output directory")
+                        .long_help("Catalog output directory.")
+                        .default_value("target/catalog")
+                        .value_hint(ValueHint::DirPath),
                 ]),
             Command::new("ci")
                 .about("run CI setup, then tests")
@@ -90,7 +91,7 @@ fn main() {
     if let Err(e) = match cmd.get_matches().subcommand() {
         Some(("bundle", m)) => bundle(crate_version!(), m.into()),
         Some(("bundle-image", m)) => bundle_image(m.into()),
-        Some(("catalog-image", m)) => catalog_image(m.into()),
+        Some(("catalog", m)) => catalog(m.into()),
         Some(("ci", m)) => ci(m.into()),
         Some(("manifests", _)) => manifests(),
         Some(("demo", m)) => demo(m.into()),
@@ -473,19 +474,18 @@ impl From<&clap::ArgMatches> for BundleImageOpts {
     }
 }
 
-fn catalog_image(opts: CatalogImageOpts) -> Result<()> {
-    let _cargo: &Path = &CARGO;
-    let bundle = &opts.bundle;
-    let catalog = &opts.catalog;
+fn catalog(opts: CatalogOpts) -> Result<()> {
+    let _bundle = &opts.bundle;
+    let out_dir = &opts.out_dir;
     let sh = shell()?;
     check::opm(&sh)?;
-    let builder = find::builder(&sh)?;
-    let v = if let Some(v) = opts.version {
+    let _v = if let Some(v) = opts.version {
         v
     } else {
         generate_version(&sh)?
     };
-    let bundles: String = cmd!(sh, "git tag --list v*.*.*")
+    /*
+    let bundles: Vec<String> = cmd!(sh, "git tag --list v*.*.*")
         .read()?
         .lines()
         .chain(std::iter::once(v.as_str()))
@@ -496,42 +496,40 @@ fn catalog_image(opts: CatalogImageOpts) -> Result<()> {
                 None
             }
         })
-        .collect::<Vec<_>>()
-        .join(",");
+        .collect();
+    */
+    sh.remove_path(out_dir)?;
+    sh.create_dir(out_dir)?;
+    sh.change_dir(out_dir);
 
-    let tag = format!("{catalog}:{v}");
-    let index = format!("{catalog}:index");
-    let args = [
-        "--container-tool",
-        &builder,
-        "--mode",
-        "semver",
-        "--tag",
-        &tag,
-        "--bundles",
-        &bundles,
-        "--from-index",
-        &index,
-    ];
-    let mut p: Option<String> = None;
-    if v.contains("-") {
-        p.replace("--permissive".into());
-    }
-    cmd!(sh, "opm index add {p...} {args...}").run()?;
+    let catalog = "clair-catalog";
+    sh.create_dir(catalog)?;
+    cmd!(sh, "opm generate dockerfile {catalog}").run()?;
+
+    let template = WORKSPACE.join("etc/operator/template.yaml");
+    let pkg = cmd!(
+        sh,
+        "opm alpha render-template semver --output=json {template}"
+    )
+    .read()?;
+    sh.write_file(out_dir.join(catalog).join("operator.json"), &pkg)?;
+
+    cmd!(sh, "opm validate {catalog}").run()?;
+
     Ok(())
 }
 
-struct CatalogImageOpts {
+struct CatalogOpts {
     bundle: String,
-    catalog: String,
+    out_dir: PathBuf,
     version: Option<String>,
 }
 
-impl From<&clap::ArgMatches> for CatalogImageOpts {
+impl From<&clap::ArgMatches> for CatalogOpts {
     fn from(m: &clap::ArgMatches) -> Self {
         Self {
             bundle: m.get_one::<String>("bundle").unwrap().to_string(),
-            catalog: m.get_one::<String>("catalog").unwrap().to_string(),
+            out_dir: m.get_one::<String>("out_dir").map(PathBuf::from).unwrap(),
             version: m.get_one::<String>("version").cloned(),
         }
     }

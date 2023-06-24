@@ -1,0 +1,10 @@
+Schema: olm.semver
+GenerateMajorChannels: true
+GenerateMinorChannels: false
+Stable:
+  Bundles: []
+Fast:
+  Bundles: []
+Candidate:
+  Bundles:
+  - Image: quay.io/projectclair/clair-bundle:v0.1.0-pre11.800b920
