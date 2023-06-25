@@ -1,5 +1,0 @@
-**/*
-!*.json
-!*.yaml
-**/objects/*.json
-**/objects/*.yaml

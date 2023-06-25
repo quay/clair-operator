@@ -27,7 +27,7 @@ pub async fn load_crds(client: &kube::Client) -> Result<()> {
     use serde::Deserialize;
     let api: Api<CustomResourceDefinition> = Api::all(client.clone());
 
-    let dir = workspace().join("config/crd");
+    let dir = workspace().join("etc/operator/config/crd");
     let out = Command::new("kustomize")
         .args(["build", dir.to_str().unwrap()])
         .output()?;

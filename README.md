@@ -2,7 +2,7 @@
 
 clair-operator is a *beta* operator to run a clair installation.
 
-To take it for a spin, run `cargo xtask demo` and look at the manifests in `config/samples`.
+To take it for a spin, run `cargo xtask demo` and look at the manifests in `etc/operator/config/samples`.
 
 ## Building
 

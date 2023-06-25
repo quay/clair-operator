@@ -2,6 +2,9 @@
 apiVersion: operators.coreos.com/v1alpha1
 kind: ClusterServiceVersion
 metadata:
+  labels:
+    operatorframework.io/arch.amd64: supported
+    operatorframework.io/os.linux: supported
   annotations:
     alm-examples: '[]'
     capabilities: Basic Install
@@ -12,14 +15,11 @@ spec:
   install:
     strategy: deployment
     spec:
-      permissions:
-      - serviceAccountName: clair-operator
-        rules: []
       clusterPermissions: []
       deployments:
       - name: clair-operator
-        spec:
-          replicas: 1
+      permissions:
+      - serviceAccountName: clair-operator
   version: 0.1.0
   maturity: alpha
   customresourcedefinitions:
@@ -49,5 +49,5 @@ spec:
     type: SingleNamespace
   - supported: false
     type: MultiNamespace
-  - supported: true
+  - supported: false
     type: AllNamespaces

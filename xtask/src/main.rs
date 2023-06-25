@@ -10,13 +10,24 @@ use kube::{CustomResourceExt, Resource};
 use signal_hook::{consts::SIGINT, low_level::pipe};
 use xshell::{cmd, Shell};
 
-mod check;
-mod find;
-
 use xtask::*;
 
 fn main() {
     use clap::{crate_authors, crate_name, crate_version, Arg, ArgAction, Command, ValueHint};
+    let deploy_args = [
+        Arg::new("image")
+            .long("image")
+            .value_name("REPO")
+            .help("container image repository")
+            .long_help("Container image repository to use during build, if building an image.")
+            .default_value(BUNDLE_IMAGE),
+        Arg::new("version")
+            .long("version")
+            .value_name("vX.Y.Z")
+            .help("bundle tag version")
+            .long_help("Bundle tag version. If unset, one will be guessed based on git tags.")
+            .default_value(crate_version!()),
+    ];
     let cmd = Command::new(crate_name!())
         .author(crate_authors!())
         .version(crate_version!())
@@ -25,34 +36,37 @@ fn main() {
         .subcommands(&[
             Command::new("bundle")
                 .about("generate OLM bundle")
-                .args(&[Arg::new("out_dir")
-                    .long("out_dir")
-                    .value_name("DIR")
-                    .help("bundle output directory")
-                    .long_help("Bundle output directory.")
-                    .default_value("target/operator")
-                    .value_hint(ValueHint::DirPath)]),
-            Command::new("bundle-image")
-                .about("generate OLM bundle image")
                 .args(&[
                     Arg::new("out_dir")
                         .long("out_dir")
                         .value_name("DIR")
                         .help("bundle output directory")
                         .long_help("Bundle output directory.")
-                        .default_value("target/operator")
+                        .default_value("target/bundle")
                         .value_hint(ValueHint::DirPath),
                     Arg::new("image")
                         .long("image")
                         .value_name("REPO")
                         .help("container image repository")
-                        .long_help("Container image repository to use during build.")
+                        .long_help("Container image repository to use during build, if building an image.")
                         .default_value(BUNDLE_IMAGE),
                     Arg::new("version")
                         .long("version")
                         .value_name("vX.Y.Z")
                         .help("bundle tag version")
-                        .long_help("Bundle tag version. If not provided, one will be guessed based on git tags."),
+                        .long_help("Bundle tag version. If unset, one will be guessed based on git tags.")
+                        .default_value(crate_version!()),
+                    Arg::new("build")
+                        .long("build")
+                        .help("build a bundle container")
+                        .long_help("Build a bundle container, using the `image` and `version` flags to construct the container tag.")
+                        .default_value_if("push", "true", Some("true"))
+                        .action(ArgAction::SetTrue),
+                    Arg::new("push")
+                        .long("push")
+                        .help("push a built bundle container")
+                        .long_help("Push a built bundle container. Implies the `build` flag.")
+                        .action(ArgAction::SetTrue),
                 ]),
             Command::new("catalog")
                 .about("generate OLM catalog")
@@ -79,7 +93,21 @@ fn main() {
             Command::new("ci")
                 .about("run CI setup, then tests")
                 .args(&[Arg::new("pass").trailing_var_arg(true).num_args(..)]),
-            Command::new("manifests").about("generate CRD manifests into config/crd"),
+            Command::new("manifests")
+                .about("generate CRD manifests")
+                .args(&[
+                    Arg::new("out_dir")
+                        .long("out-dir")
+                        .value_name("DIR")
+                        .help("CRD output directory")
+                        .long_help("CRD output directory.")
+                        .default_value(CONFIG_DIR.join("crd").into_os_string())
+                        .value_hint(ValueHint::DirPath),
+                ]),
+            Command::new("install").about("install CRDs into the current kubernetes cluster"),
+            Command::new("uninstall").about("uninstall CRDs from the current kubernetes cluster"),
+            Command::new("deploy").about("install controller into the current kubernetes cluster").args(&deploy_args),
+            Command::new("undeploy").about("uninstall controller from the current kubernetes cluster").args(&deploy_args),
             Command::new("demo")
                 .about("spin up a kind instance with CRDs loaded and controller running")
                 .args(&[Arg::new("no_controller")
@@ -87,32 +115,29 @@ fn main() {
                     .help("don't automatically run controllers")
                     .action(ArgAction::SetTrue)]),
         ]);
+    let sh = shell()
+        .map_err(|err| {
+            eprintln!("unable to create shell context: {err}");
+            process::exit(1);
+        })
+        .unwrap();
 
     if let Err(e) = match cmd.get_matches().subcommand() {
-        Some(("bundle", m)) => bundle(crate_version!(), m.into()),
-        Some(("bundle-image", m)) => bundle_image(m.into()),
+        Some(("bundle", m)) => bundle(sh, m.into()),
         Some(("catalog", m)) => catalog(m.into()),
         Some(("ci", m)) => ci(m.into()),
-        Some(("manifests", _)) => manifests(),
         Some(("demo", m)) => demo(m.into()),
-        _ => unreachable!(),
+        Some(("deploy", m)) => deploy(sh, m.into()),
+        Some(("install", _)) => install(sh),
+        Some(("manifests", _)) => manifests(),
+        Some(("undeploy", m)) => undeploy(sh, m.into()),
+        Some(("uninstall", _)) => uninstall(sh),
+        Some((unknown, _)) => Err(format!("unknown subcommand: {unknown}").into()),
+        None => Err("no subcommand provided".into()),
     } {
         eprintln!("{e}");
         process::exit(1);
     }
-}
-
-fn shell() -> xshell::Result<Shell> {
-    let sh = Shell::new()?;
-    let p = env::var("PATH").expect("PATH environment variable missing");
-    let paths = std::iter::once(BIN_DIR.to_path_buf()).chain(std::env::split_paths(&p));
-    sh.set_var(
-        "PATH",
-        std::env::join_paths(paths).expect("unable to reconstruct PATH"),
-    );
-    sh.change_dir(WORKSPACE.as_path());
-
-    Ok(sh)
 }
 
 fn demo(opts: DemoOpts) -> Result<()> {
@@ -133,16 +158,8 @@ fn demo(opts: DemoOpts) -> Result<()> {
     check::kustomize(&sh)?;
     let _guard = Kind::new(&sh, true);
 
-    eprintln!("# regenerating CRDs");
-    cmd!(sh, "{cargo} xtask manifests")
-        .ignore_stdout()
-        .ignore_stderr()
-        .run()?;
     eprintln!("# loading CRDs");
-    let _tmp = sh.create_temp_dir()?;
-    let crds = _tmp.path().join("crds");
-    cmd!(sh, "kustomize build config/crd -o {crds}").run()?;
-    cmd!(sh, "kubectl apply -f {crds}").run()?;
+    cmd!(sh, "{cargo} xtask install").run()?;
 
     let _ctrl = if opts.run_controller {
         eprintln!("# running controllers");
@@ -158,7 +175,8 @@ fn demo(opts: DemoOpts) -> Result<()> {
 
     eprintln!("# take it for a spin:");
     eprintln!("#\tKUBECONFIG={cfgpath:?} kubectl get crds");
-    eprintln!("# look in \"config/samples\" for some samples");
+    let samples = CONFIG_DIR.join("samples");
+    eprintln!("# look in \"{}\" for some samples", rel(&samples));
     eprintln!("# ^C to tear down");
     let mut _block = [0];
     rd.read_exact(&mut _block)?;
@@ -210,11 +228,7 @@ fn ci(opts: CiOpts) -> Result<()> {
         eprintln!("# skipping code coverage");
     };
     eprintln!("# running CI tests");
-    let use_nextest = cmd!(sh, "{cargo} nextest help")
-        .ignore_stdout()
-        .ignore_stderr()
-        .run()
-        .is_ok();
+    let use_nextest = cmd!(sh, "{cargo} nextest help").quiet().run().is_ok();
     let ar = WORKSPACE.join("tests.tar.zst");
     let mut test_args = vec![];
     let w = WORKSPACE.to_string_lossy().to_string();
@@ -267,84 +281,29 @@ impl From<&clap::ArgMatches> for CiOpts {
     }
 }
 
-struct Kind {
-    name: std::ffi::OsString,
-}
-impl Drop for Kind {
-    fn drop(&mut self) {
-        let name = &self.name;
-        let sh = shell().unwrap();
-        cmd!(sh, "kind delete cluster --name {name}").run().unwrap();
-    }
-}
-impl Kind {
-    fn new(sh: &Shell, ingress: bool) -> Result<Self> {
-        use scopeguard::guard;
-        use std::{thread, time};
-        let ingress_manifest = INGRESS_MANIFEST.as_str();
-        let k8s_ver = KUBE_VERSION.as_str();
-        let name = "ci";
-        // TODO(hank) Move the KIND configs out of the controller crate.
-        let config = WORKSPACE
-            .join("etc/tests/")
-            .join(format!("kind-{k8s_ver}.yaml"));
-        sh.change_dir(WORKSPACE.as_path());
-        check::kind(sh)?;
-        cmd!(sh, "kind --config {config} create cluster --name {name}").run()?;
-        let mut ok = guard(true, |ok| {
-            if !ok {
-                let _ = cmd!(sh, "kind delete cluster --name {name}").run();
-            }
-        });
-        eprintln!("# waiting for pods to ready");
-        cmd!(
-            sh,
-            "kubectl wait pods --for=condition=Ready --timeout=300s --all --all-namespaces"
-        )
-        .run()
-        .map_err(|err| {
-            *ok = false;
-            err
-        })?;
-        if ingress {
-            cmd!(sh, "kubectl apply -f {ingress_manifest}")
-                .run()
-                .map_err(|err| {
-                    *ok = false;
-                    err
-                })?;
-            'wait: for n in 0..=5 {
-                let exec = cmd!(
-                    sh,
-                    "kubectl wait --namespace ingress-nginx --for=condition=Ready pod --selector=app.kubernetes.io/component=controller --timeout=90s"
-                )
-                .run();
-                match exec {
-                    Ok(_) => break 'wait,
-                    Err(err) => {
-                        if n == 5 {
-                            *ok = false;
-                            return Err(Box::new(err));
-                        }
-                    }
-                };
-                thread::sleep(time::Duration::from_secs(1));
-            }
-        }
-        Ok(Self { name: name.into() })
-    }
-}
-
-fn bundle(v: &str, opts: BundleOpts) -> Result<()> {
-    manifests()?;
-    let out_dir = WORKSPACE.join(&opts.out_dir);
-    let sh = shell()?;
+fn bundle(sh: Shell, opts: BundleOpts) -> Result<()> {
+    let out_dir = &opts.out_dir;
+    let image = &opts.image;
+    let v: String = if let Some(ref v) = opts.version {
+        v.to_string()
+    } else {
+        generate_version(&sh)?
+    };
+    let cargo: &Path = &CARGO;
+    let tag = format!("{image}:{v}");
+    cmd!(sh, "{cargo} xtask manifests").run()?;
     check::operator_sdk(&sh)?;
     check::kustomize(&sh)?;
     let _tmp = sh.create_temp_dir()?;
+    let tmp = _tmp.path();
 
-    let tmpfile = _tmp.path().join("out");
-    cmd!(sh, "kustomize build --output={tmpfile} config/manifests").run()?;
+    sh.change_dir(CONFIG_DIR.join("manager"));
+    cmd!(sh, "kustomize edit set image controller={tag}").run()?;
+    sh.change_dir(WORKSPACE.as_path());
+
+    let tmpfile = tmp.join("out");
+    let mdir = CONFIG_DIR.join("manifests");
+    cmd!(sh, "kustomize build --output={tmpfile} {mdir}").run()?;
     let out = sh.read_binary_file(tmpfile)?;
 
     let args = [
@@ -355,9 +314,9 @@ fn bundle(v: &str, opts: BundleOpts) -> Result<()> {
         "--manifests",
         "--metadata",
     ];
-    sh.remove_path(&out_dir)?;
-    sh.create_dir(&out_dir)?;
-    sh.change_dir(&out_dir);
+    sh.remove_path(out_dir)?;
+    sh.create_dir(out_dir)?;
+    sh.change_dir(out_dir);
     cmd!(sh, "operator-sdk generate bundle {args...} --version={v}")
         .stdin(&out)
         .run()?;
@@ -368,32 +327,60 @@ fn bundle(v: &str, opts: BundleOpts) -> Result<()> {
         sh.write_file(f, &sed.stdout)?;
     }
 
+    eprintln!("# wrote bundle to: {}", rel(out_dir));
+
+    if opts.build || opts.push {
+        let builder = find::builder(&sh)?;
+        if opts.build {
+            cmd!(
+                sh,
+                "{builder} build --quiet --tag={tag} --file=bundle.Dockerfile ."
+            )
+            .run()?;
+        };
+        if opts.push {
+            cmd!(sh, "{builder} push {tag}").run()?;
+        };
+    };
+
     Ok(())
 }
 
 struct BundleOpts {
     out_dir: PathBuf,
+    image: String,
+    version: Option<String>,
+    build: bool,
+    push: bool,
 }
 impl From<&clap::ArgMatches> for BundleOpts {
     fn from(m: &clap::ArgMatches) -> Self {
+        let mut out_dir = m.get_one::<String>("out_dir").map(PathBuf::from).unwrap();
+        if !out_dir.is_absolute() {
+            out_dir = WORKSPACE.join(out_dir);
+        }
         Self {
-            out_dir: m.get_one::<String>("out_dir").map(PathBuf::from).unwrap(),
+            out_dir,
+            image: m.get_one::<String>("image").unwrap().to_string(),
+            version: m.get_one::<String>("version").cloned(),
+            build: m.get_one::<bool>("build").cloned().unwrap_or_default(),
+            push: m.get_one::<bool>("push").cloned().unwrap_or_default(),
         }
     }
 }
 
 macro_rules! write_crds {
-    ($out_dir:expr,  $($kind:ty),+ $(,)?) =>{
-        let out = $out_dir;
-        eprintln!("# writing to dir: {}", &out);
-        $( write_crd::<$kind, _>(out)?; )+
+    ($out_dir:ident,  $($kind:ty),+ $(,)?) =>{
+        eprintln!("# writing to dir: {}", rel($out_dir));
+        $( write_crd::<$kind, _>($out_dir)?; )+
     }
 }
 
 fn manifests() -> Result<()> {
     use api::v1alpha1;
+    let out = &CONFIG_DIR.join("crd");
     write_crds!(
-        "config/crd",
+        out,
         v1alpha1::Clair,
         v1alpha1::Indexer,
         v1alpha1::Matcher,
@@ -411,13 +398,90 @@ where
     use std::fs::File;
 
     let doc = serde_json::to_value(K::crd())?;
-    let out = WORKSPACE
-        .join(out_dir.as_ref())
-        .join(format!("{}.yaml", K::crd_name()));
+    let out = out_dir.as_ref().join(format!("{}.yaml", K::crd_name()));
     let w = File::create(&out)?;
     serde_yaml::to_writer(&w, &doc)?;
     eprintln!("# wrote: {}", out.file_name().unwrap().to_string_lossy());
     Ok(())
+}
+
+fn install(sh: Shell) -> Result<()> {
+    let cargo: &Path = &CARGO;
+    cmd!(sh, "{cargo} xtask manifests").run()?;
+    check::kustomize(&sh)?;
+    check::kubectl(&sh)?;
+    let _tmp = sh.create_temp_dir()?;
+    let tmpfile = _tmp.path().join("out");
+    let crds = CONFIG_DIR.join("crd");
+    cmd!(sh, "kustomize build --output={tmpfile} {crds}").run()?;
+    cmd!(sh, "kubectl apply --file={tmpfile}").run()?;
+    Ok(())
+}
+
+fn uninstall(sh: Shell) -> Result<()> {
+    let cargo: &Path = &CARGO;
+    cmd!(sh, "{cargo} xtask manifests").run()?;
+    check::kustomize(&sh)?;
+    check::kubectl(&sh)?;
+    let _tmp = sh.create_temp_dir()?;
+    let tmpfile = _tmp.path().join("out");
+    let crds = CONFIG_DIR.join("crd");
+    cmd!(sh, "kustomize build --output={tmpfile} {crds}").run()?;
+    cmd!(sh, "kubectl delete --file={tmpfile}").run()?;
+    Ok(())
+}
+
+fn deploy(sh: Shell, opts: DeployOpts) -> Result<()> {
+    let tag = opts.tag(&sh)?;
+    check::kubectl(&sh)?;
+    check::kustomize(&sh)?;
+    sh.change_dir(CONFIG_DIR.join("manager"));
+    cmd!(sh, "kustomize edit set image controller={tag}").run()?;
+    sh.change_dir(WORKSPACE.as_path());
+    let _tmp = sh.create_temp_dir()?;
+    let tmpfile = _tmp.path().join("out");
+    let dir = CONFIG_DIR.join("default");
+    cmd!(sh, "kustomize build --output={tmpfile} {dir}").run()?;
+    cmd!(sh, "kubectl apply --file={tmpfile}").run()?;
+    Ok(())
+}
+
+fn undeploy(sh: Shell, _opts: DeployOpts) -> Result<()> {
+    check::kubectl(&sh)?;
+    check::kustomize(&sh)?;
+    let _tmp = sh.create_temp_dir()?;
+    let tmpfile = _tmp.path().join("out");
+    let dir = CONFIG_DIR.join("default");
+    cmd!(sh, "kustomize build --output={tmpfile} {dir}").run()?;
+    cmd!(sh, "kubectl delete --file={tmpfile}").run()?;
+    unimplemented!()
+}
+
+struct DeployOpts {
+    image: String,
+    version: Option<String>,
+}
+impl DeployOpts {
+    fn tag(&self, sh: &Shell) -> Result<String> {
+        let mut buf = String::new();
+        buf.push_str(&self.image);
+        buf.push(':');
+        if let Some(v) = &self.version {
+            buf.push_str(v);
+        } else {
+            let v = generate_version(&sh)?;
+            buf.push_str(&v);
+        };
+        Ok(buf)
+    }
+}
+impl From<&clap::ArgMatches> for DeployOpts {
+    fn from(m: &clap::ArgMatches) -> Self {
+        Self {
+            image: m.get_one::<String>("image").unwrap().to_string(),
+            version: m.get_one::<String>("version").cloned(),
+        }
+    }
 }
 
 fn generate_version(sh: &Shell) -> Result<String> {
@@ -434,44 +498,6 @@ fn generate_version(sh: &Shell) -> Result<String> {
     let desc = cmd!(sh, "git describe --tags --match=v*.*.*").read()?;
     let v = cmd!(sh, "awk -F - {MANGLE}").stdin(&desc).read()?;
     Ok(v)
-}
-
-fn bundle_image(opts: BundleImageOpts) -> Result<()> {
-    let cargo: &Path = &CARGO;
-    let dir_arg = &opts.out_dir;
-    let image = &opts.image;
-    let out_dir = WORKSPACE.join(&opts.out_dir);
-    let sh = shell()?;
-    let builder = find::builder(&sh)?;
-    let v = if let Some(v) = opts.version {
-        v
-    } else {
-        generate_version(&sh)?
-    };
-
-    cmd!(sh, "{cargo} xtask bundle --out_dir={dir_arg}").run()?;
-    sh.change_dir(out_dir);
-    cmd!(
-        sh,
-        "{builder} build --quiet --tag={image}:{v} --file=bundle.Dockerfile ."
-    )
-    .run()?;
-
-    Ok(())
-}
-struct BundleImageOpts {
-    out_dir: PathBuf,
-    image: String,
-    version: Option<String>,
-}
-impl From<&clap::ArgMatches> for BundleImageOpts {
-    fn from(m: &clap::ArgMatches) -> Self {
-        Self {
-            out_dir: m.get_one::<String>("out_dir").map(PathBuf::from).unwrap(),
-            image: m.get_one::<String>("image").unwrap().to_string(),
-            version: m.get_one::<String>("version").cloned(),
-        }
-    }
 }
 
 fn catalog(opts: CatalogOpts) -> Result<()> {
