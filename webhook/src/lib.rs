@@ -11,6 +11,7 @@ use kube::{
         DynamicObject, ResourceExt,
     },
 };
+use serde::Deserialize;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, instrument, trace};
 
@@ -31,8 +32,8 @@ pub fn app(srv: State) -> Router {
     trace!("state constructed");
     let app = Router::new()
         .route("/convert", post(convert))
-        .route("/v1alpha1/mutate/clair", post(mutate_v1alpha1_clair))
-        .route("/v1alpha1/validate/clair", post(validate_v1alpha1_clair))
+        .route("/v1alpha1/mutate", post(mutate_v1alpha1))
+        .route("/v1alpha1/validate", post(validate_v1alpha1))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
     trace!("router constructed");
@@ -44,10 +45,48 @@ async fn convert(extract::Json(_req): Json<()>) -> Json<()> {
     todo!()
 }
 
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Review {
+    Clair(AdmissionReview<v1alpha1::Clair>),
+    Indexer(AdmissionReview<v1alpha1::Indexer>),
+    Matcher(AdmissionReview<v1alpha1::Matcher>),
+    Notifier(AdmissionReview<v1alpha1::Notifier>),
+    Updater(AdmissionReview<v1alpha1::Updater>),
+}
+
+#[instrument(skip_all)]
+async fn mutate_v1alpha1(
+    extract::State(srv): extract::State<Arc<State>>,
+    extract::Json(rev): Json<Review>,
+) -> Result<Json<AdmissionReview<DynamicObject>>, StatusCode> {
+    match rev.into() {
+        Review::Clair(rev) => mutate_v1alpha1_clair(srv, rev).await,
+        Review::Indexer(_) => todo!(),
+        Review::Matcher(_) => todo!(),
+        Review::Notifier(_) => todo!(),
+        Review::Updater(_) => todo!(),
+    }
+}
+
+#[instrument(skip_all)]
+async fn validate_v1alpha1(
+    extract::State(srv): extract::State<Arc<State>>,
+    extract::Json(rev): Json<Review>,
+) -> Result<Json<AdmissionReview<DynamicObject>>, StatusCode> {
+    match rev.into() {
+        Review::Clair(rev) => validate_v1alpha1_clair(srv, rev).await,
+        Review::Indexer(_) => todo!(),
+        Review::Matcher(_) => todo!(),
+        Review::Notifier(_) => todo!(),
+        Review::Updater(_) => todo!(),
+    }
+}
+
 #[instrument(skip_all)]
 async fn mutate_v1alpha1_clair(
-    extract::State(_srv): extract::State<Arc<State>>,
-    extract::Json(rev): Json<AdmissionReview<v1alpha1::Clair>>,
+    _srv: Arc<State>,
+    rev: AdmissionReview<v1alpha1::Clair>,
 ) -> Result<Json<AdmissionReview<DynamicObject>>, StatusCode> {
     let req: AdmissionRequest<v1alpha1::Clair> = rev.try_into().map_err(|err| {
         error!(error = %err, "unable to deserialize AdmissionReview");
@@ -74,8 +113,8 @@ impl From<core::v1::Secret> for Either {
 
 #[instrument(skip_all)]
 async fn validate_v1alpha1_clair(
-    extract::State(srv): extract::State<Arc<State>>,
-    extract::Json(rev): Json<AdmissionReview<v1alpha1::Clair>>,
+    srv: Arc<State>,
+    rev: AdmissionReview<v1alpha1::Clair>,
 ) -> Result<Json<AdmissionReview<DynamicObject>>, StatusCode> {
     debug!("start validate");
     let req: AdmissionRequest<v1alpha1::Clair> = match rev.try_into() {

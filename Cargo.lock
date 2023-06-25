@@ -2795,6 +2795,7 @@ dependencies = [
  "hyper",
  "k8s-openapi",
  "kube",
+ "serde",
  "serde_json",
  "test-log",
  "tokio",

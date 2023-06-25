@@ -43,7 +43,7 @@ async fn validate() {
     .expect("JSON serialization failure");
     let response = app
         .oneshot(
-            Request::post("/v1alpha1/validate/clair")
+            Request::post("/v1alpha1/validate")
                 .header("content-type", "application/json")
                 .header("accept", "application/json")
                 .body(adm.into())
