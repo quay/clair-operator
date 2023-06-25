@@ -45,6 +45,7 @@ async fn convert(extract::Json(_req): Json<()>) -> Json<()> {
     todo!()
 }
 
+/// Review is an enum containing any of the possible types that can be sent to the webhooks.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Review {
@@ -55,6 +56,8 @@ enum Review {
     Updater(AdmissionReview<v1alpha1::Updater>),
 }
 
+// Validate functions:
+
 #[instrument(skip_all)]
 async fn mutate_v1alpha1(
     extract::State(srv): extract::State<Arc<State>>,
@@ -62,24 +65,10 @@ async fn mutate_v1alpha1(
 ) -> Result<Json<AdmissionReview<DynamicObject>>, StatusCode> {
     match rev.into() {
         Review::Clair(rev) => mutate_v1alpha1_clair(srv, rev).await,
-        Review::Indexer(_) => todo!(),
-        Review::Matcher(_) => todo!(),
-        Review::Notifier(_) => todo!(),
-        Review::Updater(_) => todo!(),
-    }
-}
-
-#[instrument(skip_all)]
-async fn validate_v1alpha1(
-    extract::State(srv): extract::State<Arc<State>>,
-    extract::Json(rev): Json<Review>,
-) -> Result<Json<AdmissionReview<DynamicObject>>, StatusCode> {
-    match rev.into() {
-        Review::Clair(rev) => validate_v1alpha1_clair(srv, rev).await,
-        Review::Indexer(_) => todo!(),
-        Review::Matcher(_) => todo!(),
-        Review::Notifier(_) => todo!(),
-        Review::Updater(_) => todo!(),
+        Review::Indexer(rev) => mutate_v1alpha1_indexer(srv, rev).await,
+        Review::Matcher(rev) => mutate_v1alpha1_matcher(srv, rev).await,
+        Review::Notifier(rev) => mutate_v1alpha1_notifier(srv, rev).await,
+        Review::Updater(rev) => mutate_v1alpha1_updater(srv, rev).await,
     }
 }
 
@@ -94,6 +83,70 @@ async fn mutate_v1alpha1_clair(
     })?;
     let res = AdmissionResponse::from(&req);
     Ok(Json(res.into_review()))
+}
+#[instrument(skip_all)]
+async fn mutate_v1alpha1_indexer(
+    _srv: Arc<State>,
+    rev: AdmissionReview<v1alpha1::Indexer>,
+) -> Result<Json<AdmissionReview<DynamicObject>>, StatusCode> {
+    let req: AdmissionRequest<v1alpha1::Indexer> = rev.try_into().map_err(|err| {
+        error!(error = %err, "unable to deserialize AdmissionReview");
+        StatusCode::BAD_REQUEST
+    })?;
+    let res = AdmissionResponse::from(&req);
+    Ok(Json(res.into_review()))
+}
+#[instrument(skip_all)]
+async fn mutate_v1alpha1_matcher(
+    _srv: Arc<State>,
+    rev: AdmissionReview<v1alpha1::Matcher>,
+) -> Result<Json<AdmissionReview<DynamicObject>>, StatusCode> {
+    let req: AdmissionRequest<v1alpha1::Matcher> = rev.try_into().map_err(|err| {
+        error!(error = %err, "unable to deserialize AdmissionReview");
+        StatusCode::BAD_REQUEST
+    })?;
+    let res = AdmissionResponse::from(&req);
+    Ok(Json(res.into_review()))
+}
+#[instrument(skip_all)]
+async fn mutate_v1alpha1_notifier(
+    _srv: Arc<State>,
+    rev: AdmissionReview<v1alpha1::Notifier>,
+) -> Result<Json<AdmissionReview<DynamicObject>>, StatusCode> {
+    let req: AdmissionRequest<v1alpha1::Notifier> = rev.try_into().map_err(|err| {
+        error!(error = %err, "unable to deserialize AdmissionReview");
+        StatusCode::BAD_REQUEST
+    })?;
+    let res = AdmissionResponse::from(&req);
+    Ok(Json(res.into_review()))
+}
+#[instrument(skip_all)]
+async fn mutate_v1alpha1_updater(
+    _srv: Arc<State>,
+    rev: AdmissionReview<v1alpha1::Updater>,
+) -> Result<Json<AdmissionReview<DynamicObject>>, StatusCode> {
+    let req: AdmissionRequest<v1alpha1::Updater> = rev.try_into().map_err(|err| {
+        error!(error = %err, "unable to deserialize AdmissionReview");
+        StatusCode::BAD_REQUEST
+    })?;
+    let res = AdmissionResponse::from(&req);
+    Ok(Json(res.into_review()))
+}
+
+// Validate functions:
+
+#[instrument(skip_all)]
+async fn validate_v1alpha1(
+    extract::State(srv): extract::State<Arc<State>>,
+    extract::Json(rev): Json<Review>,
+) -> Result<Json<AdmissionReview<DynamicObject>>, StatusCode> {
+    match rev.into() {
+        Review::Clair(rev) => validate_v1alpha1_clair(srv, rev).await,
+        Review::Indexer(rev) => validate_v1alpha1_indexer(srv, rev).await,
+        Review::Matcher(rev) => validate_v1alpha1_matcher(srv, rev).await,
+        Review::Notifier(rev) => validate_v1alpha1_notifier(srv, rev).await,
+        Review::Updater(rev) => validate_v1alpha1_updater(srv, rev).await,
+    }
 }
 
 enum Either {
@@ -256,6 +309,70 @@ async fn validate_v1alpha1_clair(
         ));
     }
     info!("OK");
+    Ok(Json(res.into_review()))
+}
+#[instrument(skip_all)]
+async fn validate_v1alpha1_indexer(
+    _srv: Arc<State>,
+    rev: AdmissionReview<v1alpha1::Indexer>,
+) -> Result<Json<AdmissionReview<DynamicObject>>, StatusCode> {
+    let req: AdmissionRequest<v1alpha1::Indexer> = match rev.try_into() {
+        Ok(req) => req,
+        Err(err) => {
+            error!(error = %err, "unable to deserialize AdmissionReview");
+            return Ok(Json(AdmissionResponse::invalid(err).into_review()));
+        }
+    };
+    let res = AdmissionResponse::from(&req);
+    info!("TODO");
+    Ok(Json(res.into_review()))
+}
+#[instrument(skip_all)]
+async fn validate_v1alpha1_matcher(
+    _srv: Arc<State>,
+    rev: AdmissionReview<v1alpha1::Matcher>,
+) -> Result<Json<AdmissionReview<DynamicObject>>, StatusCode> {
+    let req: AdmissionRequest<v1alpha1::Matcher> = match rev.try_into() {
+        Ok(req) => req,
+        Err(err) => {
+            error!(error = %err, "unable to deserialize AdmissionReview");
+            return Ok(Json(AdmissionResponse::invalid(err).into_review()));
+        }
+    };
+    let res = AdmissionResponse::from(&req);
+    info!("TODO");
+    Ok(Json(res.into_review()))
+}
+#[instrument(skip_all)]
+async fn validate_v1alpha1_notifier(
+    _srv: Arc<State>,
+    rev: AdmissionReview<v1alpha1::Notifier>,
+) -> Result<Json<AdmissionReview<DynamicObject>>, StatusCode> {
+    let req: AdmissionRequest<v1alpha1::Notifier> = match rev.try_into() {
+        Ok(req) => req,
+        Err(err) => {
+            error!(error = %err, "unable to deserialize AdmissionReview");
+            return Ok(Json(AdmissionResponse::invalid(err).into_review()));
+        }
+    };
+    let res = AdmissionResponse::from(&req);
+    info!("TODO");
+    Ok(Json(res.into_review()))
+}
+#[instrument(skip_all)]
+async fn validate_v1alpha1_updater(
+    _srv: Arc<State>,
+    rev: AdmissionReview<v1alpha1::Updater>,
+) -> Result<Json<AdmissionReview<DynamicObject>>, StatusCode> {
+    let req: AdmissionRequest<v1alpha1::Updater> = match rev.try_into() {
+        Ok(req) => req,
+        Err(err) => {
+            error!(error = %err, "unable to deserialize AdmissionReview");
+            return Ok(Json(AdmissionResponse::invalid(err).into_review()));
+        }
+    };
+    let res = AdmissionResponse::from(&req);
+    info!("TODO");
     Ok(Json(res.into_review()))
 }
 
