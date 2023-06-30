@@ -228,7 +228,12 @@ fn ci(opts: CiOpts) -> Result<()> {
         eprintln!("# skipping code coverage");
     };
     eprintln!("# running CI tests");
-    let use_nextest = cmd!(sh, "{cargo} nextest help").quiet().run().is_ok();
+    let use_nextest = cmd!(sh, "{cargo} nextest help")
+        .quiet()
+        .ignore_stdout()
+        .ignore_stderr()
+        .run()
+        .is_ok();
     let ar = WORKSPACE.join("tests.tar.zst");
     let mut test_args = vec![];
     let w = WORKSPACE.to_string_lossy().to_string();
