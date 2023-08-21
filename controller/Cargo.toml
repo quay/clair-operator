@@ -29,7 +29,7 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tracing =  { workspace = true }
 
-anyhow = "1.0.71"
+anyhow = "1.0.75"
 bytes = "1.4.0"
 chrono = { version = "0.4.26", features = ["clock", "serde", "time"], default-features = false }
 iftree = "1.0.4"
