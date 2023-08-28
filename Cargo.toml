@@ -19,7 +19,7 @@ authors = ["The clair-operator Authors"]
 edition = "2021"
 
 [workspace.dependencies]
-clap = { version = "4.3", features = ["cargo", "env", "string"] }
+clap = { version = "4.4", features = ["cargo", "env", "string"] }
 futures = "0.3.28"
 hyper = { version = "0.14.26", features = ["server", "http1"] }
 json-patch = "1.0"
