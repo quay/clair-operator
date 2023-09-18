@@ -17,6 +17,7 @@ use tokio_stream::wrappers::SignalStream;
 
 use crate::{
     clair_condition, prelude::*, COMPONENT_LABEL, DEFAULT_CONFIG_JSON, DEFAULT_CONFIG_YAML,
+    DEFAULT_IMAGE,
 };
 use clair_config;
 
@@ -54,6 +55,10 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
             ctlcfg.clone(),
         )
         .owns(
+            Api::<batch::v1::Job>::default_namespaced(client.clone()),
+            ctlcfg.clone(),
+        )
+        .owns(
             Api::<networking::v1::Ingress>::default_namespaced(client),
             ctlcfg,
         )
@@ -72,6 +77,7 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
                             error!(%objref, %error, "reconcile error")
                         }
                         CtrlErr::QueueError(error) => error!(%error, "queue error"),
+                        CtrlErr::RunnerError(error) => error!(%error, "runner error"),
                     },
                 };
                 futures::future::ready(())
@@ -180,6 +186,7 @@ $(
     check_all!(
         check_config,
         check_dropins,
+        check_admin_job,
         check_subs,
         check_ingress,
         check_indexer,
@@ -436,6 +443,65 @@ async fn check_config(
         };
     } else if let Some(cfg) = next.config.as_mut() {
         cfg.root.name = name;
+    }
+    Ok(true)
+}
+
+//#[instrument(skip_all)]
+async fn check_admin_job(
+    obj: &v1alpha1::Clair,
+    ctx: &Context,
+    _req: &Request,
+    _next: &mut v1alpha1::ClairStatus,
+) -> Result<bool> {
+    trace!("checking admin job");
+    let ns = obj.namespace().unwrap_or("default".to_string());
+    let api: Api<batch::v1::Job> = Api::namespaced(ctx.client.clone(), &ns);
+    // Need to:
+    // - Determine if the image version is going to get updated.
+    //   - If not, check that the "post" job has run OK.
+    //     - If not, warn somehow.
+    //   - If so, check that the "pre" job has run OK.
+    //     - If not, block the changes.
+    if obj.status.is_none() {
+        return Ok(true);
+    }
+    let status = obj.status.as_ref().unwrap();
+    if let Some(ref v) = status.current_version {
+        if v != &obj.spec.image_default(&DEFAULT_IMAGE) {
+            // Version mismatch, find out why.
+        } else {
+            // Version is current, check for post job.
+            let cnd_post = clair_condition("AdminPostComplete");
+            match status.conditions.iter().find(|c| c.type_ == cnd_post) {
+                Some(c) => {
+                    // Condition exists
+                    match c.status.as_str() {
+                        "True" => {
+                            // Great, done.
+                            return Ok(true);
+                        }
+                        "False" | "Unknown" => {
+                            // The Job is either running or needs to be created.
+                            if let Some(j) = api.get_opt("name").await? {
+                                let s = j.status.unwrap_or_default().succeeded.unwrap_or_default();
+                                debug!("succeeded: {}", s);
+                            } else {
+                                unimplemented!("create?")
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                None => {
+                    // No post job, seemingly. Check for Job creation.
+                    unimplemented!("no post job")
+                }
+            };
+        }
+    } else {
+        // In setup, no current version.
+        unimplemented!("in setup, no current version")
     }
     Ok(true)
 }

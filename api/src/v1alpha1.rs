@@ -151,6 +151,12 @@ pub struct ClairStatus {
     /// Config is configuration sources for the Clair instance.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<ConfigSource>,
+    /// Previous_version is the previous verison of a deployed Clair instance, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_version: Option<String>,
+    /// Current_version is the current verison of a deployed Clair instance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_version: Option<String>,
     /*
     /// Database is the Service for the managed database engine, if used.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -263,6 +269,35 @@ impl std::fmt::Display for ConfigDialect {
         }
     }
 }
+
+// ImageRef exists to have some Object to hang pre/post Jobs off of.
+// I don't think this is actually needed -- The can/could be driven off of a Condition.
+/*
+/// ImageRefSpec is the spec of an ImageRef.
+#[derive(
+    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, JsonSchema,
+)]
+#[kube(
+    group = "projectclair.io",
+    version = "v1alpha1",
+    kind = "ImageRef",
+    namespaced,
+    status = "ImageRefStatus",
+    derive = "PartialEq",
+    shortname = "imgref",
+    category = "apps"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageRefSpec {
+    pub repository: String, // TODO(hank) verification
+    pub tag: String,        // TODO(hank) verification
+}
+
+/// ImageRefStatus is the status of an ImageRef.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq, Serialize, Validate, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageRefStatus {}
+*/
 
 /// IndexerSpec describes the desired state of an Indexer instance.
 #[derive(

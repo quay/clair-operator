@@ -12,6 +12,7 @@ use futures::Future;
 use k8s_openapi::{api::core, apimachinery::pkg::apis::meta};
 use kube::runtime::events;
 use lazy_static::lazy_static;
+use regex::Regex;
 use tracing::{instrument, trace};
 
 use api::v1alpha1;
@@ -215,6 +216,19 @@ pub fn clair_label<S: AsRef<str>>(s: S) -> String {
 /// use as an annotation or label.
 pub fn k8s_label<S: AsRef<str>>(s: S) -> String {
     keyify("app.kubernetes.io/", s)
+}
+
+/// Image_version returns the version for an image, if present.
+///
+/// Semver versions are the only accepted version strings.
+pub fn image_version<'s>(img: &'s str) -> Option<&'s str> {
+    // The semver regexp:
+    lazy_static! {
+        static ref RE: Regex = Regex::new(r#"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"#).unwrap();
+    }
+    img.split_once(':')
+        .map(|(_, t)| t)
+        .filter(|t| RE.is_match(t))
 }
 
 /// New_templated returns a `K` with patches for `S` applied and the owner set to `obj`.

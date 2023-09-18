@@ -50,6 +50,7 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
                             error!(%objref, %error, "reconcile error")
                         }
                         CtrlErr::QueueError(error) => error!(%error, "queue error"),
+                        CtrlErr::RunnerError(error) => error!(%error, "runner error"),
                     },
                 };
                 futures::future::ready(())
