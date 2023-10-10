@@ -17,7 +17,7 @@ libc = "0.2"
 tracing = "0.1"
 
 [build-dependencies]
-bindgen = "0.66"
+bindgen = "0.68"
 serde = { workspace = true }
 
 [dev-dependencies]
