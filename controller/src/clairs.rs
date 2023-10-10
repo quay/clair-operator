@@ -500,8 +500,7 @@ async fn check_admin_job(
             };
         }
     } else {
-        // In setup, no current version.
-        unimplemented!("in setup, no current version")
+        // TODO(hank) In setup, no current version.
     }
     Ok(true)
 }
