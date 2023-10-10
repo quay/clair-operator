@@ -490,9 +490,8 @@ async fn check_service(
         .unwrap();
     let api = Api::<core::v1::Service>::default_namespaced(ctx.client.clone());
 
-    let mut ct = 0;
-    while ct < 3 {
-        ct += 1;
+    let mut ok = false;
+    for ct in 0..3 {
         trace!(ct, "reconcile attempt");
         let mut entry = api
             .entry(&name)
@@ -507,7 +506,10 @@ async fn check_service(
 
         next.add_ref(entry.get());
         match entry.commit(&CREATE_PARAMS).await {
-            Ok(()) => break,
+            Ok(()) => {
+                ok = true;
+                break;
+            }
             Err(err) => {
                 trace!(error = ?err, "commit error");
                 match err {
@@ -519,8 +521,8 @@ async fn check_service(
             }
         };
     }
-    trace!(ct, "reconciled");
-    Ok(ct != 3)
+    trace!("reconciled");
+    Ok(ok)
 }
 
 #[instrument(skip_all)]
@@ -559,10 +561,9 @@ async fn check_hpa(
     let api =
         Api::<autoscaling::v2::HorizontalPodAutoscaler>::default_namespaced(ctx.client.clone());
 
-    let mut ct = 0;
-    while ct < 3 {
-        ct += 1;
-        trace!(ct, "reconcile attempt");
+    let mut ok = false;
+    for n in 0..3 {
+        trace!(n, "reconcile attempt");
         let mut entry = api
             .entry(&name)
             .await?
@@ -581,7 +582,10 @@ async fn check_hpa(
 
         next.add_ref(entry.get());
         match entry.commit(&CREATE_PARAMS).await {
-            Ok(()) => break,
+            Ok(()) => {
+                ok = true;
+                break;
+            }
             Err(err) => {
                 trace!(error = ?err, "commit error");
                 match err {
@@ -593,8 +597,8 @@ async fn check_hpa(
             }
         };
     }
-    trace!(ct, "reconciled");
-    Ok(ct != 3)
+    trace!("reconciled");
+    Ok(ok)
 }
 
 #[instrument(skip_all)]
