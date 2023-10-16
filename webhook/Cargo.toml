@@ -27,7 +27,7 @@ tower-http = { version = "0.4.1", features = ["trace"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }
-test-log = { version = "0.2.11", default-features = false, features = ["trace"] }
+test-log = { version = "0.2.13", default-features = false, features = ["trace"] }
 tokio-stream = { workspace = true }
 tower = "0.4"
 tracing-subscriber = { version = "0.3.17", features = ["json", "env-filter"] }
