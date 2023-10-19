@@ -1,5 +1,5 @@
 //! Module `v1alpha1` implements the v1alpha1 Clair CRD API.
-use k8s_openapi::{api::core, apimachinery::pkg::apis::meta};
+use k8s_openapi::{api::core, apimachinery::pkg::apis::meta, merge_strategies, DeepMerge};
 use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -87,6 +87,17 @@ impl ClairSpec {
     }
 }
 
+impl DeepMerge for ClairSpec {
+    fn merge_from(&mut self, other: Self) {
+        self.image.merge_from(other.image);
+        self.databases.merge_from(other.databases);
+        self.endpoint.merge_from(other.endpoint);
+        self.notifier.merge_from(other.notifier);
+        merge_strategies::list::set(self.dropins.as_mut(), other.dropins);
+        self.config_dialect.merge_from(other.config_dialect);
+    }
+}
+
 /// Databases specifies the config drop-ins for the various databases needed.
 ///
 /// It's fine for all the fields to point to the same Secret key if it contains all the relevant
@@ -107,6 +118,14 @@ pub struct Databases {
     pub notifier: Option<SecretKeySelector>,
 }
 
+impl DeepMerge for Databases {
+    fn merge_from(&mut self, other: Self) {
+        self.indexer.merge_from(other.indexer);
+        self.matcher.merge_from(other.matcher);
+        self.notifier.merge_from(other.notifier);
+    }
+}
+
 /// Endpoint describes how a frontend (e.g. an Ingress) should be configured.
 #[derive(Clone, Default, Debug, Deserialize, PartialEq, Serialize, Validate, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -117,6 +136,13 @@ pub struct Endpoint {
     /// TLS inicates the `kubernetes.io/tls`-typed Secret that should be used.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls: Option<core::v1::LocalObjectReference>,
+}
+
+impl DeepMerge for Endpoint {
+    fn merge_from(&mut self, other: Self) {
+        self.hostname.merge_from(other.hostname);
+        self.tls.merge_from(other.tls);
+    }
 }
 
 /// ClairStatus describes the observed state of a Clair instance.
@@ -180,6 +206,13 @@ pub struct ConfigSource {
     pub dropins: Vec<DropinSource>,
 }
 
+impl DeepMerge for ConfigSource {
+    fn merge_from(&mut self, other: Self) {
+        self.root.merge_from(other.root);
+        merge_strategies::list::set(self.dropins.as_mut(), other.dropins);
+    }
+}
+
 /// DropinSource represents a source for the value of a Clair configuration dropin.
 #[derive(
     Clone,
@@ -226,6 +259,17 @@ pub struct SecretKeySelector {
     pub name: String,
 }
 
+impl DeepMerge for SecretKeySelector {
+    fn merge_from(&mut self, other: Self) {
+        if !other.key.is_empty() {
+            self.key = other.key.clone();
+        }
+        if !other.name.is_empty() {
+            self.name = other.name.clone();
+        }
+    }
+}
+
 /// ConfigMapKeySelector selects a key from a ConfigMap.
 #[derive(
     Clone,
@@ -248,6 +292,17 @@ pub struct ConfigMapKeySelector {
     pub name: String,
 }
 
+impl DeepMerge for ConfigMapKeySelector {
+    fn merge_from(&mut self, other: Self) {
+        if !other.key.is_empty() {
+            self.key = other.key.clone();
+        }
+        if !other.name.is_empty() {
+            self.name = other.name.clone();
+        }
+    }
+}
+
 /// ConfigDialect selects between the dialects for a Clair config.
 ///
 /// The default for the operator to create is JSON.
@@ -267,6 +322,12 @@ impl std::fmt::Display for ConfigDialect {
             ConfigDialect::JSON => write!(f, "json"),
             ConfigDialect::YAML => write!(f, "yaml"),
         }
+    }
+}
+
+impl DeepMerge for ConfigDialect {
+    fn merge_from(&mut self, other: Self) {
+        *self = other;
     }
 }
 
@@ -321,6 +382,13 @@ pub struct IndexerSpec {
     /// Config is configuration sources for the Clair instance.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<ConfigSource>,
+}
+
+impl DeepMerge for IndexerSpec {
+    fn merge_from(&mut self, other: Self) {
+        self.image.merge_from(other.image);
+        self.config.merge_from(other.config);
+    }
 }
 
 /// IndexerStatus describes the observed state of a Indexer instance.

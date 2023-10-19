@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use k8s_openapi::api::core::v1::TypedLocalObjectReference;
+use k8s_openapi::{api::core::v1::TypedLocalObjectReference, merge_strategies, DeepMerge};
 use kube::runtime::controller::Error as CtrlErr;
 use kube::{
     api::{Api, Patch, PostParams},
@@ -320,7 +320,10 @@ async fn new_ingress(
     _ctx: &Context,
     _req: &Request,
 ) -> Result<networking::v1::Ingress> {
-    use networking::v1::IngressTLS;
+    use networking::v1::{
+        HTTPIngressPath, IngressBackend, IngressRule, IngressServiceBackend, IngressSpec,
+        IngressTLS,
+    };
     let oref = obj
         .controller_owner_ref(&())
         .expect("unable to create owner ref");
@@ -334,34 +337,56 @@ async fn new_ingress(
     let spec = v.spec.as_mut().expect("bad Ingress from template");
     // Attach TLS config if provided.
     if let Some(ref endpoint) = obj.spec.endpoint {
-        if let Some(ref tls) = endpoint.tls {
-            spec.tls.get_or_insert_with(Vec::new).push(IngressTLS {
-                hosts: endpoint.hostname.as_ref().map(|name| vec![name.into()]),
-                secret_name: tls.name.clone(),
-            });
-        }
+        spec.merge_from(IngressSpec {
+            tls: Some(vec![IngressTLS {
+                hosts: endpoint.hostname.as_ref().map(|n| vec![n.into()]),
+                secret_name: endpoint.tls.as_ref().and_then(|ref t| t.name.clone()),
+            }]),
+            ..Default::default()
+        });
     }
     // Swap the hostname if provided.
-    if let Some(rules) = spec.rules.as_mut() {
-        for r in rules.iter_mut().filter(|r| r.host == Some("⚠️".to_string())) {
-            let mut ok = false;
-            if let Some(ref endpoint) = obj.spec.endpoint {
-                if let Some(ref name) = endpoint.hostname {
-                    r.host = Some(name.clone());
-                    ok = true;
-                }
-            }
-            if !ok {
-                r.host = None;
-            }
-            if let Some(http) = r.http.as_mut() {
-                for p in http.paths.iter_mut() {
-                    if let Some(srv) = p.backend.service.as_mut() {
-                        srv.name = srv.name.replace("⚠️", &obj.name_any());
-                    }
-                }
-            }
-        }
+    if let Some(hostname) = obj
+        .spec
+        .endpoint
+        .as_ref()
+        .and_then(|e| e.hostname.as_ref().map(|s| s.as_str()))
+    {
+        let rule = spec
+            .rules
+            .as_mut()
+            .expect("template should have rules")
+            .first_mut()
+            .expect("template should have one entry");
+        rule.merge_from(IngressRule {
+            host: Some(hostname.into()),
+            ..Default::default()
+        });
+        let paths = rule
+            .http
+            .as_mut()
+            .expect("template should have http rule")
+            .paths
+            .as_mut();
+        merge_strategies::list::map(
+            paths,
+            ["indexer", "matcher", "notifier"]
+                .iter()
+                .map(|n| HTTPIngressPath {
+                    path: Some(format!("/{n}")),
+                    backend: IngressBackend {
+                        service: Some(IngressServiceBackend {
+                            name: format!("{n}-{hostname}"),
+                            port: None,
+                        }),
+                        resource: None,
+                    },
+                    ..Default::default()
+                })
+                .collect::<Vec<HTTPIngressPath>>(),
+            &[|a, b| a.path == b.path],
+            |a, b| a.merge_from(b),
+        )
     }
     trace!("created Ingress");
     Ok(v)

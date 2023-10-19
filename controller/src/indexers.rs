@@ -1,7 +1,12 @@
 //! Indexers holds the controller for the "Indexer" CRD.
+//!
+//! ```mermaid
+//! ```
 
 use std::sync::Arc;
 
+use api::v1alpha1::IndexerStatus;
+use k8s_openapi::DeepMerge;
 use kube::{runtime::controller::Error as CtrlErr, Api};
 use tokio::{
     signal::unix::{signal, SignalKind},
@@ -28,6 +33,10 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
     )
     .owns(
         Api::<apps::v1::Deployment>::default_namespaced(client.clone()),
+        ctlcfg.clone(),
+    )
+    .owns(
+        Api::<apps::v1::StatefulSet>::default_namespaced(client.clone()),
         ctlcfg.clone(),
     )
     .owns(
@@ -62,13 +71,14 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
     .boxed())
 }
 
+/// Reconcile is the main entrypoint for the reconcile loop.
 #[instrument(skip_all)]
 async fn reconcile(obj: Arc<v1alpha1::Indexer>, ctx: Arc<Context>) -> Result<Action> {
     trace!("start");
     let req = Request::new(&ctx.client, obj.object_ref(&()));
     assert!(obj.meta().name.is_some());
     let spec = &obj.spec;
-    let mut next = obj.status.clone().unwrap_or_default();
+    let mut next: IndexerStatus = obj.status.clone().unwrap_or_default();
 
     // Check the spec:
     let action = "CheckConfig".into();
@@ -182,6 +192,7 @@ async fn publish(
     }
 }
 
+/// Check_dropin ensures the owned ConfigMap is created correctly, if the Indexer is owned by a Clair.
 #[instrument(skip_all)]
 async fn check_dropin(
     obj: &v1alpha1::Indexer,
@@ -246,8 +257,10 @@ async fn check_dropin(
             trace!(%flavor, "creating ConfigMap");
             let (k, mut cm) = futures::executor::block_on(default_dropin(obj, flavor, ctx))
                 .expect("dropin failed");
-            let p = cm.data.as_mut().unwrap().get_mut(&k).unwrap();
-            *p = p.replace("⚠️", &srvname);
+            cm.merge_from(core::v1::ConfigMap{
+                data: Some(BTreeMap::from_iter(vec![(k, &srvname)])),
+                ..Default::default()
+            });
             cm
         });
         let cm = entry.get_mut();
@@ -387,6 +400,7 @@ async fn check_deployment(
         trace!(ct, "reconcile attempt");
         let mut entry = api.entry(&name).await?.or_insert(|| {
             trace!(ct, name, "creating");
+            tokio::task::
             futures::executor::block_on(new_templated(obj, ctx)).expect("template failed")
         });
         let d = entry.get_mut();
