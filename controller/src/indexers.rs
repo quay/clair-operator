@@ -9,6 +9,7 @@ use api::v1alpha1::IndexerStatus;
 use k8s_openapi::DeepMerge;
 use kube::{runtime::controller::Error as CtrlErr, Api};
 use tokio::{
+    runtime::Handle,
     signal::unix::{signal, SignalKind},
     time::Duration,
 };
@@ -257,8 +258,8 @@ async fn check_dropin(
             trace!(%flavor, "creating ConfigMap");
             let (k, mut cm) = futures::executor::block_on(default_dropin(obj, flavor, ctx))
                 .expect("dropin failed");
-            cm.merge_from(core::v1::ConfigMap{
-                data: Some(BTreeMap::from_iter(vec![(k, &srvname)])),
+            cm.merge_from(core::v1::ConfigMap {
+                data: Some(BTreeMap::from_iter(vec![(k, srvname.clone())])),
                 ..Default::default()
             });
             cm
@@ -393,6 +394,7 @@ async fn check_deployment(
     trace!("have configsource");
     let api = Api::<apps::v1::Deployment>::default_namespaced(ctx.client.clone());
     let want_image = obj.spec.image_default(&crate::DEFAULT_IMAGE);
+    let handle = Handle::current();
 
     let mut ct = 0;
     while ct < 3 {
@@ -400,8 +402,7 @@ async fn check_deployment(
         trace!(ct, "reconcile attempt");
         let mut entry = api.entry(&name).await?.or_insert(|| {
             trace!(ct, name, "creating");
-            tokio::task::
-            futures::executor::block_on(new_templated(obj, ctx)).expect("template failed")
+            handle.block_on(new_templated(obj, ctx)).expect("template failed")
         });
         let d = entry.get_mut();
         trace!("checking deployment");
