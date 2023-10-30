@@ -22,7 +22,7 @@ serde = { workspace = true }
 
 axum = { version = "0.6", features = [ "tracing" ] }
 bytes = "1.4.0"
-tokio-util = "0.7.8"
+tokio-util = "0.7.10"
 tower-http = { version = "0.4.1", features = ["trace"] }
 
 [dev-dependencies]
