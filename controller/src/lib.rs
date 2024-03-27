@@ -455,3 +455,51 @@ lazy_static! {
 
 /// CONTROLLER_NAME is the name the controller uses whenever it needs a human-readable name.
 pub const CONTROLLER_NAME: &str = "clair-controller";
+
+/*
+use futures::future;
+use kube::discovery;
+use tokio::time::{self, Duration, Instant, Interval};
+
+pub struct Discovery {
+    client: Client,
+    d: discovery::Discovery,
+    t: Interval,
+}
+
+impl Discovery {
+    pub fn new(client: Client) -> Discovery {
+        let t = time::interval_at(Instant::now(), Duration::from_secs(60 * 60 * 2));
+        Discovery { client, d, t }
+    }
+
+    async fn client(&mut self) -> Result<(), kube::Error> {
+        tokio::select! {
+                    _ = self.t.tick() => {
+                        let d = discovery::Discovery::new(self.client.clone()).filter(&[
+                    "networking.k8s.io",
+                    "batch",
+                    "gateway.networking.k8s.io",
+                ])
+        .run().await?;
+                self.d = d;
+                    }
+                    _= future::ready(()) => {}
+                }
+        Ok(())
+    }
+
+    pub fn get(&self, group: &str) -> Option<&discovery::ApiGroup> {
+        None
+    }
+    pub fn has_group(&self, group: &str) -> bool {
+        false
+    }
+    pub fn resolve_gvk(
+        &self,
+        gvk: &GroupVersionKind,
+    ) -> Option<(discovery::ApiResource, discovery::ApiCapabilities)> {
+        unimplemented!()
+    }
+}
+*/

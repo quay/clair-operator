@@ -5,9 +5,10 @@
 
 use std::sync::Arc;
 
-use api::v1alpha1::IndexerStatus;
-use k8s_openapi::DeepMerge;
-use kube::{runtime::controller::Error as CtrlErr, Api};
+use api::v1alpha1::{Indexer, IndexerSpec, IndexerStatus};
+use k8s_openapi::{DeepMerge, NamespaceResourceScope};
+use kube::{core::PartialObjectMeta, runtime::controller::Error as CtrlErr, Api};
+use serde::de::DeserializeOwned;
 use tokio::{
     signal::unix::{signal, SignalKind},
     time::Duration,
@@ -249,20 +250,25 @@ async fn check_dropin(
         .await?;
     let flavor = clair.spec.config_dialect.unwrap_or_default();
 
+    let api: Api<core::v1::ConfigMap> = Api::default_namespaced(ctx.client.clone());
     let mut ct = 0;
     while ct < 3 {
         ct += 1;
-        let api: Api<core::v1::ConfigMap> = Api::default_namespaced(ctx.client.clone());
-        let mut entry = api.entry(&name).await?.or_insert(|| {
-            trace!(%flavor, "creating ConfigMap");
-            let (k, mut cm) = futures::executor::block_on(default_dropin(obj, flavor, ctx))
-                .expect("dropin failed");
-            cm.merge_from(core::v1::ConfigMap{
-                data: Some(BTreeMap::from_iter(vec![(k, &srvname)])),
-                ..Default::default()
-            });
-            cm
-        });
+        let entry = api.entry(&name).await?;
+        let mut entry = match entry {
+            Entry::Occupied(e) => e,
+            Entry::Vacant(e) => {
+                trace!(%flavor, "creating ConfigMap");
+                let (k, mut cm) = default_dropin(obj, flavor, ctx)
+                    .await
+                    .expect("dropin failed");
+                cm.merge_from(core::v1::ConfigMap {
+                    data: Some(BTreeMap::from_iter(vec![(k, srvname.clone())])),
+                    ..Default::default()
+                });
+                e.insert(cm)
+            }
+        };
         let cm = entry.get_mut();
         if let Some(k) = cm.annotations().get(crate::DROPIN_LABEL.as_str()) {
             if let Some(data) = cm.data.as_ref() {
@@ -398,11 +404,15 @@ async fn check_deployment(
     while ct < 3 {
         ct += 1;
         trace!(ct, "reconcile attempt");
-        let mut entry = api.entry(&name).await?.or_insert(|| {
-            trace!(ct, name, "creating");
-            tokio::task::
-            futures::executor::block_on(new_templated(obj, ctx)).expect("template failed")
-        });
+        let entry = api.entry(&name).await?;
+        let mut entry = match entry {
+            Entry::Occupied(e) => e,
+            Entry::Vacant(e) => {
+                trace!(ct, name, "creating");
+                let d = new_templated(obj, ctx).await.expect("template failed");
+                e.insert(d)
+            }
+        };
         let d = entry.get_mut();
         trace!("checking deployment");
         d.labels_mut()
@@ -507,16 +517,16 @@ async fn check_service(
     let mut ok = false;
     for ct in 0..3 {
         trace!(ct, "reconcile attempt");
-        let mut entry = api
-            .entry(&name)
-            .await?
-            .or_insert(|| {
-                futures::executor::block_on(new_templated(obj, ctx)).expect("template failed")
-            })
-            .and_modify(|s| {
+        let mut entry = match api.entry(&name).await? {
+            Entry::Occupied(e) => e,
+            Entry::Vacant(e) => {
+                let mut s: core::v1::Service =
+                    new_templated(obj, ctx).await.expect("template failed");
                 s.labels_mut()
                     .insert(COMPONENT_LABEL.to_string(), COMPONENT.into());
-            });
+                e.insert(s)
+            }
+        };
 
         next.add_ref(entry.get());
         match entry.commit(&CREATE_PARAMS).await {
