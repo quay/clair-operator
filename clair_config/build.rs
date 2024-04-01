@@ -41,9 +41,10 @@ fn main() {
         process::exit(1);
     }
 
+    let cb = Box::new(bindgen::CargoCallbacks::new());
     let bindings = bindgen::Builder::default()
         .header(out_dir.join("libconfig.h").to_string_lossy())
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks))
+        .parse_callbacks(cb)
         .generate()
         .expect("Unable to generate bindings");
     bindings
