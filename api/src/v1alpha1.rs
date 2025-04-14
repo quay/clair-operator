@@ -5,12 +5,15 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
+/// VERSION is the kubernetes API group's version.
+pub static VERSION: &str = "v1alpha1";
+
 /// ClairSpec describes the desired state of a Clair instance.
 #[derive(
     CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, JsonSchema,
 )]
 #[kube(
-    group = "projectclair.io",
+    group = "clairproject.org",
     version = "v1alpha1",
     kind = "Clair",
     namespaced,
@@ -28,11 +31,11 @@ pub struct ClairSpec {
     /// to.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub databases: Option<Databases>,
-    /// Endpoint indicates how the Ingress should be created.
+    /// Gateway indicates how the Gateway should be created.
     ///
-    /// If unspecified, the resulting endpoint will need to be read out of the status subresource.
+    /// If unspecified, services will need to have their routing set up manually.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<Endpoint>,
+    pub gateway: Option<Gateway>,
     /// Notifier enables the notifier subsystem.
     ///
     /// The operator does not start the notifier by default. If it's configured via a drop-in, this
@@ -49,6 +52,7 @@ pub struct ClairSpec {
     /// ConfigDialect specifies the format to generate for the main config.
     ///
     /// This setting affects what format config drop-ins must be in.
+    // TODO(hank): delete this
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_dialect: Option<ConfigDialect>,
 }
@@ -91,7 +95,7 @@ impl DeepMerge for ClairSpec {
     fn merge_from(&mut self, other: Self) {
         self.image.merge_from(other.image);
         self.databases.merge_from(other.databases);
-        self.endpoint.merge_from(other.endpoint);
+        self.gateway.merge_from(other.gateway);
         self.notifier.merge_from(other.notifier);
         merge_strategies::list::set(self.dropins.as_mut(), other.dropins);
         self.config_dialect.merge_from(other.config_dialect);
@@ -129,7 +133,12 @@ impl DeepMerge for Databases {
 /// Endpoint describes how a frontend (e.g. an Ingress) should be configured.
 #[derive(Clone, Default, Debug, Deserialize, PartialEq, Serialize, Validate, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct Endpoint {
+pub struct Gateway {
+    /// Gateway_class_name is the GatewayClass to use.
+    ///
+    /// If not provided, one will be guessed at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway_class_name: Option<String>,
     /// Hostname indicates the desired hostname.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
@@ -138,7 +147,7 @@ pub struct Endpoint {
     pub tls: Option<core::v1::LocalObjectReference>,
 }
 
-impl DeepMerge for Endpoint {
+impl DeepMerge for Gateway {
     fn merge_from(&mut self, other: Self) {
         self.hostname.merge_from(other.hostname);
         self.tls.merge_from(other.tls);
@@ -339,7 +348,7 @@ impl DeepMerge for ConfigDialect {
     CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, JsonSchema,
 )]
 #[kube(
-    group = "projectclair.io",
+    group = "clairproject.org",
     version = "v1alpha1",
     kind = "ImageRef",
     namespaced,
@@ -365,11 +374,11 @@ pub struct ImageRefStatus {}
     CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, JsonSchema,
 )]
 #[kube(
-    group = "projectclair.io",
+    group = "clairproject.org",
     version = "v1alpha1",
     kind = "Indexer",
     namespaced,
-    status = "IndexerStatus",
+    status = "WorkerStatus",
     shortname = "indexer",
     derive = "PartialEq",
     derive = "Default"
@@ -390,6 +399,25 @@ impl DeepMerge for IndexerSpec {
         self.config.merge_from(other.config);
     }
 }
+/// WorkerStatus describes the observed state of a worker instance.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq, Serialize, Validate, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerStatus {
+    /// Conditions reports k8s-style conditions for various parts of the system.
+    //#[schemars(schema_with = "conditions")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<meta::v1::Condition>,
+
+    // Misc other refs we may need to hold onto, like Ingresses, Deployments, etc.
+    /// Refs holds on to references to objects needed by this instance.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<core::v1::TypedLocalObjectReference>,
+
+    /// Dropin is a generated JSON dropin configuration that a Clair instance may use to construct
+    /// its configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dropin: Option<String>,
+}
 
 /// IndexerStatus describes the observed state of a Indexer instance.
 #[derive(Clone, Debug, Deserialize, Default, PartialEq, Serialize, Validate, JsonSchema)]
@@ -406,6 +434,10 @@ pub struct IndexerStatus {
     /// Config is configuration sources for the Clair instance.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<ConfigSource>,
+    /// Dropin is a generated dropin configuration that a Clair instance may use to construct its
+    /// configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dropin: Option<String>,
 }
 
 /// MatcherSpec describes the desired state of an Matcher instance.
@@ -413,11 +445,11 @@ pub struct IndexerStatus {
     CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, JsonSchema,
 )]
 #[kube(
-    group = "projectclair.io",
+    group = "clairproject.org",
     version = "v1alpha1",
     kind = "Matcher",
     namespaced,
-    status = "MatcherStatus",
+    status = "WorkerStatus",
     shortname = "matcher",
     derive = "PartialEq",
     derive = "Default"
@@ -445,6 +477,10 @@ pub struct MatcherStatus {
     /// Config is configuration sources for the Clair instance.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<ConfigSource>,
+    /// Dropin is a generated dropin configuration that a Clair instance may use to construct its
+    /// configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dropin: Option<String>,
 }
 
 /// UpdaterSpec describes the desired state of an Updater instance.
@@ -452,7 +488,7 @@ pub struct MatcherStatus {
     CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, JsonSchema,
 )]
 #[kube(
-    group = "projectclair.io",
+    group = "clairproject.org",
     version = "v1alpha1",
     kind = "Updater",
     namespaced,
@@ -507,11 +543,11 @@ pub struct UpdaterStatus {
     CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, JsonSchema,
 )]
 #[kube(
-    group = "projectclair.io",
+    group = "clairproject.org",
     version = "v1alpha1",
     kind = "Notifier",
     namespaced,
-    status = "NotifierStatus",
+    status = "WorkerStatus",
     shortname = "notifier",
     derive = "PartialEq",
     derive = "Default"
@@ -541,6 +577,7 @@ pub struct NotifierStatus {
     pub config: Option<ConfigSource>,
 }
 
+/*
 /// Private holds traits that external modules can't name, and so can't implement.
 mod private {
     use k8s_openapi::{api::core, apimachinery::pkg::apis::meta};
@@ -557,6 +594,10 @@ mod private {
         fn set_conditions(&mut self, cnd: Vec<meta::v1::Condition>);
         fn get_refs(&self) -> &Vec<core::v1::TypedLocalObjectReference>;
         fn set_refs(&mut self, refs: Vec<core::v1::TypedLocalObjectReference>);
+    }
+    pub trait SubStatusCommon: StatusCommon {
+        fn get_config(&self) -> Option<&super::ConfigSource>;
+        fn set_config(&mut self, cfg: Option<super::ConfigSource>);
     }
     pub trait SpecCommon {
         fn get_image(&self) -> Option<&String>;
@@ -747,12 +788,45 @@ impl_spec!(
     UpdaterSpec,
 );
 
-/// SubSpecCommon is helper for the common "subresource" types.
+/// SubStatusCommon is helpers for the common "subresource" types.
+pub trait SubStatusCommon: private::SubStatusCommon {
+    /// .
+    fn get_config(&self) -> Option<&ConfigSource> {
+        private::SubStatusCommon::get_config(self)
+    }
+    /// .
+    fn set_config(&mut self, cfg: Option<ConfigSource>) {
+        private::SubStatusCommon::set_config(self, cfg)
+    }
+}
+macro_rules! impl_substatus {
+    ($($kind:ty),+ $(,)?) => {
+        $(
+        impl private::SubStatusCommon for $kind {
+            fn get_config(&self) -> Option<&ConfigSource> {
+                self.config.as_ref()
+            }
+            fn set_config(&mut self, cfg: Option<ConfigSource>) {
+                self.config = cfg;
+            }
+        }
+        impl SubStatusCommon for $kind {}
+        )+
+    };
+}
+impl_substatus!(IndexerStatus, MatcherStatus, NotifierStatus);
+
+/// SubSpecCommon is helpers for the common "subresource" types.
 pub trait SubSpecCommon: private::SubSpecCommon {
     /// Set_values sets the common parts of the spec.
     fn set_values<S: ToString>(&mut self, img: S, cfg: Option<ConfigSource>) {
         self.set_image(img);
         self.set_config(cfg);
+    }
+
+    /// .
+    fn get_config(&self) -> Option<&ConfigSource> {
+        private::SubSpecCommon::get_config(self)
     }
 }
 macro_rules! impl_subspec {
@@ -771,3 +845,4 @@ macro_rules! impl_subspec {
     };
 }
 impl_subspec!(IndexerSpec, MatcherSpec, NotifierSpec);
+*/

@@ -9,6 +9,9 @@ use validator::Validate;
 
 pub mod v1alpha1;
 
+/// GROUP is the kubernetes API group.
+pub static GROUP: &str = "clairproject.org";
+
 /// RefConfigOrSecret references either a ConfigMap key or a Secret key.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Validate, JsonSchema)]
 #[serde(rename_all = "camelCase")]

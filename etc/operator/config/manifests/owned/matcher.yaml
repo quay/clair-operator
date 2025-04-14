@@ -1,7 +1,7 @@
 - op: add
   path: /spec/customresourcedefinitions/owned/-
   value:
-    name: matchers.projectclair.io
+    name: matchers.clairproject.org
     version: v1alpha1
     kind: Matcher
     description: Resource describing a Matcher component.

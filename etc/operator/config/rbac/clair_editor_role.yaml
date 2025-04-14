@@ -5,7 +5,7 @@ metadata:
   name: clair-editor-role
 rules:
 - apiGroups:
-  - projectclair.io
+  - clairproject.org
   resources:
   - clairs
   verbs:
@@ -17,7 +17,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - projectclair.io
+  - clairproject.org
   resources:
   - clairs/status
   verbs:

@@ -37,7 +37,7 @@ spec:
     name: Hank Donnay
   provider:
     name: Project Clair
-    url: https://projectclair.io
+    url: https://clairproject.org
   links:
   - name: Source Code
     url: https://github.com/quay/clair-operator

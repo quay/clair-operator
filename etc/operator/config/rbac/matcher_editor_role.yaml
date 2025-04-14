@@ -5,7 +5,7 @@ metadata:
   name: matcher-editor-role
 rules:
 - apiGroups:
-  - projectclair.io
+  - clairproject.org
   resources:
   - matchers
   verbs:
@@ -17,7 +17,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - projectclair.io
+  - clairproject.org
   resources:
   - matchers/status
   verbs:

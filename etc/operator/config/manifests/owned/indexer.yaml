@@ -1,7 +1,7 @@
 - op: add
   path: /spec/customresourcedefinitions/owned/-
   value:
-    name: indexers.projectclair.io
+    name: indexers.clairproject.org
     version: v1alpha1
     kind: Indexer
     description: Resource describing an Indexer component.

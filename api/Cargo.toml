@@ -7,12 +7,9 @@ authors.workspace = true
 
 [dependencies]
 k8s-openapi = { workspace = true }
-kube = { workspace = true }
+kube = { workspace = true, features = ["derive" ] }
 serde_json = { workspace = true }
 serde = { workspace = true }
 
-schemars = { version = "0.8.12", features = ["chrono"] }
-validator = { version = "0.16.0", features = ["derive"] }
-
-[dev-dependencies]
-k8s-openapi = { workspace = true, features = ["v1_25"] }
+schemars = { version = "0.8", features = ["chrono"] }
+validator = { version = "0.20", features = ["derive"] }

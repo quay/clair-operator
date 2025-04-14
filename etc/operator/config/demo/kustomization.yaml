@@ -1,0 +1,14 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../manager
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+images:
+- name: controller
+  newName: quay.io/projectclair/controller
+  newTag: demo

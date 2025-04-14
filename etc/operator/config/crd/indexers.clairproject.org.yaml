@@ -1,26 +1,26 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: notifiers.projectclair.io
+  name: indexers.clairproject.org
 spec:
-  group: projectclair.io
+  group: clairproject.org
   names:
     categories: []
-    kind: Notifier
-    plural: notifiers
+    kind: Indexer
+    plural: indexers
     shortNames:
-    - notifier
-    singular: notifier
+    - indexer
+    singular: indexer
   scope: Namespaced
   versions:
   - additionalPrinterColumns: []
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Auto-generated derived type for NotifierSpec via `CustomResource`
+        description: Auto-generated derived type for IndexerSpec via `CustomResource`
         properties:
           spec:
-            description: NotifierSpec describes the desired state of an Notifier instance.
+            description: IndexerSpec describes the desired state of an Indexer instance.
             properties:
               config:
                 description: Config is configuration sources for the Clair instance.
@@ -83,7 +83,7 @@ spec:
                 type: string
             type: object
           status:
-            description: NotifierStatus describes the observed state of a Notifier instance.
+            description: WorkerStatus describes the observed state of a worker instance.
             nullable: true
             properties:
               conditions:
@@ -119,61 +119,10 @@ spec:
                   - type
                   type: object
                 type: array
-              config:
-                description: Config is configuration sources for the Clair instance.
+              dropin:
+                description: Dropin is a generated JSON dropin configuration that a Clair instance may use to construct its configuration.
                 nullable: true
-                properties:
-                  dropins:
-                    description: Dropins is a list of references to drop-in configs.
-                    items:
-                      description: DropinSource represents a source for the value of a Clair configuration dropin.
-                      properties:
-                        configMapKeyRef:
-                          description: Selects a key of a ConfigMap.
-                          nullable: true
-                          properties:
-                            key:
-                              description: The key to select.
-                              type: string
-                            name:
-                              description: The name of the referent.
-                              type: string
-                          required:
-                          - key
-                          - name
-                          type: object
-                        secretKeyRef:
-                          description: Selects a key of a Secret.
-                          nullable: true
-                          properties:
-                            key:
-                              description: The key to select.
-                              type: string
-                            name:
-                              description: The name of the referent.
-                              type: string
-                          required:
-                          - key
-                          - name
-                          type: object
-                      type: object
-                    type: array
-                  root:
-                    description: Root is a reference to the main config.
-                    properties:
-                      key:
-                        description: The key to select.
-                        type: string
-                      name:
-                        description: The name of the referent.
-                        type: string
-                    required:
-                    - key
-                    - name
-                    type: object
-                required:
-                - root
-                type: object
+                type: string
               refs:
                 description: Refs holds on to references to objects needed by this instance.
                 items:
@@ -196,7 +145,7 @@ spec:
             type: object
         required:
         - spec
-        title: Notifier
+        title: Indexer
         type: object
     served: true
     storage: true

@@ -1,26 +1,37 @@
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: matchers.projectclair.io
+  name: updaters.clairproject.org
 spec:
-  group: projectclair.io
+  group: clairproject.org
   names:
     categories: []
-    kind: Matcher
-    plural: matchers
+    kind: Updater
+    plural: updaters
     shortNames:
-    - matcher
-    singular: matcher
+    - updater
+    singular: updater
   scope: Namespaced
   versions:
-  - additionalPrinterColumns: []
+  - additionalPrinterColumns:
+    - jsonPath: .spec.suspend
+      name: Suspended
+      type: boolean
+    - format: date-time
+      jsonPath: .status.cronJob.status.last_successful_time
+      name: Last Success
+      type: date
+    - format: date-time
+      jsonPath: .status.cronJob.status.last_schedule_time
+      name: Last Schedule
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Auto-generated derived type for MatcherSpec via `CustomResource`
+        description: Auto-generated derived type for UpdaterSpec via `CustomResource`
         properties:
           spec:
-            description: MatcherSpec describes the desired state of an Matcher instance.
+            description: UpdaterSpec describes the desired state of an Updater instance.
             properties:
               config:
                 description: Config is configuration sources for the Clair instance.
@@ -81,9 +92,20 @@ spec:
                 description: Image is the image that should be used in the managed deployment.
                 nullable: true
                 type: string
+              schedule:
+                description: |-
+                  Update schedule in Cron format, see <https://en.wikipedia.org/wiki/Cron>.
+
+                  If not provided, a sensible default will be used.
+                nullable: true
+                type: string
+              suspend:
+                description: Suspend subsequent runs.
+                nullable: true
+                type: boolean
             type: object
           status:
-            description: MatcherStatus describes the observed state of a Matcher instance.
+            description: UpdaterStatus describes the observed state of a Updater instance.
             nullable: true
             properties:
               conditions:
@@ -174,6 +196,23 @@ spec:
                 required:
                 - root
                 type: object
+              cronJob:
+                description: CronJob the operator has configured for this Updater.
+                nullable: true
+                properties:
+                  apiGroup:
+                    description: APIGroup is the group for the resource being referenced. If APIGroup is not specified, the specified Kind must be in the core API group. For any other third-party types, APIGroup is required.
+                    type: string
+                  kind:
+                    description: Kind is the type of resource being referenced
+                    type: string
+                  name:
+                    description: Name is the name of resource being referenced
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
               refs:
                 description: Refs holds on to references to objects needed by this instance.
                 items:
@@ -196,7 +235,7 @@ spec:
             type: object
         required:
         - spec
-        title: Matcher
+        title: Updater
         type: object
     served: true
     storage: true

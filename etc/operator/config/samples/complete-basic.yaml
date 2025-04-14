@@ -113,7 +113,7 @@ spec:
         persistentVolumeClaim:
           claimName: postgresql-pvc
 ---
-apiVersion: projectclair.io/v1alpha1
+apiVersion: clairproject.org/v1alpha1
 kind: Clair
 metadata:
   name: basic

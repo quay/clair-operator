@@ -5,7 +5,7 @@ metadata:
   name: notifier-editor-role
 rules:
 - apiGroups:
-  - projectclair.io
+  - clairproject.org
   resources:
   - notifiers
   verbs:
@@ -17,7 +17,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - projectclair.io
+  - clairproject.org
   resources:
   - notifiers/status
   verbs:

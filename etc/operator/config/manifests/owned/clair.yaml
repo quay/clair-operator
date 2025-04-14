@@ -1,7 +1,7 @@
 - op: add
   path: /spec/customresourcedefinitions/owned/-
   value:
-    name: clairs.projectclair.io
+    name: clairs.clairproject.org
     version: v1alpha1
     kind: Clair
     description: Resource describing a Clair system.
@@ -13,16 +13,16 @@
       kind: Secret
     - version: networking.k8s.io/v1
       kind: Ingress
-    - version: projectclair.io/v1alpha1
+    - version: clairproject.org/v1alpha1
       kind: Indexer
       name: indexers
-    - version: projectclair.io/v1alpha1
+    - version: clairproject.org/v1alpha1
       kind: Matcher
       name: matchers
-    - version: projectclair.io/v1alpha1
+    - version: clairproject.org/v1alpha1
       kind: Notifier
       name: notifiers
-    - version: projectclair.io/v1alpha1
+    - version: clairproject.org/v1alpha1
       kind: Updater
       name: updaters
     specDescriptors:

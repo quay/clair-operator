@@ -1,5 +1,5 @@
 ---
-apiVersion: projectclair.io/v1alpha1
+apiVersion: clairproject.org/v1alpha1
 kind: Matcher
 metadata:
   labels:

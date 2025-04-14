@@ -1,7 +1,7 @@
 - op: add
   path: /spec/customresourcedefinitions/owned/-
   value:
-    name: notifiers.projectclair.io
+    name: notifiers.clairproject.org
     version: v1alpha1
     kind: Notifier
     description: Resource describing a Notifier component.

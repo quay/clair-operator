@@ -1,7 +1,7 @@
 - op: add
   path: /spec/customresourcedefinitions/owned/-
   value:
-    name: updaters.projectclair.io
+    name: updaters.clairproject.org
     version: v1alpha1
     kind: Updater
     description: Resource describing an Updater component.

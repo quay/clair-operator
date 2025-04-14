@@ -5,7 +5,7 @@ metadata:
   name: matcher-viewer-role
 rules:
 - apiGroups:
-  - projectclair.io
+  - clairproject.org
   resources:
   - matchers
   verbs:
@@ -13,7 +13,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - projectclair.io
+  - clairproject.org
   resources:
   - matchers/status
   verbs:
