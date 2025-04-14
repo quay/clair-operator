@@ -13,7 +13,7 @@ fn main() {
     let src_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let go_src = src_dir.join("go");
 
-    for f in &["go.mod", "main.go"] {
+    for f in &["go.sum", "main.go"] {
         println!("cargo:rerun-if-changed={}", go_src.join(f).display(),);
     }
     println!("cargo:rustc-link-lib=static=config");

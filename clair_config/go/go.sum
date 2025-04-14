@@ -1,3 +1,4 @@
 github.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=
-github.com/quay/clair/config v1.4.0 h1:jLveqMKEAZmyKjhGeWBkdQmCoGRbdUh4oTYVgaoFBQs=
-github.com/quay/clair/config v1.4.0/go.mod h1:c2/sfLoPdFRXpMtpD/UCi1gNm4uUFmdseqhqeQkKVbY=
+github.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=
+github.com/quay/clair/config v1.4.1 h1:4z/7aaeWrSOdhG+sPJmXEOEUJ/4JqenKj5oXRG5Q1k0=
+github.com/quay/clair/config v1.4.1/go.mod h1:GHMVGl7WIq2WB+mFrFkUFHGphDojOPEdoAhjpcTTgLg=
