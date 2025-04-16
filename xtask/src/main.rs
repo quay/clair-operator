@@ -156,7 +156,10 @@ fn demo(opts: DemoOpts) -> Result<()> {
     );
     check::kubectl(&sh)?;
     check::kustomize(&sh)?;
-    let _guard = Kind::new(&sh, true);
+    let _guard = KinDBuilder::default()
+        .with_ingress_nginx()
+        .with_gateway()
+        .build(&sh)?;
 
     eprintln!("# loading CRDs");
     cmd!(sh, "{cargo} xtask install").run()?;
@@ -210,16 +213,21 @@ fn ci(opts: CiOpts) -> Result<()> {
     );
     sh.set_var("RUST_BACKTRACE", "1");
     check::kubectl(&sh)?;
-    let _kind = Kind::new(&sh, false)?;
+    let _kind = KinDBuilder::default().with_gateway().build(&sh)?;
 
     eprintln!("# adding CI label");
     cmd!(
         sh,
-        "kubectl label namespace default projectclair.io/safe-to-run-tests=true"
+        "kubectl label namespace default clairproject.org/safe-to-run-tests=true"
     )
     .run()?;
 
-    let coverage = cmd!(sh, "which grcov").quiet().run().is_ok();
+    let coverage = cmd!(sh, "which grcov")
+        .quiet()
+        .ignore_stdout()
+        .ignore_stderr()
+        .run()
+        .is_ok();
     if coverage {
         sh.set_var("CARGO_INCREMENTAL", "0");
         sh.set_var("RUSTFLAGS", "-Cinstrument-coverage");
@@ -234,8 +242,8 @@ fn ci(opts: CiOpts) -> Result<()> {
         .ignore_stderr()
         .run()
         .is_ok();
-    let ar = WORKSPACE.join("tests.tar.zst");
     let mut test_args = vec![];
+    let ar = WORKSPACE.join("tests.tar.zst");
     let w = WORKSPACE.to_string_lossy().to_string();
     if use_nextest {
         eprintln!("# using nextest");

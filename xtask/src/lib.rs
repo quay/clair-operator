@@ -2,9 +2,9 @@ use std::{
     borrow::Cow,
     env,
     path::{Path, PathBuf},
+    sync::LazyLock,
 };
 
-use lazy_static::lazy_static;
 use xshell::{cmd, Shell};
 
 pub mod check;
@@ -13,22 +13,52 @@ pub mod find;
 pub type DynError = Box<dyn std::error::Error>;
 pub type Result<T> = std::result::Result<T, DynError>;
 
-lazy_static! {
-    pub static ref CARGO: PathBuf = env::var_os("CARGO").unwrap().into();
-    pub static ref WORKSPACE: PathBuf = Path::new(&env!("CARGO_MANIFEST_DIR"))
+pub static CARGO: LazyLock<PathBuf> = LazyLock::new(|| env::var_os("CARGO").unwrap().into());
+
+// Paths:
+pub static WORKSPACE: LazyLock<PathBuf> = LazyLock::new(|| {
+    Path::new(&env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(1)
         .unwrap()
-        .to_path_buf();
-    pub static ref CONFIG_DIR: PathBuf = WORKSPACE.join("etc/operator/config");
-    pub static ref BIN_DIR: PathBuf = WORKSPACE.join(".bin");
-    pub static ref KUBE_VERSION: String = env::var("KUBE_VERSION").unwrap_or(String::from("1.25"));
-    pub static ref INGRESS_MANIFEST:String  = env::var("INGRESS_MANIFEST")
-            .unwrap_or(String::from("https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml"));
-}
+        .to_path_buf()
+});
+pub static CONFIG_DIR: LazyLock<PathBuf> = LazyLock::new(|| WORKSPACE.join("etc/operator/config"));
+pub static BIN_DIR: LazyLock<PathBuf> = LazyLock::new(|| WORKSPACE.join(".bin"));
+
+// Versions:
+
+/// This is the oldest k8s that KinD supports.
+pub static KUBE_VERSION: LazyLock<String> =
+    LazyLock::new(|| env::var("KUBE_VERSION").unwrap_or(String::from("1.29")));
+pub static KIND_VERSION: LazyLock<String> =
+    LazyLock::new(|| env::var("KIND_VERSION").unwrap_or(String::from("0.27.0")));
+pub static KUSTOMIZE_VERSION: LazyLock<String> =
+    LazyLock::new(|| env::var("KUSTOMIZE_VERSION").unwrap_or(String::from("5.6.0")));
+pub static OPERATOR_SDK_VERSION: LazyLock<String> =
+    LazyLock::new(|| env::var("OPERATOR_SDK_VERSION").unwrap_or(String::from("1.39.2")));
+pub static OPM_VERSION: LazyLock<String> =
+    LazyLock::new(|| env::var("OPM_VERSION").unwrap_or(String::from("1.51.0")));
+pub static ISTIO_VERSION: LazyLock<String> =
+    LazyLock::new(|| env::var("ISTIO_VERSION").unwrap_or(String::from("1.25.2")));
+pub static GATEWAY_API_VERSION: LazyLock<String> =
+    LazyLock::new(|| env::var("GATEWAY_API_VERSION").unwrap_or(String::from("1.2.1")));
+
+// URLs:
+pub static INGRESS_NGINX_MANIFEST_URL: LazyLock<String> = LazyLock::new(|| {
+    env::var("INGRESS_NGINX_MANIFEST_URL")
+            .unwrap_or(String::from("https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml"))
+});
+pub static GATEWAY_API_MANIFEST_URL: LazyLock<String> = LazyLock::new(|| {
+    env::var("GATEWAY_API_MANIFEST_URL").unwrap_or(
+    format!("https://github.com/kubernetes-sigs/gateway-api/releases/download/v{}/standard-install.yaml", GATEWAY_API_VERSION.as_str()))
+});
+
+// Container images:
 pub const BUNDLE_IMAGE: &str = "quay.io/projectclair/clair-bundle";
 pub const CATALOG_IMAGE: &str = "quay.io/projectclair/clair-catalog";
 
+/// Shell constructs a [Shell] with the environment modified in a consistent way.
 pub fn shell() -> xshell::Result<Shell> {
     let sh = Shell::new()?;
     let p = env::var("PATH").expect("PATH environment variable missing");
@@ -42,77 +72,122 @@ pub fn shell() -> xshell::Result<Shell> {
     Ok(sh)
 }
 
+/// Rel constructs a path relative to the workspace.
 pub fn rel<'a>(p: &'a Path) -> Cow<'a, str> {
     p.strip_prefix(WORKSPACE.as_path())
         .unwrap()
         .to_string_lossy()
 }
 
-pub struct Kind {
-    name: std::ffi::OsString,
+/// KinD is a running KinD cluster.
+///
+/// It deletes the cluster on drop.
+pub struct KinD {
+    name: String,
 }
-impl Drop for Kind {
+
+impl Drop for KinD {
     fn drop(&mut self) {
-        let name = &self.name;
+        let name = self.name.as_str();
         let sh = shell().unwrap();
-        cmd!(sh, "kind delete cluster --name {name}").run().unwrap();
+        cmd!(sh, "kind --quiet delete cluster --name {name}")
+            .run()
+            .unwrap();
     }
 }
-impl Kind {
-    pub fn new(sh: &Shell, ingress: bool) -> Result<Self> {
+
+#[derive(Default)]
+pub struct KinDBuilder {
+    ingress_nginx: bool,
+    gateway: bool,
+    istio: bool,
+}
+
+impl KinDBuilder {
+    pub fn with_ingress_nginx(self) -> Self {
+        Self {
+            ingress_nginx: true,
+            ..self
+        }
+    }
+
+    pub fn with_gateway(self) -> Self {
+        Self {
+            gateway: true,
+            ..self
+        }
+    }
+
+    pub fn with_istio(self) -> Self {
+        Self {
+            istio: true,
+            ..self
+        }
+    }
+
+    /// If this fails, check the KinD "[known issues]."
+    /// A likely culprit is the user `inotify` limits.
+    ///
+    /// [known issues]: https://kind.sigs.k8s.io/docs/user/known-issues/
+    pub fn build(self, sh: &Shell) -> Result<KinD> {
         use scopeguard::guard;
-        use std::{thread, time};
-        let ingress_manifest = INGRESS_MANIFEST.as_str();
-        let k8s_ver = KUBE_VERSION.as_str();
+
+        check::kubectl(sh)?;
+        check::kind(sh)?;
+        if self.istio {
+            check::istioctl(sh)?;
+        }
+
         let name = "ci";
-        // TODO(hank) Move the KIND configs out of the controller crate.
+        let k8s_ver = KUBE_VERSION.as_str();
+        eprintln!("# using k8s version: {k8s_ver}");
         let config = WORKSPACE
             .join("etc/tests/")
             .join(format!("kind-{k8s_ver}.yaml"));
         sh.change_dir(WORKSPACE.as_path());
-        check::kubectl(sh)?;
-        check::kind(sh)?;
-        cmd!(sh, "kind --config {config} create cluster --name {name}").run()?;
-        let mut ok = guard(true, |ok| {
+
+        // Put the guard here so that it gets torn down if the cluster gets into a half-constructed
+        // state.
+        let mut ok = guard(false, |ok| {
             if !ok {
-                let _ = cmd!(sh, "kind delete cluster --name {name}").run();
+                let _ = cmd!(sh, "kind --quiet delete cluster --name {name}").run();
             }
         });
+        cmd!(sh, "kind --quiet --config {config} create cluster").run()?;
         eprintln!("# waiting for pods to ready");
         cmd!(
             sh,
             "kubectl wait pods --for=condition=Ready --timeout=300s --all --all-namespaces"
         )
-        .run()
-        .map_err(|err| {
-            *ok = false;
-            err
-        })?;
-        if ingress {
-            cmd!(sh, "kubectl apply -f {ingress_manifest}")
-                .run()
-                .map_err(|err| {
-                    *ok = false;
-                    err
-                })?;
-            'wait: for n in 0..=5 {
-                let exec = cmd!(
-                    sh,
-                    "kubectl wait --namespace ingress-nginx --for=condition=Ready pod --selector=app.kubernetes.io/component=controller --timeout=90s"
-                )
-                .run();
-                match exec {
-                    Ok(_) => break 'wait,
-                    Err(err) => {
-                        if n == 5 {
-                            *ok = false;
-                            return Err(Box::new(err));
-                        }
-                    }
-                };
-                thread::sleep(time::Duration::from_secs(1));
-            }
+        .run()?;
+
+        // Load any CRDs requested:
+        if self.gateway {
+            eprintln!("# installing Gateway APIs");
+            let manifest = GATEWAY_API_MANIFEST_URL.as_str();
+            cmd!(sh, "kubectl apply -f {manifest}").run()?;
         }
-        Ok(Self { name: name.into() })
+
+        // Install any services requested:
+        if [self.ingress_nginx, self.istio].iter().any(|&v| v) {
+            if self.ingress_nginx {
+                eprintln!("# installing ingress-nginx");
+                let ingress_manifest = INGRESS_NGINX_MANIFEST_URL.as_str();
+                cmd!(sh, "kubectl apply -f {ingress_manifest}").run()?;
+            }
+            if self.istio {
+                eprintln!("# installing istio");
+                cmd!(sh, "istioctl install --set profile=minimal -y").run()?;
+            }
+            eprintln!("# installed services, waiting for pods to ready");
+            cmd!(
+                sh,
+                "kubectl wait pods --for=condition=Ready --timeout=300s --all --all-namespaces"
+            )
+            .run()?;
+        }
+
+        *ok = true;
+        Ok(KinD { name: name.into() })
     }
 }

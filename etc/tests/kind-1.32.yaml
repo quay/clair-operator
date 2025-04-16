@@ -1,0 +1,18 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: ci
+runtimeConfig:
+  "api/alpha": "false"
+networking:
+  ipFamily: dual
+  kubeProxyMode: "nftables"
+nodes:
+- role: control-plane
+  image: kindest/node:v1.32.2@sha256:f226345927d7e348497136874b6d207e0b32cc52154ad8323129352923a3142f
+- role: worker
+  image: kindest/node:v1.32.2@sha256:f226345927d7e348497136874b6d207e0b32cc52154ad8323129352923a3142f
+  extraPortMappings:
+  - containerPort: 6060
+    hostPort: 6060
+    listenAddress: "127.0.0.1"
+    protocol: TCP
