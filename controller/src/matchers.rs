@@ -1,5 +1,6 @@
 //! Matchers holds the controller for the "Matcher" CRD.
 
+use k8s_openapi::DeepMerge;
 use kube::{runtime::controller::Error as CtrlErr, Api};
 use tokio::{
     signal::unix::{signal, SignalKind},
@@ -131,6 +132,7 @@ $(
         }
     }
     check_all!(
+        check_dropin,
         check_config,
         check_deployment,
         check_service,
@@ -189,6 +191,168 @@ async fn publish(
         // Unable to update, so requeue soon.
         Ok(Action::requeue(Duration::from_secs(5)))
     }
+}
+async fn check_dropin(
+    obj: &v1alpha1::Matcher,
+    ctx: &Context,
+    _req: &Request,
+    next: &mut v1alpha1::MatcherStatus,
+) -> Result<bool> {
+    use self::core::v1::ConfigMap;
+    use self::v1alpha1::ConfigMapKeySelector;
+
+    let owner = match obj
+        .owner_references()
+        .iter()
+        .find(|&r| r.controller.unwrap_or(false))
+    {
+        None => {
+            trace!("not owned, skipping dropin");
+            return Ok(true);
+        }
+        Some(o) => o,
+    };
+    trace!(owner = owner.name, "indexer is owned");
+
+    let name = obj
+        .status
+        .as_ref()
+        .and_then(|s| s.has_ref::<ConfigMap>())
+        .map(|cm| cm.name)
+        .or_else(|| {
+            Some(format!(
+                "{}-{}",
+                obj.name_any(),
+                v1alpha1::Indexer::kind(&()).to_ascii_lowercase()
+            ))
+        })
+        .unwrap();
+    trace!(name, "looking for ConfigMap");
+    let srvname = obj
+        .status
+        .as_ref()
+        .and_then(|s| s.has_ref::<core::v1::Service>())
+        .map(|cm| cm.name)
+        .or_else(|| {
+            Some(format!(
+                "{}-{}",
+                obj.name_any(),
+                v1alpha1::Indexer::kind(&()).to_ascii_lowercase()
+            ))
+        })
+        .unwrap();
+    trace!(name = srvname, "assuming Service");
+    let clair: v1alpha1::Clair = Api::default_namespaced(ctx.client.clone())
+        .get_status(&owner.name)
+        .await?;
+    let flavor = clair.spec.config_dialect.unwrap_or_default();
+
+    let api: Api<core::v1::ConfigMap> = Api::default_namespaced(ctx.client.clone());
+    let mut ct = 0;
+    while ct < 3 {
+        ct += 1;
+        let entry = api.entry(&name).await?;
+        let mut entry = match entry {
+            Entry::Occupied(e) => e,
+            Entry::Vacant(e) => {
+                trace!(%flavor, "creating ConfigMap");
+                let (k, mut cm) = default_dropin(obj, flavor, ctx)
+                    .await
+                    .expect("dropin failed");
+                cm.merge_from(core::v1::ConfigMap {
+                    data: Some(BTreeMap::from_iter(vec![(k, srvname.clone())])),
+                    ..Default::default()
+                });
+                eprintln!("configmap: {cm:?}");
+                e.insert(cm)
+            }
+        };
+        let cm = entry.get_mut();
+        if let Some(k) = cm.annotations().get(crate::DROPIN_LABEL.as_str()) {
+            if let Some(data) = cm.data.as_ref() {
+                if !data.contains_key(k) {
+                    trace!(name = cm.name_any(), "ConfigMap missing key");
+                    let _ = futures::executor::block_on(_req.publish(Event {
+                        action: "ReconcileConfig".into(),
+                        reason: "Reconcile".into(),
+                        note: Some(format!("missing expected key: {k}")),
+                        secondary: Some(cm.object_ref(&())),
+                        type_: EventType::Warning,
+                    }));
+                } else {
+                    trace!(name = cm.name_any(), "ConfigMap ok");
+                }
+            }
+        }
+        let key = if let Some(key) = cm.annotations().get(crate::DROPIN_LABEL.as_str()) {
+            key.clone()
+        } else {
+            trace!(name = cm.name_any(), "skipping owner update");
+            return Ok(true);
+        };
+        next.add_ref(cm);
+        match entry.commit(&CREATE_PARAMS).await {
+            Ok(()) => (),
+            Err(err) => match err {
+                CommitError::Validate(reason) => {
+                    debug!(reason = reason.to_string(), "commit failed, retrying");
+                    continue;
+                }
+                CommitError::Save(_) => return Err(Error::Commit(err)),
+            },
+        };
+
+        trace!("attempting owner update");
+        let dropin = ConfigMapKeySelector {
+            name: name.clone(),
+            key: key.clone(),
+        };
+        let api: Api<v1alpha1::Clair> = Api::default_namespaced(ctx.client.clone());
+        let entry = api.entry(&owner.name).await?;
+        match entry {
+            Entry::Vacant(_) => (),
+            Entry::Occupied(entry) => {
+                let mut change = false;
+                let mut entry = entry.and_modify(|c| {
+                    let v = &mut c.spec.dropins;
+                    if v.iter_mut().all(|d| {
+                        if let Some(c) = &d.config_map_key_ref {
+                            c != &dropin
+                        } else {
+                            true
+                        }
+                    }) {
+                        trace!("appending dropin");
+                        change = true;
+                        v.push(v1alpha1::DropinSource {
+                            secret_key_ref: None,
+                            config_map_key_ref: Some(ConfigMapKeySelector {
+                                key,
+                                name: name.clone(),
+                            }),
+                        });
+                    }
+                });
+                if !change {
+                    debug!("no update needed");
+                    return Ok(true);
+                }
+                match entry.commit(&CREATE_PARAMS).await {
+                    Ok(()) => {
+                        debug!("updated owning Clair");
+                        return Ok(true);
+                    }
+                    Err(err) => match err {
+                        CommitError::Validate(reason) => {
+                            debug!(reason = reason.to_string(), "commit failed, retrying")
+                        }
+                        CommitError::Save(_) => return Err(Error::Commit(err)),
+                    },
+                };
+            }
+        };
+    }
+    Ok(false)
 }
 
 #[instrument(skip_all)]

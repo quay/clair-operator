@@ -1,7 +1,11 @@
-use k8s_openapi::api::core;
+use std::pin::pin;
 
 use api::v1alpha1::Indexer;
 use controller::{indexers, Context, Error};
+use futures::{StreamExt, TryStreamExt};
+use k8s_openapi::api::core;
+use kube::runtime::{watcher, WatchStreamExt};
+
 mod util;
 use util::prelude::*;
 
@@ -55,7 +59,7 @@ async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
     cm.create(&params, &root).await?;
 
     let indexer: Indexer = serde_json::from_value(json!({
-        "apiVersion": "projectclair.io/v1alpha1",
+        "apiVersion": format!("{}/v1alpha1", api::GROUP),
         "kind": "Indexer",
         "metadata": {"name": NAME},
         "spec": {
@@ -70,26 +74,40 @@ async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
     }))?;
     api.create(&params, &indexer).await?;
 
-    let mut gen: i64 = 0;
-    loop {
-        let m = api.get_metadata(NAME).await?;
-        let cur = m.metadata.generation.unwrap();
-        if cur == gen {
-            break;
-        }
-        gen = cur;
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
+    let gen: i64 = 0;
+    let watcher_config = watcher::Config::default().timeout(60).streaming_lists();
+    let mut wait = watcher(api.clone(), watcher_config)
+        .default_backoff()
+        .applied_objects()
+        .try_take_while(|indexer| {
+            let cur = indexer.metadata.generation.unwrap();
+            eprintln!("cur: {cur} gen: {gen} status: {}", indexer.status.is_some());
+            futures::future::ready(Ok(cur == gen || indexer.status.is_none()))
+        })
+        .take(1);
+    let got = if let Some(got) = pin!(wait).next().await {
+        got.expect("no error")
+    } else {
+        panic!("nothing")
+    };
 
-    let got = api.get(NAME).await?;
-    let mut got = serde_json::to_value(got)?;
-    let tests: Patch = serde_json::from_value(json! {
-        [
-            {"op": "test", "path": "/metadata/name", "value": NAME},
-            {"op": "test", "path": "/status/config/root/name", "value": format!("{NAME}-config")},
-        ]
-    })?;
-    json_patch::patch(&mut got, &tests)?;
+    use jsonpath_rust::JsonPath;
+
+    let got = serde_json::to_value(got)?;
+    let v = got
+        .query(format!("$.metadata.name").as_str())
+        .ok()
+        .and_then(|vs| vs.first().and_then(|v| v.as_str()))
+        .expect("$.metadata.name not populated");
+    eprintln!("name: {v}");
+    assert_eq!(v, NAME);
+
+    for kind in ["Deployment", "Service", "HorizontalPodAutoscaler"] {
+        let v = got
+            .query(format!("$.status.conditions[?value(@.type) == \"{kind}Created\"]").as_str())
+            .expect(format!("condition for {kind} not populated").as_str());
+        eprintln!("resource {kind}: {v:?}");
+    }
 
     Ok(())
 }

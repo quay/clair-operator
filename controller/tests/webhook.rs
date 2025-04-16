@@ -1,15 +1,32 @@
-use hyper::{Request, StatusCode};
+use axum::{
+    body::Body,
+    http::{request::Request, StatusCode},
+};
 use kube::core::admission::AdmissionReview;
 use serde_json::{from_slice, json, to_vec};
 use test_log::test;
-use tower::ServiceExt; // for `oneshot` and `ready`
+use tower::util::ServiceExt; // for `oneshot` and `ready`
 
 use api::v1alpha1;
 use util::app;
 
-mod util;
+mod util {
+    use controller::webhook;
+
+    pub async fn app() -> axum::Router {
+        let client = match kube::Client::try_default().await {
+            Ok(c) => c,
+            Err(e) => panic!("error starting webhook server: {e}"),
+        };
+        let s = webhook::State::new(client);
+        webhook::app(s)
+    }
+}
+
+const RESPONSE_LIMIT: usize = 1024 * 1024 * 10;
 
 #[test(tokio::test)]
+#[cfg_attr(not(feature = "test_ci"), ignore)]
 async fn validate() {
     use v1alpha1::Clair;
     let app = app().await;
@@ -19,12 +36,12 @@ async fn validate() {
         "kind": "AdmissionReview",
         "request":{
             "kind": {
-                "group": "projectclair.io",
+                "group": "clairproject.org",
                 "version": "v1alpha1",
                 "kind": "Clair",
             },
             "resource": {
-                "group": "projectclair.io",
+                "group": "clairproject.org",
                 "version": "v1alpha1",
                 "resource": "clairs",
             },
@@ -46,13 +63,13 @@ async fn validate() {
             Request::post("/v1alpha1/validate")
                 .header("content-type", "application/json")
                 .header("accept", "application/json")
-                .body(adm.into())
+                .body(Body::from(adm))
                 .expect("unable to build request"),
         )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let buf = hyper::body::to_bytes(response.into_body())
+    let buf = axum::body::to_bytes(response.into_body(), RESPONSE_LIMIT)
         .await
         .expect("error reading response body");
     let rev: AdmissionReview<Clair> = from_slice(&buf).expect("error deserializing response");

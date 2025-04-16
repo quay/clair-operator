@@ -4,21 +4,21 @@
 //! Controller implements common functionality for the controller binary and controller functions
 //! themselves.
 
-use std::{borrow::Cow, env, pin::Pin};
+use std::{collections::HashMap, env, pin::Pin, sync::LazyLock};
 
-// TODO(hank) Use std::sync::LazyLock once it stabilizes.
 use chrono::Utc;
 use futures::Future;
 use k8s_openapi::{api::core, apimachinery::pkg::apis::meta};
-use kube::runtime::events;
-use lazy_static::lazy_static;
+use kube::{api::GroupVersionKind, runtime::events};
 use regex::Regex;
-use tracing::{instrument, trace};
+use tokio::sync::RwLock;
+use tracing::{error, info, instrument, trace, warn};
 
 use api::v1alpha1;
 
 /// Prelude is the common types for CRD controllers.
 pub(crate) mod prelude {
+    #![allow(unused_imports)]
     pub use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
     pub use chrono::Utc;
@@ -43,20 +43,23 @@ pub(crate) mod prelude {
     pub use tokio_util::sync::CancellationToken;
     pub use tracing::{debug, error, info, instrument, trace, warn};
 
-    pub use api::v1alpha1::{self, CrdCommon, SpecCommon, StatusCommon};
+    pub use api::v1alpha1;
 
     pub use super::templates;
-    pub use super::{default_dropin, make_volumes, new_templated};
+    pub use super::{make_volumes, new_templated};
     pub use super::{Context, ControllerFuture, Error, Request, Result};
-    pub use super::{CONTROLLER_NAME, CREATE_PARAMS, PATCH_PARAMS};
+    pub use super::{CONTROLLER_NAME, CREATE_PARAMS, DEFAULT_REQUEUE, PATCH_PARAMS};
 }
 
 pub mod clairs;
 pub mod indexers;
-pub mod matchers;
+//pub mod matchers;
+//pub mod subresource;
+//mod worker;
 
 pub mod templates;
 pub mod updaters;
+pub mod webhook;
 
 // NB The docs are unclear, but backtraces are unsupported on stable.
 /// Error ...
@@ -99,10 +102,10 @@ pub enum Error {
     Tokio(#[from] tokio::task::JoinError),
     /// TLS inidicates some TLS error.
     #[error("tls error: {0}")]
-    TLS(#[from] tokio_native_tls::native_tls::Error),
+    TLS(#[from] openssl::ssl::Error),
     /// ...
-    #[error("webhook server error: {0}")]
-    Webhook(#[from] hyper::Error),
+    //#[error("webhook server error: {0}")]
+    //Webhook(#[from] hyper::Error),
 
     /// MissingName inidcates a name was needed and not provided.
     #[error("missing name for kubernetes object: {0}")]
@@ -130,11 +133,69 @@ pub struct Context {
     pub client: kube::Client,
     /// Image is the fallback container image to use.
     pub image: String,
+    /// ...
+    kinds: RwLock<HashMap<GroupVersionKind, bool>>,
 }
 
 impl std::fmt::Debug for Context {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ctx")
+    }
+}
+
+impl Context {
+    /// New creates a Context object.
+    pub fn new<S>(client: kube::Client, image: S) -> Self
+    where
+        S: ToString,
+    {
+        let image = image.to_string();
+        Self {
+            client,
+            image,
+            kinds: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Gvk_exists reports if the supplied GroupVersionKind is known to exist in this cluster.
+    ///
+    /// This method may need to make requests to the API server.
+    /// This method assumes that a successful response never changes. If a resource is added or
+    /// removed from the cluster after this has returned, the process will need to be restarted to
+    /// see it.
+    pub async fn gvk_exists(&self, gvk: &GroupVersionKind) -> bool {
+        use kube::discovery::oneshot;
+        {
+            let kinds = self.kinds.read().await;
+            if let Some(&ok) = kinds.get(gvk) {
+                return ok;
+            }
+        }
+
+        // Do the lookup without locking the hashmap so that readers aren't blocked behind a
+        // network request. At worst, we'll end up with a few extra API calls. The context can get
+        // "pre-queried" if that's a concern.
+        let lookup = oneshot::pinned_kind(&self.client, gvk).await;
+        let exists = match lookup {
+            Ok((_, _)) => true,
+            Err(error) => {
+                match error {
+                    kube::Error::Discovery(error) => info!(%error, ?gvk, "GVK not available"),
+                    _ => {
+                        error!(%error, ?gvk, "api query error");
+                        // return early so that we'll retry on the next lookup
+                        return false;
+                    }
+                };
+                false
+            }
+        };
+
+        {
+            let mut kinds = self.kinds.write().await;
+            kinds.insert(gvk.clone(), exists);
+        }
+        exists
     }
 }
 
@@ -146,10 +207,10 @@ pub struct Request {
 
 impl Request {
     /// New constructs a Request for the current reconcile request.
-    pub fn new(c: &kube::Client, oref: core::v1::ObjectReference) -> Request {
+    pub fn new(c: &kube::Client) -> Request {
         Request {
             now: meta::v1::Time(Utc::now()),
-            recorder: events::Recorder::new(c.clone(), REPORTER.clone(), oref),
+            recorder: events::Recorder::new(c.clone(), REPORTER.clone()),
         }
     }
     /// Now reports the "now" of this request.
@@ -157,26 +218,30 @@ impl Request {
         self.now.clone()
     }
     /// Publish publishes a kubernetes Event.
-    pub async fn publish(&self, ev: events::Event) -> Result<()> {
-        Ok(self.recorder.publish(ev).await?)
+    pub async fn publish(
+        &self,
+        ev: &events::Event,
+        reference: &core::v1::ObjectReference,
+    ) -> Result<()> {
+        Ok(self.recorder.publish(ev, reference).await?)
     }
 }
 
 /// ControllerFuture is the type the controller constructors should return.
 pub type ControllerFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
 
-lazy_static! {
-    static ref REPORTER: events::Reporter = {
-        events::Reporter {
-            controller: CONTROLLER_NAME.to_string(),
-            instance: env::var("CONTROLLER_POD_NAME").ok(),
-        }
-    };
-}
+static REPORTER: LazyLock<events::Reporter> = LazyLock::new(|| events::Reporter {
+    controller: CONTROLLER_NAME.to_string(),
+    instance: Some(
+        env::var("CONTROLLER_POD_NAME")
+            .unwrap_or_else(|_err| "weird-controller-environment".into()),
+    ),
+});
 
 /// Condition is like [keyify], but does not force lower-case.
 fn condition<S: ToString, K: AsRef<str>>(space: S, key: K) -> String {
     let mut out = space.to_string();
+    out.push('/');
     key.as_ref()
         .chars()
         .map(|c| match c {
@@ -203,41 +268,45 @@ fn keyify<S: ToString, K: AsRef<str>>(space: S, key: K) -> String {
 /// Clair_condition returns the provided argument as a name in the clair-controller's space,
 /// sutable for use as a condition type.
 pub fn clair_condition<S: AsRef<str>>(s: S) -> String {
-    condition("projectclair.io/", s)
+    condition(api::GROUP, s)
 }
 
 /// Clair_label returns the provided argument as a name in the clair-controller's space, sutable
 /// for use as an annotation or label.
 pub fn clair_label<S: AsRef<str>>(s: S) -> String {
-    keyify("projectclair.io/", s)
+    keyify(api::GROUP, s)
 }
 
 /// K8s_label returns the provided argument as a name in the "app.kubernetes.io" space, sutable for
 /// use as an annotation or label.
 pub fn k8s_label<S: AsRef<str>>(s: S) -> String {
-    keyify("app.kubernetes.io/", s)
+    keyify("app.kubernetes.io", s)
 }
+
+/// The semver regexp:
+static SEMVER_REGEXP: LazyLock<Regex> = LazyLock::new(|| {
+    const RE: &str = r#"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"#;
+    Regex::new(RE).expect("programmer error: bad static regexp")
+});
 
 /// Image_version returns the version for an image, if present.
 ///
 /// Semver versions are the only accepted version strings.
-pub fn image_version<'s>(img: &'s str) -> Option<&'s str> {
-    // The semver regexp:
-    lazy_static! {
-        static ref RE: Regex = Regex::new(r#"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"#).unwrap();
-    }
+pub fn image_version(img: &str) -> Option<&str> {
     img.split_once(':')
         .map(|(_, t)| t)
-        .filter(|t| RE.is_match(t))
+        .filter(|t| SEMVER_REGEXP.is_match(t))
 }
 
 /// New_templated returns a `K` with patches for `S` applied and the owner set to `obj`.
 #[instrument(skip_all)]
 pub async fn new_templated<S, K>(obj: &S, _ctx: &Context) -> Result<K>
 where
-    S: v1alpha1::CrdCommon,
+    S: kube::Resource<DynamicType = ()>,
     K: kube::Resource<DynamicType = ()> + serde::de::DeserializeOwned,
 {
+    Ok(templates::render(obj))
+    /*
     use kube::ResourceExt;
     let oref = obj
         .controller_owner_ref(&())
@@ -254,56 +323,7 @@ where
     v.meta_mut().name = Some(format!("{}-{okind}", obj.name_any()));
 
     Ok(v)
-}
-
-/// Default_dropin creates a default dropin describing the provided object, returning the name of
-/// the ConfigMap key it was placed in and the created ConfigMap.
-#[instrument(skip_all)]
-pub async fn default_dropin<S>(
-    obj: &S,
-    flavor: v1alpha1::ConfigDialect,
-    _ctx: &Context,
-) -> Result<(String, core::v1::ConfigMap)>
-where
-    S: v1alpha1::CrdCommon,
-{
-    use kube::ResourceExt;
-    use std::collections::BTreeMap;
-
-    use self::core::v1::ConfigMap;
-    use self::meta::v1::ObjectMeta;
-    use self::v1alpha1::ConfigDialect;
-
-    let oref = obj
-        .controller_owner_ref(&())
-        .expect("unable to create owner ref");
-    let okind = S::kind(&()).to_ascii_lowercase();
-    trace!(kind = okind, "requesting dropin");
-    let buf = crate::templates::dropin_for(&okind)
-        .await
-        .map_err(|err| Error::Assets(err.to_string()))?;
-    let buf = match flavor {
-        ConfigDialect::JSON => {
-            String::from(std::str::from_utf8(&buf).map_err(|err| Error::Assets(err.to_string()))?)
-        }
-        ConfigDialect::YAML => {
-            serde_yaml::to_string(&serde_json::from_slice::<json_patch::Patch>(&buf)?)?
-        }
-    };
-    let key = format!("10-{okind}-dropin.{flavor}-patch");
-    Ok((
-        key.clone(),
-        ConfigMap {
-            metadata: ObjectMeta {
-                name: Some(format!("{}-{okind}", obj.name_any(),)),
-                owner_references: Some(vec![oref]),
-                annotations: Some(BTreeMap::from([(DROPIN_LABEL.to_string(), key.clone())])),
-                ..Default::default()
-            },
-            data: Some(BTreeMap::from([(key, buf)])),
-            ..Default::default()
-        },
-    ))
+    */
 }
 
 /// Make_volumes generates the Volumes and VolumeMounts for the provided ConfigSource. The created
@@ -321,12 +341,12 @@ pub fn make_volumes(
 
     let root = String::from("/etc/clair/");
     let rootname = String::from("root-config");
-    let filename = root + &cfgsrc.root.key;
+    let filename = format!("{root}/{}", &cfgsrc.root.key);
     assert!(filename.ends_with(".json") || filename.ends_with(".yaml"));
     vols.push(Volume {
         name: rootname.clone(),
         config_map: Some(ConfigMapVolumeSource {
-            name: Some(cfgsrc.root.name.clone()),
+            name: cfgsrc.root.name.clone(),
             items: Some(vec![KeyToPath {
                 key: cfgsrc.root.key.clone(),
                 path: cfgsrc.root.key.clone(),
@@ -352,7 +372,7 @@ pub fn make_volumes(
         let mut v: VolumeProjection = Default::default();
         if let Some(cfgref) = d.config_map_key_ref.as_ref() {
             v.config_map = Some(ConfigMapProjection {
-                name: Some(cfgref.name.clone()),
+                name: cfgref.name.clone(),
                 optional: Some(false),
                 items: Some(vec![KeyToPath {
                     path: cfgref.key.clone(),
@@ -362,7 +382,7 @@ pub fn make_volumes(
             })
         } else if let Some(secref) = d.secret_key_ref.as_ref() {
             v.secret = Some(SecretProjection {
-                name: Some(secref.name.clone()),
+                name: secref.name.clone(),
                 optional: Some(false),
                 items: Some(vec![KeyToPath {
                     path: secref.key.clone(),
@@ -407,51 +427,58 @@ pub fn set_component_label(meta: &mut meta::v1::ObjectMeta, c: &str) {
 #[cfg(debug_assertions)]
 const DEFAULT_CONTAINER_TAG: &str = "nightly";
 #[cfg(not(debug_assertions))]
-const DEFAULT_CONTAINER_TAG: &str = "4.7.0";
+const DEFAULT_CONTAINER_TAG: &str = "4.8.0";
 const DEFAULT_CONTAINER_REPOSITORY: &str = "quay.io/projectquay/clair";
-lazy_static! {
-    /// DEFAULT_IMAGE is the container image to use for Clair deployments if not specified in a
-    /// CRD.
-    ///
-    /// The repository and tag components can be changed by providing the environment variables
-    /// `CONTAINER_REPOSITORY` or `CONTAINER_TAG` respectively at compile-time.
-    pub static ref DEFAULT_IMAGE: String = format!(
+
+/// DEFAULT_IMAGE is the container image to use for Clair deployments if not specified in a
+/// CRD.
+///
+/// The repository and tag components can be changed by providing the environment variables
+/// `CONTAINER_REPOSITORY` or `CONTAINER_TAG` respectively at compile-time.
+pub static DEFAULT_IMAGE: LazyLock<String> = LazyLock::new(|| {
+    format!(
         "{}:{}",
         option_env!("CONTAINER_REPOSITORY").unwrap_or(DEFAULT_CONTAINER_REPOSITORY),
         option_env!("CONTAINER_TAG").unwrap_or(DEFAULT_CONTAINER_TAG),
-    );
-}
+    )
+});
 
-lazy_static! {
-    /// DEFAULT_CONFIG_JSON is the JSON version of the default config.
-    pub static ref DEFAULT_CONFIG_JSON: Cow<'static, [u8]> = {
-        let v: serde_json::Value  = serde_yaml::from_slice(&(templates::base::DEFAULT_CONFIG_YAML.get_bytes)()).unwrap();
-        serde_json::to_vec(&v).unwrap().into()
-    };
-    /// DEFAULT_CONFIG_YAML is the YAML version of the default config.
-    pub static ref DEFAULT_CONFIG_YAML: Cow<'static, [u8]> = {
-        // Doesn't really need to be a lazy_static, but keeps it consistent with the json.
-        (templates::base::DEFAULT_CONFIG_YAML.get_bytes)()
-    };
+/// DEFAULT_CONFIG_JSON is the JSON version of the default config.
+pub static DEFAULT_CONFIG_JSON: &str = include_str!("default_config.json");
 
-    /// COMPONENT_LABEL is the well-know "component" label.
-    pub static ref COMPONENT_LABEL: String = k8s_label("component");
-    /// APP_NAME_LABEL is a label for Clair in the "app.kubernetes.io" space.
-    pub static ref APP_NAME_LABEL: String = k8s_label("clair");
-    /// DROPIN_LABEL is a label denoting which key in a ConfigMap is the managed dropin.
-    ///
-    /// TODO(hank): This is actually an annotation.
-    pub static ref DROPIN_LABEL: String = clair_label("dropin-key");
+/// DEFAULT_CONFIG_YAML is the YAML version of the default config.
+pub static DEFAULT_CONFIG_YAML: LazyLock<String> = LazyLock::new(|| {
+    let v: serde_json::Value =
+        serde_json::from_str(DEFAULT_CONFIG_JSON).expect("programmer error: bad config");
+    serde_yaml::to_string(&v).expect("programmer error: bad config")
+});
 
+/// COMPONENT_LABEL is the well-know "component" label.
+pub static COMPONENT_LABEL: LazyLock<String> = LazyLock::new(|| k8s_label("component"));
 
-    /// CREATE_PARAMS is default post paramaters.
-    pub static ref CREATE_PARAMS: kube::api::PostParams = kube::api::PostParams {
+/// APP_NAME_LABEL is a label for Clair in the "app.kubernetes.io" space.
+pub static APP_NAME_LABEL: LazyLock<String> = LazyLock::new(|| k8s_label("clair"));
+
+/// DROPIN_LABEL is a label denoting which key in a ConfigMap is the managed dropin.
+///
+/// TODO(hank): This is actually an annotation.
+pub static DROPIN_LABEL: LazyLock<String> = LazyLock::new(|| clair_label("dropin-key"));
+
+/// CREATE_PARAMS is default post paramaters.
+pub static CREATE_PARAMS: LazyLock<kube::api::PostParams> =
+    LazyLock::new(|| kube::api::PostParams {
         dry_run: false,
         field_manager: Some(String::from(CONTROLLER_NAME)),
-    };
-    /// PATCH_PARAMS is default patch paramaters.
-    pub static ref PATCH_PARAMS: kube::api::PatchParams = kube::api::PatchParams::apply(CONTROLLER_NAME);
-}
+    });
+
+/// PATCH_PARAMS is default patch paramaters.
+pub static PATCH_PARAMS: LazyLock<kube::api::PatchParams> =
+    LazyLock::new(|| kube::api::PatchParams::apply(CONTROLLER_NAME).validation_strict());
+
+/// DEFAULT_REQUEUE is the default requeuing time for controllers.
+pub static DEFAULT_REQUEUE: LazyLock<kube::runtime::controller::Action> = LazyLock::new(|| {
+    kube::runtime::controller::Action::requeue(tokio::time::Duration::from_secs(60 * 60))
+});
 
 /// CONTROLLER_NAME is the name the controller uses whenever it needs a human-readable name.
 pub const CONTROLLER_NAME: &str = "clair-controller";

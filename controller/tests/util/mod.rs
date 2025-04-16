@@ -12,10 +12,7 @@ pub async fn test_context() -> Arc<Context> {
     let client = kube::client::ClientBuilder::try_from(config.clone())
         .expect("unable to create client builder")
         .build();
-    Arc::new(Context {
-        client,
-        image: DEFAULT_IMAGE.clone(),
-    })
+    Arc::new(Context::new(client, DEFAULT_IMAGE.as_str()))
 }
 
 pub async fn load_crds(client: &kube::Client) -> Result<()> {
@@ -63,6 +60,7 @@ fn workspace() -> std::path::PathBuf {
         .to_path_buf()
 }
 
+#[allow(unused_imports)]
 pub mod prelude {
     pub use std::sync::Arc;
 

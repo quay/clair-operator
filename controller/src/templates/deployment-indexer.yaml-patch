@@ -11,4 +11,4 @@
   path: /spec/template/spec/containers/0/env/-
   value:
     name: CLAIR_MODE
-	value: indexer
+    value: indexer

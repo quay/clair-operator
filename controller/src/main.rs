@@ -4,11 +4,8 @@ use std::{
     sync::Arc,
 };
 
-use futures::prelude::*;
 use is_terminal::IsTerminal;
-use tokio::net::TcpListener;
-use tokio_native_tls::{native_tls, TlsAcceptor};
-use tokio_stream::wrappers::TcpListenerStream;
+
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -120,10 +117,7 @@ impl TryFrom<&clap::ArgMatches> for Args {
 
 impl Args {
     fn context(&self, client: kube::Client) -> Arc<Context> {
-        Arc::new(Context {
-            client,
-            image: self.image.clone(),
-        })
+        Arc::new(Context::new(client, &self.image))
     }
 }
 
@@ -187,9 +181,9 @@ async fn run(args: Args, token: CancellationToken) -> controller::Result<()> {
         let fut = match name.to_lowercase().as_str() {
             "clair" | "clairs" => clairs::controller(token.clone(), ctx.clone())?,
             "indexer" | "indexers" => indexers::controller(token.clone(), ctx.clone())?,
-            "matcher" | "matchers" => matchers::controller(token.clone(), ctx.clone())?,
-            "notifier" | "notifiers" => todo!(),
-            "updater" | "updaters" => todo!(),
+            //"matcher" | "matchers" => matchers::controller(token.clone(), ctx.clone())?,
+            //"notifier" | "notifiers" => todo!(),
+            //"updater" | "updaters" => todo!(),
             other => {
                 warn!(name = other, "unrecognized controller name, skipping");
                 continue;
@@ -215,44 +209,34 @@ async fn webhooks<A, Pa, Pb>(
     addr: A,
     certfile: Pa,
     keyfile: Pb,
-    cancel: CancellationToken,
+    _cancel: CancellationToken,
 ) -> controller::Result<()>
 where
     A: Into<SocketAddr>,
     Pa: AsRef<Path>,
     Pb: AsRef<Path>,
 {
-    use axum::Server;
-    use hyper::server::accept;
-
-    use webhook::State;
+    use crate::webhook::State;
+    use axum_server::tls_openssl::{OpenSSLAcceptor, OpenSSLConfig};
 
     let certfile = certfile.as_ref();
     let keyfile = keyfile.as_ref();
     let addr = addr.into();
 
     let client = kube::Client::try_default().await?;
-    let app = webhook::app(State::new(client));
-    let l = TcpListenerStream::new(TcpListener::bind(addr).await?).map_err(Error::from);
-    info!(%addr, "started webhook server");
+    let app = crate::webhook::app(State::new(client));
+    info!(%addr, "starting webhook server");
     // I can't figure out how to name the listener type such that it's either
     // TryStream<TcpStream> or TryStream<TlsStream<TcpStream>>.
+    let srv = axum_server::bind(addr);
     if certfile.exists() && keyfile.exists() {
         let (cert, key) = tokio::join!(tokio::fs::read(certfile), tokio::fs::read(keyfile));
-        let id = native_tls::Identity::from_pkcs8(&cert?, &key?)?;
-        let acceptor = TlsAcceptor::from(native_tls::TlsAcceptor::new(id)?);
-        let l = l
-            .map_ok(|s| (s, acceptor.clone()))
-            .and_then(|(s, a)| async move { a.accept(s).await.map_err(Error::from) });
-        Server::builder(accept::from_stream(l))
+        let cfg = OpenSSLConfig::from_pem(&cert?, &key?)?;
+        srv.acceptor(OpenSSLAcceptor::new(cfg))
             .serve(app.into_make_service())
-            .with_graceful_shutdown(cancel.cancelled_owned())
             .await
     } else {
-        Server::builder(accept::from_stream(l))
-            .serve(app.into_make_service())
-            .with_graceful_shutdown(cancel.cancelled_owned())
-            .await
+        srv.serve(app.into_make_service()).await
     }
     .map_err(Error::from)
 }

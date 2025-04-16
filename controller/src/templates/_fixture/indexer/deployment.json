@@ -1,0 +1,104 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+    "name": "test-indexer",
+    "labels": {
+      "app.kubernetes.io/component": "indexer",
+      "app.kubernetes.io/name": "clair",
+      "app.kubernetes.io/managed-by": "clair-operator"
+    }
+  },
+  "spec": {
+    "selector": {
+      "matchLabels": {
+      "app.kubernetes.io/component": "indexer",
+        "app.kubernetes.io/name": "clair",
+        "app.kubernetes.io/managed-by": "clair-operator"
+      }
+    },
+    "replicas": 1,
+	"revisionHistoryLimit": 3,
+    "template": {
+      "metadata": {
+        "labels": {
+      "app.kubernetes.io/component": "indexer",
+          "app.kubernetes.io/name": "clair",
+          "app.kubernetes.io/managed-by": "clair-operator"
+        }
+      },
+      "spec": {
+        "terminationGracePeriodSeconds": 10,
+        "securityContext": {
+          "runAsUser": 65532
+        },
+        "shareProcessNamespace": true,
+        "volumes": [],
+        "containers": [
+          {
+            "name": "clair",
+            "image": "quay.io/projectquay/clair:nightly",
+            "ports": [
+              {
+                "name": "api",
+                "containerPort": 6060
+              },
+              {
+                "name": "introspection",
+                "containerPort": 8089
+              }
+            ],
+            "env": [
+              {
+                "name": "GOMAXPROCS",
+                "valueFrom": {
+                  "resourceFieldRef": {
+                    "containerName": "clair",
+                    "resource": "requests.cpu"
+                  }
+                }
+              },
+              {
+                "name": "CLAIR_MODE",
+				"value": "indexer"
+			  }
+            ],
+            "volumeMounts": [],
+            "workingDir": "/run/clair",
+            "securityContext": {
+              "allowPrivilegeEscalation": false
+            },
+            "resources": {
+              "requests": {
+                "cpu": "1"
+              }
+            },
+            "startupProbe": {
+              "tcpSocket": {
+                "port": "api"
+              },
+              "initialDelaySeconds": 5,
+              "periodSeconds": 1
+            },
+            "livenessProbe": {
+              "httpGet": {
+                "path": "/healthz",
+                "port": "introspection"
+              },
+              "initialDelaySeconds": 15,
+              "periodSeconds": 20
+            },
+            "readinessProbe": {
+              "httpGet": {
+                "path": "/readyz",
+                "port": "introspection"
+              },
+              "initialDelaySeconds": 5,
+              "periodSeconds": 10
+            }
+          }
+        ]
+      }
+    }
+  }
+}

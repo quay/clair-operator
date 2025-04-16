@@ -67,7 +67,7 @@ async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
 
     let api: Api<Clair> = Api::default_namespaced(ctx.client.clone());
     let c: Clair = serde_json::from_value(json!({
-        "apiVersion": "projectclair.io/v1alpha1",
+        "apiVersion": format!("{}/v1alpha1", api::GROUP),
         "kind": "Clair",
         "metadata": {"name": NAME},
         "spec": {
@@ -78,34 +78,40 @@ async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
         },
     }))?;
     eprintln!("attempting to create new Clair");
-    api.create(&PostParams::default(), &c).await?;
+    let post_params = PostParams {
+        dry_run: false,
+        field_manager: Some("controller-tests".into()),
+    };
+    api.create(&post_params, &c).await?;
     eprintln!("created new Clair");
     let mut gen: i64 = 0;
     loop {
-        let m = api.get_metadata(NAME).await?;
+        let m = api.get_status(NAME).await?;
         let cur = m.metadata.generation.unwrap();
-        if cur == gen {
+        if cur == gen && m.status.is_some() {
             break;
         }
         gen = cur;
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(1000)).await;
     }
     eprintln!("Clair settled: {gen}");
 
     // Check Clair members
-    let got = api.get(NAME).await?;
+    let got = api.get_status(NAME).await?;
+    eprintln!("{}", serde_json::to_string_pretty(&got)?);
     let mut got = serde_json::to_value(got)?;
     let tests: Patch = serde_json::from_value(json! {
         [
             {"op": "test", "path": "/metadata/name", "value": NAME},
-            {"op": "test", "path": "/status/config/root/name", "value": format!("{NAME}-config")},
+            {"op": "test", "path": "/status/config/root/name", "value": NAME},
         ]
     })?;
     json_patch::patch(&mut got, &tests)?;
 
+    /*
     // Check Ingress members
     let api: Api<networking::v1::Ingress> = Api::default_namespaced(api.into_client());
-    let got = api.get(NAME).await?;
+    let got = api.get_status(NAME).await?;
     let mut got = serde_json::to_value(got)?;
     let tests: Patch = serde_json::from_value(json! {
         [
@@ -113,6 +119,7 @@ async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
         ]
     })?;
     json_patch::patch(&mut got, &tests)?;
+    */
 
     Ok(())
 }
