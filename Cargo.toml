@@ -4,40 +4,69 @@ members = [
 	"api",
 	"clair_config",
 	"controller",
-	"webhook",
 	"xtask",
 ]
 default-members = [
-	"api",
-	"clair_config",
 	"controller",
-	"webhook",
 ]
 
 [workspace.package]
+license = "Apache-2.0"
 version = "0.1.0"
 authors = ["The clair-operator Authors"]
 edition = "2021"
+rust-version = "1.83"
+publish = false
+
+[workspace.lints.rust]
+arithmetic_overflow = "deny" # Prevent operations that would cause integer overflow
+[workspace.lints.clippy]
+checked_conversions = "deny" # Suggest using checked conversions between numeric types
+cast_possible_truncation = "deny" # Detect when casting might truncate a value
+cast_sign_loss = "deny" # Detect when casting might lose sign information
+cast_possible_wrap = "deny" # Detect when casting might cause value to wrap around
+cast_precision_loss = "deny" # Detect when casting might lose precision
+integer_division = "deny" # Highlight potential bugs from integer division truncation
+arithmetic_side_effects = "deny" # Detect arithmetic operations with potential side effects
+unchecked_duration_subtraction = "deny" # Ensure duration subtraction won't cause underflow
+#unwrap_used = "deny" # Discourage using .unwrap() which can cause panics
+#expect_used = "deny" # Discourage using .expect() which can cause panics
+panicking_unwrap = "deny" # Prevent unwrap on values known to cause panics
+option_env_unwrap = "deny" # Prevent unwrapping environment variables which might be absent
+#indexing_slicing = "deny" # Avoid direct array indexing and use safer methods like .get()
+join_absolute_paths = "deny" # Prevent issues when joining paths with absolute paths
+serde_api_misuse = "deny" # Prevent incorrect usage of Serde's serialization/deserialization API
+uninit_vec = "deny" # Prevent creating uninitialized vectors which is unsafe
+transmute_int_to_char = "deny" # Prevent unsafe transmutation from integers to characters
+transmute_int_to_float = "deny" # Prevent unsafe transmutation from integers to floats
+transmute_ptr_to_ref = "deny" # Prevent unsafe transmutation from pointers to references
+transmute_undefined_repr = "deny" # Detect transmutes with potentially undefined representations
 
 [workspace.dependencies]
-clap = { version = "4.4", features = ["cargo", "env", "string"] }
 futures = "0.3"
-hyper = { version = "0.14", features = ["server", "http1"] }
-json-patch = "1.0"
-k8s-openapi = { version = "0.20", default-features = false, features = ["schemars"] }
-kube = { version = "0.86", features = ["runtime", "derive", "client", "config", "admission", "openssl-tls", "ws", "gzip", "jsonpatch"] }
-metrics = "0.21"
-serde_json = "1.0"
-serde = { version = "1.0", features = ["derive"] }
+json-patch = "4"
+metrics = "0.24"
+serde_json = "1"
 serde_yaml = "0.9"
-tokio = { version = "1.28", features = ["full"] }
-tokio-stream = { version = "0.1", features = ["net", "signal"] }
 tracing = "0.1"
+k8s-openapi = "0.24"
+clap = { version = "4", features = ["cargo", "env", "string"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1.37", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["net", "signal"] }
+
+[workspace.dependencies.kube]
+version = "0.99"
+default-features = false
+#features = ["runtime", "derive", "client", "config", "admission", "openssl-tls", "ws", "gzip", "jsonpatch"]
 
 [profile.dev]
 split-debuginfo = "unpacked"
+[profile.dev.package."*"]
+opt-level = 3
 [profile.dev.build-override]
 opt-level = 3
+
 [profile.release]
 debug = 1
 lto = "thin"
@@ -45,7 +74,7 @@ lto = "thin"
 [workspace.metadata.controller.default]
 clair-image-tag = "nightly"
 [workspace.metadata.controller.release]
-clair-image-tag = "4.6.1"
+clair-image-tag = "4.8.0"
 
 [workspace.metadata.ci]
-kind-version = ['1.25']
+kind-version = ['1.28']
