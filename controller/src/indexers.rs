@@ -8,6 +8,7 @@ use std::sync::{Arc, LazyLock};
 use kube::{
     api::{Api, Patch},
     client::Client,
+    core::GroupVersionKind,
     runtime::controller::Error as CtrlErr,
     ResourceExt,
 };
@@ -23,6 +24,11 @@ use crate::{clair_condition, prelude::*, COMPONENT_LABEL};
 use v1alpha1::Indexer;
 
 static COMPONENT: LazyLock<String> = LazyLock::new(|| Indexer::kind(&()).to_ascii_lowercase());
+static SELF_GVK: LazyLock<GroupVersionKind> = LazyLock::new(|| GroupVersionKind {
+    group: Indexer::group(&()).to_string(),
+    version: Indexer::version(&()).to_string(),
+    kind: Indexer::kind(&()).to_string(),
+});
 
 /// Controller is the Indexer controller.
 ///
@@ -33,28 +39,47 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
     let ctlcfg = watcher::Config::default();
     let sig = SignalStream::new(signal(SignalKind::user_defined1())?);
 
-    let ctl = Controller::new(
-        Api::<Indexer>::default_namespaced(client.clone()),
-        ctlcfg.clone(),
-    )
-    .owns(
-        Api::<apps::v1::Deployment>::default_namespaced(client.clone()),
-        ctlcfg.clone(),
-    )
-    .owns(
-        Api::<apps::v1::StatefulSet>::default_namespaced(client.clone()),
-        ctlcfg.clone(),
-    )
-    .owns(
-        Api::<autoscaling::v2::HorizontalPodAutoscaler>::default_namespaced(client.clone()),
-        ctlcfg.clone(),
-    )
-    .owns(Api::<core::v1::Service>::default_namespaced(client), ctlcfg)
-    .reconcile_all_on(sig)
-    .graceful_shutdown_on(cancel.cancelled_owned());
-
     Ok(async move {
         info!("spawning indexer controller");
+
+        let mut ctl = Controller::new(Api::<Indexer>::all(client.clone()), ctlcfg.clone())
+            .owns(
+                Api::<apps::v1::Deployment>::all(client.clone()),
+                ctlcfg.clone(),
+            )
+            .owns(
+                Api::<apps::v1::StatefulSet>::all(client.clone()),
+                ctlcfg.clone(),
+            )
+            .owns(
+                Api::<autoscaling::v2::HorizontalPodAutoscaler>::all(client.clone()),
+                ctlcfg.clone(),
+            )
+            .owns(
+                Api::<core::v1::Service>::all(client.clone()),
+                ctlcfg.clone(),
+            );
+        if ctx.gvk_exists(&crate::GATEWAY_NETWORKING_HTTPROUTE).await {
+            ctl = ctl.owns(
+                Api::<gateway_api::apis::standard::httproutes::HTTPRoute>::all(client.clone()),
+                ctlcfg.clone(),
+            );
+        }
+        if ctx.gvk_exists(&crate::GATEWAY_NETWORKING_GRPCROUTE).await {
+            ctl = ctl.owns(
+                Api::<gateway_api::apis::experimental::grpcroutes::GRPCRoute>::all(client.clone()),
+                ctlcfg.clone(),
+            );
+        }
+        let ctl = ctl
+            .reconcile_all_on(sig)
+            .graceful_shutdown_on(cancel.cancelled_owned());
+
+        if !ctx.gvk_exists(&SELF_GVK).await {
+            error!("CRD is not queryable ({SELF_GVK:?}); is the CRD installed?");
+            return Err(Error::BadName("no CRD".into()));
+        }
+
         ctl.run(reconcile, handle_error, ctx)
             .for_each(|ret| {
                 match ret {
@@ -72,6 +97,7 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
             })
             .await;
         debug!("indexer controller finished");
+
         Ok(())
     }
     .boxed())

@@ -483,6 +483,16 @@ pub static DEFAULT_REQUEUE: LazyLock<kube::runtime::controller::Action> = LazyLo
 /// CONTROLLER_NAME is the name the controller uses whenever it needs a human-readable name.
 pub const CONTROLLER_NAME: &str = "clair-controller";
 
+/// GVK for `gateway.networking.k8s.io/v1/Gateway`.
+pub static GATEWAY_NETWORKING_GATEWAY: LazyLock<GroupVersionKind> =
+    LazyLock::new(|| GroupVersionKind::gvk("gateway.networking.k8s.io", "v1", "Gateway"));
+/// GVK for `gateway.networking.k8s.io/v1/HTTPRoute`.
+pub static GATEWAY_NETWORKING_HTTPROUTE: LazyLock<GroupVersionKind> =
+    LazyLock::new(|| GroupVersionKind::gvk("gateway.networking.k8s.io", "v1", "HTTPRoute"));
+/// GVK for `gateway.networking.k8s.io/v1/GRPCRoute`.
+pub static GATEWAY_NETWORKING_GRPCROUTE: LazyLock<GroupVersionKind> =
+    LazyLock::new(|| GroupVersionKind::gvk("gateway.networking.k8s.io", "v1", "GRPCRoute"));
+
 /*
 use futures::future;
 use kube::discovery;

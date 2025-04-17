@@ -1,6 +1,9 @@
 //! Clairs holds the controller for the "Clair" CRD.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, LazyLock},
+};
 
 use k8s_openapi::{api::core::v1::TypedLocalObjectReference, merge_strategies, DeepMerge};
 use kube::{
@@ -18,8 +21,14 @@ use tokio_stream::wrappers::SignalStream;
 
 use crate::{clair_condition, prelude::*, COMPONENT_LABEL, DEFAULT_CONFIG_JSON, DEFAULT_IMAGE};
 use clair_config;
+use v1alpha1::Clair;
 
-static COMPONENT: &str = "clair";
+static COMPONENT: LazyLock<String> = LazyLock::new(|| Clair::kind(&()).to_ascii_lowercase());
+static SELF_GVK: LazyLock<GroupVersionKind> = LazyLock::new(|| GroupVersionKind {
+    group: Clair::group(&()).to_string(),
+    version: Clair::version(&()).to_string(),
+    kind: Clair::kind(&()).to_string(),
+});
 
 /// Controller is the Clair controller.
 ///
@@ -31,38 +40,39 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
     let root: Api<v1alpha1::Clair> = Api::all(client.clone());
     let sig = SignalStream::new(signal(SignalKind::user_defined1())?);
 
-    let ctl = Controller::new(root, ctlcfg.clone())
-        .owns(
-            Api::<v1alpha1::Indexer>::all(client.clone()),
-            ctlcfg.clone(),
-        )
-        .owns(
-            Api::<v1alpha1::Matcher>::all(client.clone()),
-            ctlcfg.clone(),
-        )
-        .owns(
-            Api::<v1alpha1::Notifier>::all(client.clone()),
-            ctlcfg.clone(),
-        )
-        .owns(Api::<core::v1::Secret>::all(client.clone()), ctlcfg.clone())
-        .owns(
-            Api::<core::v1::ConfigMap>::all(client.clone()),
-            ctlcfg.clone(),
-        )
-        .owns(Api::<batch::v1::Job>::all(client.clone()), ctlcfg.clone()) /*
-        .owns(
-            Api::<networking::v1::Ingress>::default_namespaced(client),
-            ctlcfg,
-        )*/
-        .reconcile_all_on(sig)
-        .graceful_shutdown_on(cancel.cancelled_owned());
-
     Ok(async move {
+        let mut ctl = Controller::new(root, ctlcfg.clone())
+            .owns(
+                Api::<v1alpha1::Indexer>::all(client.clone()),
+                ctlcfg.clone(),
+            )
+            .owns(
+                Api::<v1alpha1::Matcher>::all(client.clone()),
+                ctlcfg.clone(),
+            )
+            .owns(
+                Api::<v1alpha1::Notifier>::all(client.clone()),
+                ctlcfg.clone(),
+            )
+            .owns(Api::<core::v1::Secret>::all(client.clone()), ctlcfg.clone())
+            .owns(
+                Api::<core::v1::ConfigMap>::all(client.clone()),
+                ctlcfg.clone(),
+            )
+            .owns(Api::<batch::v1::Job>::all(client.clone()), ctlcfg.clone());
+        if ctx.gvk_exists(&crate::GATEWAY_NETWORKING_GATEWAY).await {
+            ctl = ctl.owns(
+                Api::<gateway_api::apis::standard::gateways::Gateway>::all(client.clone()),
+                ctlcfg.clone(),
+            );
+        }
+        ctl = ctl
+            .reconcile_all_on(sig)
+            .graceful_shutdown_on(cancel.cancelled_owned());
         info!("starting clair controller");
 
-        let clairs: Api<v1alpha1::Clair> = Api::all(client.clone());
-        if let Err(e) = clairs.list(&ListParams::default().limit(1)).await {
-            error!("CRD is not queryable; {e:?}. Is the CRD installed?");
+        if !ctx.gvk_exists(&SELF_GVK).await {
+            error!("CRD is not queryable ({SELF_GVK:?}); is the CRD installed?");
             return Err(Error::BadName("no CRD".into()));
         }
 
@@ -118,7 +128,7 @@ async fn reconcile(clair: Arc<v1alpha1::Clair>, ctx: Arc<Context>) -> Result<Act
                 owner_references: Some(vec![owner_ref.clone()]),
                 labels: Some(BTreeMap::from([(
                     COMPONENT_LABEL.to_string(),
-                    COMPONENT.into(),
+                    COMPONENT.to_string(),
                 )])),
                 ..Default::default()
             },
@@ -384,7 +394,7 @@ async fn reconcile(clair: Arc<v1alpha1::Clair>, ctx: Arc<Context>) -> Result<Act
                 owner_references: Some(vec![owner_ref.clone()]),
                 labels: Some(BTreeMap::from([(
                     COMPONENT_LABEL.to_string(),
-                    COMPONENT.into(),
+                    COMPONENT.to_string(),
                 )])),
                 ..Default::default()
             },
@@ -436,7 +446,7 @@ async fn reconcile(clair: Arc<v1alpha1::Clair>, ctx: Arc<Context>) -> Result<Act
                 owner_references: Some(vec![owner_ref.clone()]),
                 labels: Some(BTreeMap::from([(
                     COMPONENT_LABEL.to_string(),
-                    COMPONENT.into(),
+                    COMPONENT.to_string(),
                 )])),
                 ..Default::default()
             },
@@ -491,7 +501,7 @@ async fn reconcile(clair: Arc<v1alpha1::Clair>, ctx: Arc<Context>) -> Result<Act
                 owner_references: Some(vec![owner_ref.clone()]),
                 labels: Some(BTreeMap::from([(
                     COMPONENT_LABEL.to_string(),
-                    COMPONENT.into(),
+                    COMPONENT.to_string(),
                 )])),
                 ..Default::default()
             },
@@ -678,7 +688,7 @@ async fn new_ingress(obj: &v1alpha1::Clair) -> Result<networking::v1::Ingress> {
     let mut v: Ingress = templates::render(obj);
     v.metadata.owner_references = Some(vec![oref]);
     v.metadata.name = Some(obj.name_any());
-    crate::set_component_label(v.meta_mut(), COMPONENT);
+    crate::set_component_label(v.meta_mut(), COMPONENT.as_str());
 
     let spec = v.spec.as_mut().expect("bad Ingress from template");
     // Attach TLS config if provided.
