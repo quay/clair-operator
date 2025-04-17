@@ -129,7 +129,7 @@ fn main() {
         Some(("demo", m)) => demo(m.into()),
         Some(("deploy", m)) => deploy(sh, m.into()),
         Some(("install", _)) => install(sh),
-        Some(("manifests", _)) => manifests(),
+        Some(("manifests", m)) => manifests(m.into()),
         Some(("undeploy", m)) => undeploy(sh, m.into()),
         Some(("uninstall", _)) => uninstall(sh),
         Some((unknown, _)) => Err(format!("unknown subcommand: {unknown}").into()),
@@ -389,9 +389,9 @@ macro_rules! write_crds {
     }
 }
 
-fn manifests() -> Result<()> {
+fn manifests(opts: ManifestsOpts) -> Result<()> {
     use api::v1alpha1;
-    let out = &CONFIG_DIR.join("crd");
+    let out = &opts.out_dir;
     write_crds!(
         out,
         v1alpha1::Clair,
@@ -416,6 +416,20 @@ where
     serde_yaml::to_writer(&w, &doc)?;
     eprintln!("# wrote: {}", out.file_name().unwrap().to_string_lossy());
     Ok(())
+}
+
+struct ManifestsOpts {
+    out_dir: PathBuf,
+}
+
+impl From<&clap::ArgMatches> for ManifestsOpts {
+    fn from(m: &clap::ArgMatches) -> Self {
+        let mut out_dir = m.get_one::<String>("out_dir").map(PathBuf::from).unwrap();
+        if !out_dir.is_absolute() {
+            out_dir = WORKSPACE.join(out_dir);
+        }
+        Self { out_dir }
+    }
 }
 
 fn install(sh: Shell) -> Result<()> {
