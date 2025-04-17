@@ -50,6 +50,9 @@ spec:
                     - key
                     - name
                     type: object
+                    x-kubernetes-validations:
+                    - message: '"key" and "name" must be populated'
+                      rule: self.name != '' && self.key != ''
                   matcher:
                     description: Matcher references the Secret key holding database details for the matcher database.
                     properties:
@@ -63,6 +66,9 @@ spec:
                     - key
                     - name
                     type: object
+                    x-kubernetes-validations:
+                    - message: '"key" and "name" must be populated'
+                      rule: self.name != '' && self.key != ''
                   notifier:
                     description: |-
                       Notifier references the Secret key holding database details for the notifier database.
@@ -80,10 +86,14 @@ spec:
                     - key
                     - name
                     type: object
+                    x-kubernetes-validations:
+                    - message: '"key" and "name" must be populated'
+                      rule: self.name != '' && self.key != ''
                 required:
                 - indexer
                 - matcher
                 type: object
+                x-kubernetes-validations: []
               dropins:
                 description: |-
                   Dropins references additional config drop-in files.
@@ -106,6 +116,9 @@ spec:
                       - key
                       - name
                       type: object
+                      x-kubernetes-validations:
+                      - message: '"key" and "name" must be populated'
+                        rule: self.name != '' && self.key != ''
                     secretKeyRef:
                       description: Selects a key of a Secret.
                       nullable: true
@@ -120,7 +133,13 @@ spec:
                       - key
                       - name
                       type: object
+                      x-kubernetes-validations:
+                      - message: '"key" and "name" must be populated'
+                        rule: self.name != '' && self.key != ''
                   type: object
+                  x-kubernetes-validations:
+                  - message: exactly one key ref must be provided
+                    rule: (has(self.configMapKeyRef) && !has(self.secretKeyRef)) || (!has(self.configMapKeyRef) && has(self.secretKeyRef))
                 type: array
               gateway:
                 description: |-
@@ -151,8 +170,9 @@ spec:
                     - name
                     type: object
                 type: object
+                x-kubernetes-validations: []
               image:
-                description: .
+                description: Container image to use.
                 nullable: true
                 type: string
               notifier:
@@ -163,6 +183,9 @@ spec:
                 nullable: true
                 type: boolean
             type: object
+            x-kubernetes-validations:
+            - message: notifier database configuration must be provided
+              rule: '(has(self.notifier) && self.notifier) ? has(self.databases.notifier) : true'
           status:
             description: ClairStatus describes the observed state of a Clair instance.
             nullable: true
@@ -178,19 +201,30 @@ spec:
                       type: string
                     message:
                       description: message is a human readable message indicating details about the transition. This may be an empty string.
+                      maxLength: 32768
                       type: string
                     observedGeneration:
                       description: observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance.
                       format: int64
+                      minimum: 0.0
                       type: integer
                     reason:
                       description: reason contains a programmatic identifier indicating the reason for the condition's last transition. Producers of specific condition types may define expected values and meanings for this field, and whether the values are considered a guaranteed API. The value should be a CamelCase string. This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
                       type: string
                     status:
                       description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - 'True'
+                      - 'False'
+                      - Unknown
                       type: string
                     type:
                       description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
                       type: string
                   required:
                   - lastTransitionTime
@@ -200,6 +234,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               config:
                 description: Config is configuration sources for the Clair instance.
                 nullable: true
@@ -223,6 +260,9 @@ spec:
                           - key
                           - name
                           type: object
+                          x-kubernetes-validations:
+                          - message: '"key" and "name" must be populated'
+                            rule: self.name != '' && self.key != ''
                         secretKeyRef:
                           description: Selects a key of a Secret.
                           nullable: true
@@ -237,7 +277,13 @@ spec:
                           - key
                           - name
                           type: object
+                          x-kubernetes-validations:
+                          - message: '"key" and "name" must be populated'
+                            rule: self.name != '' && self.key != ''
                       type: object
+                      x-kubernetes-validations:
+                      - message: exactly one key ref must be provided
+                        rule: (has(self.configMapKeyRef) && !has(self.secretKeyRef)) || (!has(self.configMapKeyRef) && has(self.secretKeyRef))
                     type: array
                   root:
                     description: Root is a reference to the main config.
@@ -252,9 +298,13 @@ spec:
                     - key
                     - name
                     type: object
+                    x-kubernetes-validations:
+                    - message: '"key" and "name" must be populated'
+                      rule: self.name != '' && self.key != ''
                 required:
                 - root
                 type: object
+                x-kubernetes-validations: []
               currentVersion:
                 description: Current_version is the current verison of a deployed Clair instance.
                 nullable: true
@@ -350,7 +400,11 @@ spec:
                   - name
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - kind
+                x-kubernetes-list-type: map
             type: object
+            x-kubernetes-validations: []
         required:
         - spec
         title: Clair

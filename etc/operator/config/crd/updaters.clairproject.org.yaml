@@ -56,6 +56,9 @@ spec:
                           - key
                           - name
                           type: object
+                          x-kubernetes-validations:
+                          - message: '"key" and "name" must be populated'
+                            rule: self.name != '' && self.key != ''
                         secretKeyRef:
                           description: Selects a key of a Secret.
                           nullable: true
@@ -70,7 +73,13 @@ spec:
                           - key
                           - name
                           type: object
+                          x-kubernetes-validations:
+                          - message: '"key" and "name" must be populated'
+                            rule: self.name != '' && self.key != ''
                       type: object
+                      x-kubernetes-validations:
+                      - message: exactly one key ref must be provided
+                        rule: (has(self.configMapKeyRef) && !has(self.secretKeyRef)) || (!has(self.configMapKeyRef) && has(self.secretKeyRef))
                     type: array
                   root:
                     description: Root is a reference to the main config.
@@ -85,9 +94,13 @@ spec:
                     - key
                     - name
                     type: object
+                    x-kubernetes-validations:
+                    - message: '"key" and "name" must be populated'
+                      rule: self.name != '' && self.key != ''
                 required:
                 - root
                 type: object
+                x-kubernetes-validations: []
               image:
                 description: Image is the image that should be used in the managed deployment.
                 nullable: true
@@ -104,6 +117,7 @@ spec:
                 nullable: true
                 type: boolean
             type: object
+            x-kubernetes-validations: []
           status:
             description: UpdaterStatus describes the observed state of a Updater instance.
             nullable: true
@@ -164,6 +178,9 @@ spec:
                           - key
                           - name
                           type: object
+                          x-kubernetes-validations:
+                          - message: '"key" and "name" must be populated'
+                            rule: self.name != '' && self.key != ''
                         secretKeyRef:
                           description: Selects a key of a Secret.
                           nullable: true
@@ -178,7 +195,13 @@ spec:
                           - key
                           - name
                           type: object
+                          x-kubernetes-validations:
+                          - message: '"key" and "name" must be populated'
+                            rule: self.name != '' && self.key != ''
                       type: object
+                      x-kubernetes-validations:
+                      - message: exactly one key ref must be provided
+                        rule: (has(self.configMapKeyRef) && !has(self.secretKeyRef)) || (!has(self.configMapKeyRef) && has(self.secretKeyRef))
                     type: array
                   root:
                     description: Root is a reference to the main config.
@@ -193,9 +216,13 @@ spec:
                     - key
                     - name
                     type: object
+                    x-kubernetes-validations:
+                    - message: '"key" and "name" must be populated'
+                      rule: self.name != '' && self.key != ''
                 required:
                 - root
                 type: object
+                x-kubernetes-validations: []
               cronJob:
                 description: CronJob the operator has configured for this Updater.
                 nullable: true
@@ -233,6 +260,7 @@ spec:
                   type: object
                 type: array
             type: object
+            x-kubernetes-validations: []
         required:
         - spec
         title: Updater

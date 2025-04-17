@@ -1,6 +1,6 @@
 //! Module `v1alpha1` implements the v1alpha1 Clair CRD API.
 use k8s_openapi::{api::core, apimachinery::pkg::apis::meta, merge_strategies, DeepMerge};
-use kube::CustomResource;
+use kube::{CELSchema, CustomResource};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
@@ -10,7 +10,7 @@ pub static VERSION: &str = "v1alpha1";
 
 /// ClairSpec describes the desired state of a Clair instance.
 #[derive(
-    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, JsonSchema,
+    CELSchema, Clone, CustomResource, Debug, Default, Deserialize, PartialEq, Serialize, Validate,
 )]
 #[kube(
     group = "clairproject.org",
@@ -18,19 +18,22 @@ pub static VERSION: &str = "v1alpha1";
     kind = "Clair",
     namespaced,
     status = "ClairStatus",
-    derive = "PartialEq",
     shortname = "clair",
-    category = "apps"
+    category = "apps",
+    derive = "Default",
+    derive = "PartialEq"
 )]
 #[serde(rename_all = "camelCase")]
+#[cel_validate(rule = Rule::new("(has(self.notifier) && self.notifier) ? has(self.databases.notifier) : true").message(r#"notifier database configuration must be provided"#))]
 pub struct ClairSpec {
-    /// .
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub image: Option<String>,
     /// Databases indicates the Secret keys holding config drop-ins that services should connect
     /// to.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[validate(required)]
     pub databases: Option<Databases>,
+    /// Container image to use.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
     /// Gateway indicates how the Gateway should be created.
     ///
     /// If unspecified, services will need to have their routing set up manually.
@@ -108,7 +111,7 @@ impl DeepMerge for ClairSpec {
 /// configuration.
 // The generated openAPI schema for these SecretKeySelectors are patched to remove the nullability
 // of the "name" member.
-#[derive(Clone, Default, Debug, Deserialize, PartialEq, Serialize, Validate, JsonSchema)]
+#[derive(Clone, Default, Debug, Deserialize, PartialEq, Serialize, Validate, CELSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Databases {
     /// Indexer references the Secret key holding database details for the indexer database.
@@ -131,7 +134,7 @@ impl DeepMerge for Databases {
 }
 
 /// Endpoint describes how a frontend (e.g. an Ingress) should be configured.
-#[derive(Clone, Default, Debug, Deserialize, PartialEq, Serialize, Validate, JsonSchema)]
+#[derive(Clone, Default, Debug, Deserialize, PartialEq, Serialize, Validate, CELSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Gateway {
     /// Gateway_class_name is the GatewayClass to use.
@@ -154,18 +157,121 @@ impl DeepMerge for Gateway {
     }
 }
 
+/// ...
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RouteParentRef {
+    /// Group is the group of the referent.
+    ///
+    /// When unspecified, "gateway.networking.k8s.io" is inferred. To set the core API group (such
+    /// as for a "Service" kind referent), Group must be explicitly set to "" (empty string).
+    ///
+    /// Support: Core
+    /// MaxLength: 253
+    /// Pattern: ^$\|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        length(max = 253),
+        regex(
+            pattern = r#"^$\|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"#
+        )
+    )]
+    pub group: Option<String>,
+
+    /// Kind is kind of the referent.
+    ///
+    /// There are two kinds of parent resources with "Core" support:
+    ///
+    /// - Gateway (Gateway conformance profile)
+    /// - Service (Mesh conformance profile, ClusterIP Services only)
+    ///
+    /// Support for other resources is Implementation-Specific.
+    ///
+    /// MaxLength: 63
+    /// MinLength: 1
+    /// Pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        length(max = 253, min = 1),
+        regex(pattern = r#"^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$"#)
+    )]
+    pub kind: Option<String>,
+
+    /// Namespace is the namespace of the referent.
+    ///
+    /// When unspecified, this refers to the local namespace of the Route.
+    ///
+    /// Note that there are specific rules for ParentRefs which cross namespace boundaries.
+    /// Cross-namespace references are only valid if they are explicitly allowed by something in
+    /// the namespace they are referring to. For example: Gateway has the AllowedRoutes field, and
+    /// ReferenceGrant provides a generic way to enable any other kind of cross-namespace
+    /// reference.
+    ///
+    /// ParentRefs from a Route to a Service in the same namespace are "producer" routes, which
+    /// apply default routing rules to inbound connections from any namespace to the Service.
+    /// ParentRefs from a Route to a Service in a different namespace are "consumer" routes, and
+    /// these routing rules are only applied to outbound connections originating from the same
+    /// namespace as the Route, for which the intended destination of the connections are a Service
+    /// targeted as a ParentRef of the Route.
+    ///
+    /// Support: Core
+    /// MaxLength: 63
+    /// MinLength: 1
+    /// Pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        length(max = 63, min = 1),
+        regex(pattern = r#"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"#)
+    )]
+    pub namespace: Option<String>,
+
+    /// Name is the name of the referent.
+    ///
+    /// Support: Core
+    /// MaxLength: 253
+    /// MinLength: 1
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 253, min = 1), required)]
+    pub name: Option<String>,
+
+    /// SectionName is the name of a section within the target resource.
+    ///
+    /// In the following resources, SectionName is interpreted as the following:
+    ///
+    /// - Gateway: Listener name. When both Port (experimental) and SectionName are specified, the
+    ///   name and port of the selected listener must match both specified values.
+    /// - Service: Port name. When both Port (experimental) and SectionName are specified, the name
+    ///   and port of the selected listener must match both specified values.
+    ///
+    /// Implementations MAY choose to support attaching Routes to other resources. If that is the
+    /// case, they MUST clearly document how SectionName is interpreted.
+    ///
+    /// When unspecified (empty string), this will reference the entire resource. For the purpose
+    /// of status, an attachment is considered successful if at least one section in the parent
+    /// resource accepts it. For example, Gateway listeners can restrict which Routes can attach to
+    /// them by Route kind, namespace, or hostname. If 1 of 2 Gateway listeners accept attachment
+    /// from the referencing Route, the Route MUST be considered successfully attached. If no
+    /// Gateway listeners accept attachment from this Route, the Route MUST be considered detached
+    /// from the Gateway.
+    ///
+    /// Support: Core
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub section_name: Option<String>,
+}
+
 /// ClairStatus describes the observed state of a Clair instance.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, JsonSchema)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ClairStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    //#[schemars(schema_with = "conditions")]
+    #[schemars(schema_with = "schema::conditions")]
     pub conditions: Vec<meta::v1::Condition>,
 
     // Misc other refs we may need to hold onto, like Ingresses, Deployments, etc.
     /// Refs holds on to references to objects needed by this instance.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(schema_with = "schema::typed_local_object_references")]
     pub refs: Vec<core::v1::TypedLocalObjectReference>,
 
     /// Endpoint is a reference to whatever object is providing ingress.
@@ -204,7 +310,7 @@ pub struct ClairStatus {
 /// All referenced configs need to be in the same dialect as specified on the parent ClairSpec to
 /// load properly.
 #[derive(
-    Clone, Debug, Deserialize, PartialEq, PartialOrd, Eq, Ord, Serialize, Validate, JsonSchema,
+    Clone, Debug, Deserialize, PartialEq, PartialOrd, Eq, Ord, Serialize, Validate, CELSchema,
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigSource {
@@ -224,19 +330,20 @@ impl DeepMerge for ConfigSource {
 
 /// DropinSource represents a source for the value of a Clair configuration dropin.
 #[derive(
+    CELSchema,
     Clone,
-    Default,
     Debug,
+    Default,
     Deserialize,
-    PartialEq,
-    PartialOrd,
     Eq,
     Ord,
+    PartialEq,
+    PartialOrd,
     Serialize,
     Validate,
-    JsonSchema,
 )]
 #[serde(rename_all = "camelCase")]
+#[cel_validate(rule = Rule::new("(has(self.configMapKeyRef) && !has(self.secretKeyRef)) || (!has(self.configMapKeyRef) && has(self.secretKeyRef))").message(r#"exactly one key ref must be provided"#))]
 pub struct DropinSource {
     /// Selects a key of a ConfigMap.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -258,9 +365,10 @@ pub struct DropinSource {
     Ord,
     Serialize,
     Validate,
-    JsonSchema,
+    CELSchema,
 )]
 #[serde(rename_all = "camelCase")]
+#[cel_validate(rule = Rule::new("self.name != '' && self.key != ''").message(r#""key" and "name" must be populated"#))]
 pub struct SecretKeySelector {
     /// The key to select.
     pub key: String,
@@ -291,9 +399,10 @@ impl DeepMerge for SecretKeySelector {
     PartialOrd,
     Serialize,
     Validate,
-    JsonSchema,
+    CELSchema,
 )]
 #[serde(rename_all = "camelCase")]
+#[cel_validate(rule = Rule::new("self.name != '' && self.key != ''").message(r#""key" and "name" must be populated"#))]
 pub struct ConfigMapKeySelector {
     /// The key to select.
     pub key: String,
@@ -345,7 +454,7 @@ impl DeepMerge for ConfigDialect {
 /*
 /// ImageRefSpec is the spec of an ImageRef.
 #[derive(
-    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, JsonSchema,
+    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema,
 )]
 #[kube(
     group = "clairproject.org",
@@ -364,14 +473,14 @@ pub struct ImageRefSpec {
 }
 
 /// ImageRefStatus is the status of an ImageRef.
-#[derive(Clone, Debug, Deserialize, Default, PartialEq, Serialize, Validate, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Default, PartialEq, Serialize, Validate, CELSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageRefStatus {}
 */
 
 /// IndexerSpec describes the desired state of an Indexer instance.
 #[derive(
-    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, JsonSchema,
+    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema,
 )]
 #[kube(
     group = "clairproject.org",
@@ -380,8 +489,8 @@ pub struct ImageRefStatus {}
     namespaced,
     status = "WorkerStatus",
     shortname = "indexer",
-    derive = "PartialEq",
-    derive = "Default"
+    derive = "Default",
+    derive = "PartialEq"
 )]
 #[serde(rename_all = "camelCase")]
 pub struct IndexerSpec {
@@ -390,6 +499,7 @@ pub struct IndexerSpec {
     pub image: Option<String>,
     /// Config is configuration sources for the Clair instance.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
     pub config: Option<ConfigSource>,
 }
 
@@ -400,16 +510,17 @@ impl DeepMerge for IndexerSpec {
     }
 }
 /// WorkerStatus describes the observed state of a worker instance.
-#[derive(Clone, Debug, Deserialize, Default, PartialEq, Serialize, Validate, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Default, PartialEq, Serialize, Validate, CELSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
-    //#[schemars(schema_with = "conditions")]
+    #[schemars(schema_with = "schema::conditions")]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<meta::v1::Condition>,
 
     // Misc other refs we may need to hold onto, like Ingresses, Deployments, etc.
     /// Refs holds on to references to objects needed by this instance.
+    #[schemars(schema_with = "schema::typed_local_object_references")]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refs: Vec<core::v1::TypedLocalObjectReference>,
 
@@ -420,7 +531,7 @@ pub struct WorkerStatus {
 }
 
 /// IndexerStatus describes the observed state of a Indexer instance.
-#[derive(Clone, Debug, Deserialize, Default, PartialEq, Serialize, Validate, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Default, PartialEq, Serialize, Validate, CELSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexerStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
@@ -442,7 +553,7 @@ pub struct IndexerStatus {
 
 /// MatcherSpec describes the desired state of an Matcher instance.
 #[derive(
-    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, JsonSchema,
+    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema,
 )]
 #[kube(
     group = "clairproject.org",
@@ -457,13 +568,15 @@ pub struct IndexerStatus {
 #[serde(rename_all = "camelCase")]
 pub struct MatcherSpec {
     /// Image is the image that should be used in the managed deployment.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     /// Config is configuration sources for the Clair instance.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<ConfigSource>,
 }
+
 /// MatcherStatus describes the observed state of a Matcher instance.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, JsonSchema)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MatcherStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
@@ -485,7 +598,7 @@ pub struct MatcherStatus {
 
 /// UpdaterSpec describes the desired state of an Updater instance.
 #[derive(
-    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, JsonSchema,
+    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema,
 )]
 #[kube(
     group = "clairproject.org",
@@ -510,8 +623,8 @@ pub struct UpdaterSpec {
     /// Suspend subsequent runs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suspend: Option<bool>,
-
     /// Image is the image that should be used in the managed deployment.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     /// Config is configuration sources for the Clair instance.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -519,7 +632,7 @@ pub struct UpdaterSpec {
 }
 
 /// UpdaterStatus describes the observed state of a Updater instance.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, JsonSchema)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdaterStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
@@ -540,7 +653,7 @@ pub struct UpdaterStatus {
 
 /// NotifierSpec describes the desired state of an Notifier instance.
 #[derive(
-    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, JsonSchema,
+    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema,
 )]
 #[kube(
     group = "clairproject.org",
@@ -560,8 +673,9 @@ pub struct NotifierSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<ConfigSource>,
 }
+
 /// NotifierStatus describes the observed state of a Notifier instance.
-#[derive(Clone, Default, Debug, Deserialize, PartialEq, Serialize, Validate, JsonSchema)]
+#[derive(Clone, Default, Debug, Deserialize, PartialEq, Serialize, Validate, CELSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct NotifierStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
@@ -846,3 +960,92 @@ macro_rules! impl_subspec {
 }
 impl_subspec!(IndexerSpec, MatcherSpec, NotifierSpec);
 */
+
+mod schema {
+    use k8s_openapi::{api::core, apimachinery::pkg::apis::meta};
+    use schemars::{gen::SchemaGenerator, schema::Schema};
+    use serde_json::json;
+
+    pub fn conditions(generator: &mut SchemaGenerator) -> Schema {
+        let mut obj = generator
+            .subschema_for::<Vec<meta::v1::Condition>>()
+            .into_object();
+        obj.extensions.extend([
+            ("x-kubernetes-list-type".into(), "map".into()),
+            ("x-kubernetes-list-map-keys".into(), json!(["type"])),
+        ]);
+        obj.array().items = Some(condition(generator).into());
+        Schema::Object(obj)
+    }
+    pub fn condition(generator: &mut SchemaGenerator) -> Schema {
+        let mut obj = generator
+            .subschema_for::<meta::v1::Condition>()
+            .into_object();
+
+        obj.object().required.extend(
+            ["type", "status", "lastTransitionTime", "reason", "message"].map(String::from),
+        );
+
+        let properties = &mut obj.object().properties;
+
+        properties.entry("type".into()).and_modify(|s| match s {
+            Schema::Bool(_) => unreachable!(),
+            Schema::Object(obj) => {
+                let s = obj.string();
+                s.pattern = Some(r#"^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$"#.into());
+                s.max_length = Some(316);
+            }
+        });
+        properties.entry("status".into()).and_modify(|s| match s {
+            Schema::Bool(_) => unreachable!(),
+            Schema::Object(obj) => {
+                obj.enum_values = Some(vec!["True".into(), "False".into(), "Unknown".into()]);
+            }
+        });
+        properties
+            .entry("observedGeneration".into())
+            .and_modify(|s| match s {
+                Schema::Bool(_) => unreachable!(),
+                Schema::Object(obj) => {
+                    obj.number().minimum = Some(0f64);
+                }
+            });
+        properties
+            .entry("lastTransitionTime".into())
+            .and_modify(|s| match s {
+                Schema::Bool(_) => unreachable!(),
+                Schema::Object(obj) => {
+                    obj.format = Some("date-time".into());
+                }
+            });
+        properties.entry("reason".into()).and_modify(|s| match s {
+            Schema::Bool(_) => unreachable!(),
+            Schema::Object(obj) => {
+                let s = obj.string();
+                s.pattern = Some(r#"^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$"#.into());
+                s.max_length = Some(1024);
+                s.min_length = Some(1);
+            }
+        });
+        properties.entry("message".into()).and_modify(|s| match s {
+            Schema::Bool(_) => unreachable!(),
+            Schema::Object(obj) => {
+                let s = obj.string();
+                s.max_length = Some(32768);
+            }
+        });
+
+        Schema::Object(obj)
+    }
+
+    pub fn typed_local_object_references(generator: &mut SchemaGenerator) -> Schema {
+        let mut obj = generator
+            .subschema_for::<Vec<core::v1::TypedLocalObjectReference>>()
+            .into_object();
+        obj.extensions.extend([
+            ("x-kubernetes-list-type".into(), "map".into()),
+            ("x-kubernetes-list-map-keys".into(), json!(["kind"])),
+        ]);
+        Schema::Object(obj)
+    }
+}
