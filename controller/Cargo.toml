@@ -38,7 +38,7 @@ regex = "1"
 thiserror = "2"
 tokio-native-tls = "0.3"
 
-metrics-exporter-prometheus = { version = "0.16", default-features = false, features = ["http-listener"] }
+metrics-exporter-prometheus = { version = "0.17", default-features = false, features = ["http-listener"] }
 axum = { version = "0.8", features = ["http1", "json", "tracing"] }
 axum-server = { version = "0.7", features = ["tls-openssl"] }
 chrono = { version = "0.4", features = ["clock", "serde"], default-features = false }
