@@ -6,15 +6,13 @@
 
 use std::{collections::HashMap, env, pin::Pin, sync::LazyLock};
 
-use chrono::Utc;
 use futures::Future;
-use k8s_openapi::{api::core, apimachinery::pkg::apis::meta};
+use k8s_openapi::apimachinery::pkg::apis::meta::{self, v1::Condition};
 use kube::{api::GroupVersionKind, runtime::events};
 use regex::Regex;
 use tokio::sync::RwLock;
+#[allow(unused_imports)]
 use tracing::{error, info, instrument, trace, warn};
-
-use api::v1alpha1;
 
 /// Prelude is the common types for CRD controllers.
 pub(crate) mod prelude {
@@ -41,23 +39,22 @@ pub(crate) mod prelude {
         Resource, ResourceExt,
     };
     pub use tokio_util::sync::CancellationToken;
-    pub use tracing::{debug, error, info, instrument, trace, warn};
+    pub use tracing::{
+        debug, debug_span, error, info, info_span, instrument, span, trace, trace_span, warn,
+        Instrument, Level,
+    };
 
     pub use api::v1alpha1;
 
-    pub use super::templates;
-    pub use super::{make_volumes, new_templated};
-    pub use super::{Context, ControllerFuture, Error, Request, Result};
+    pub use super::{Context, ControllerFuture, Error, Result};
     pub use super::{CONTROLLER_NAME, CREATE_PARAMS, DEFAULT_REQUEUE, PATCH_PARAMS};
 }
 
 pub mod clairs;
 pub mod indexers;
-//pub mod matchers;
+pub mod matchers;
 //pub mod subresource;
-//mod worker;
 
-pub mod templates;
 pub mod updaters;
 pub mod webhook;
 
@@ -119,6 +116,9 @@ pub enum Error {
     /// Assets means there was an error loading an asset needed for a template.
     #[error("assets error: {0}")]
     Assets(String),
+    /// Template means there was an error creating a templated resouce.
+    #[error("template error: {0}")]
+    Template(#[from] clair_templates::Error),
     /// Config means the Clair config validation process failed.
     #[error("clair config error: {0}")]
     Config(#[from] clair_config::Error),
@@ -199,37 +199,10 @@ impl Context {
     }
 }
 
-/// Request is common per-request data for controllers.
-pub struct Request {
-    now: meta::v1::Time,
-    recorder: events::Recorder,
-}
-
-impl Request {
-    /// New constructs a Request for the current reconcile request.
-    pub fn new(c: &kube::Client) -> Request {
-        Request {
-            now: meta::v1::Time(Utc::now()),
-            recorder: events::Recorder::new(c.clone(), REPORTER.clone()),
-        }
-    }
-    /// Now reports the "now" of this request.
-    pub fn now(&self) -> meta::v1::Time {
-        self.now.clone()
-    }
-    /// Publish publishes a kubernetes Event.
-    pub async fn publish(
-        &self,
-        ev: &events::Event,
-        reference: &core::v1::ObjectReference,
-    ) -> Result<()> {
-        Ok(self.recorder.publish(ev, reference).await?)
-    }
-}
-
 /// ControllerFuture is the type the controller constructors should return.
 pub type ControllerFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
 
+#[allow(dead_code)]
 static REPORTER: LazyLock<events::Reporter> = LazyLock::new(|| events::Reporter {
     controller: CONTROLLER_NAME.to_string(),
     instance: Some(
@@ -254,9 +227,11 @@ fn condition<S: ToString, K: AsRef<str>>(space: S, key: K) -> String {
 
 /// Keyify sanitizes the key for use in k8s metadata.
 fn keyify<S: ToString, K: AsRef<str>>(space: S, key: K) -> String {
+    let key = key.as_ref();
     let mut out = space.to_string();
-    key.as_ref()
-        .chars()
+    out.reserve(key.len().saturating_add(1));
+    out.push('/');
+    key.chars()
         .map(|c| match c {
             '_' | ' ' | '\t' | '\n' => '-',
             _ => c.to_ascii_lowercase(),
@@ -298,6 +273,27 @@ pub fn image_version(img: &str) -> Option<&str> {
         .filter(|t| SEMVER_REGEXP.is_match(t))
 }
 
+fn cmp_condition(a: &Condition, b: &Condition) -> bool {
+    a.type_.as_str() == b.type_.as_str()
+}
+
+fn merge_condition(to: &mut Condition, from: Condition) {
+    to.last_transition_time = from.last_transition_time;
+    if let Some(g) = from.observed_generation {
+        to.observed_generation = Some(g);
+    }
+    if !from.message.is_empty() {
+        to.message = from.message;
+    }
+    if !from.reason.is_empty() {
+        to.reason = from.reason;
+    }
+    if !from.status.is_empty() {
+        to.status = from.status;
+    }
+}
+
+/*
 /// New_templated returns a `K` with patches for `S` applied and the owner set to `obj`.
 #[instrument(skip_all)]
 pub async fn new_templated<S, K>(obj: &S, _ctx: &Context) -> Result<K>
@@ -415,6 +411,7 @@ pub fn make_volumes(
 
     (vols, mounts, filename)
 }
+*/
 
 /// Set_component_label sets the component label to `c`.
 pub fn set_component_label(meta: &mut meta::v1::ObjectMeta, c: &str) {
@@ -492,51 +489,3 @@ pub static GATEWAY_NETWORKING_HTTPROUTE: LazyLock<GroupVersionKind> =
 /// GVK for `gateway.networking.k8s.io/v1/GRPCRoute`.
 pub static GATEWAY_NETWORKING_GRPCROUTE: LazyLock<GroupVersionKind> =
     LazyLock::new(|| GroupVersionKind::gvk("gateway.networking.k8s.io", "v1", "GRPCRoute"));
-
-/*
-use futures::future;
-use kube::discovery;
-use tokio::time::{self, Duration, Instant, Interval};
-
-pub struct Discovery {
-    client: Client,
-    d: discovery::Discovery,
-    t: Interval,
-}
-
-impl Discovery {
-    pub fn new(client: Client) -> Discovery {
-        let t = time::interval_at(Instant::now(), Duration::from_secs(60 * 60 * 2));
-        Discovery { client, d, t }
-    }
-
-    async fn client(&mut self) -> Result<(), kube::Error> {
-        tokio::select! {
-                    _ = self.t.tick() => {
-                        let d = discovery::Discovery::new(self.client.clone()).filter(&[
-                    "networking.k8s.io",
-                    "batch",
-                    "gateway.networking.k8s.io",
-                ])
-        .run().await?;
-                self.d = d;
-                    }
-                    _= future::ready(()) => {}
-                }
-        Ok(())
-    }
-
-    pub fn get(&self, group: &str) -> Option<&discovery::ApiGroup> {
-        None
-    }
-    pub fn has_group(&self, group: &str) -> bool {
-        false
-    }
-    pub fn resolve_gvk(
-        &self,
-        gvk: &GroupVersionKind,
-    ) -> Option<(discovery::ApiResource, discovery::ApiCapabilities)> {
-        unimplemented!()
-    }
-}
-*/

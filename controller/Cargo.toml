@@ -17,6 +17,7 @@ test_ci = []
 [dependencies]
 api = { path = "../api" }
 clair_config = { path = "../clair_config" }
+clair_templates = { path = "../clair_templates" }
 
 clap.workspace = true
 futures.workspace = true
@@ -25,45 +26,73 @@ metrics.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
-tokio.workspace = true
 tokio-stream.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 
 anyhow = "1"
 bytes = "1"
-gateway-api = "0.15"
 is-terminal = "0.4"
+kcr_gateway_networking_k8s_io = "1"
 openssl = "0.10"
 regex = "1"
 thiserror = "2"
 tokio-native-tls = "0.3"
+tokio-util = "0.7"
 
-metrics-exporter-prometheus = { version = "0.16", default-features = false, features = ["http-listener"] }
-axum = { version = "0.8", features = ["http1", "json", "tracing"] }
-axum-server = { version = "0.7", features = ["tls-openssl"] }
-chrono = { version = "0.4", features = ["clock", "serde"], default-features = false }
-phf = { version = "0.11", features = ["macros"] }
-tokio-util = { version = "0.7" }
-tower-http = { version = "0.6", features = ["trace"] }
-tracing-opentelemetry = { version = "0.30", features = ["metrics"] }
-tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+[dependencies.axum]
+version = "0.8"
+features = ["http1", "json", "tracing"]
+
+[dependencies.axum-server]
+version = "0.7"
+features = ["tls-openssl"]
+
+[dependencies.chrono]
+version = "0.4"
+default-features = false
+features = ["clock", "serde"]
 
 [dependencies.k8s-openapi]
 workspace = true
 features = ["earliest"]
 
 [dependencies.kube]
-workspace = true
-features = ["runtime", "client", "config", "admission", "openssl-tls", "ws", "gzip", "jsonpatch"]
+version = "0.99"
+default-features = false
+features = ["admission", "runtime", "client", "config", "openssl-tls", "gzip", "jsonpatch"]
+
+[dependencies.metrics-exporter-prometheus]
+version = "0.17"
+default-features = false
+features = ["http-listener"]
+
+[dependencies.strum]
+version = "0.27"
+features = ["derive"]
+
+[dependencies.tower-http]
+version = "0.6"
+features = ["trace"]
+
+[dependencies.tracing-opentelemetry]
+version = "0.30"
+features = ["metrics"]
+
+[dependencies.tracing-subscriber]
+version = "0.3"
+features = ["json", "env-filter"]
 
 [dev-dependencies]
 assert-json-diff = "2"
 jsonpath-rust = "1"
 tower = "0.5"
+simple_txtar = "1.1"
 
 [dev-dependencies.reqwest]
 version = "0.12"
-features = ["json"]
+default-features = false
+features = ["native-tls", "json"]
 
 [dev-dependencies.test-log]
 version = "0.2"

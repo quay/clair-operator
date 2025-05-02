@@ -79,6 +79,12 @@ mod v1alpha1 {
     pub(super) mod mutate {
         use super::*;
 
+        use json_patch::jsonptr::PointerBuf;
+        use json_patch::{AddOperation as Add, Patch, PatchOperation as Op};
+        use serde_json::Value;
+
+        use crate::DEFAULT_IMAGE;
+
         #[instrument(skip_all)]
         pub async fn handler(
             extract::State(srv): extract::State<Arc<State>>,
@@ -102,7 +108,18 @@ mod v1alpha1 {
                 error!(error = %err, "unable to deserialize AdmissionReview");
                 StatusCode::BAD_REQUEST
             })?;
-            let res = AdmissionResponse::from(&req);
+            let mut res = AdmissionResponse::from(&req);
+
+            let cur = req.object.as_ref().unwrap();
+            if cur.spec.image.is_none() {
+                res = res
+                    .with_patch(Patch(vec![Op::Add(Add {
+                        path: PointerBuf::from_tokens(["spec", "image"]),
+                        value: Value::String(DEFAULT_IMAGE.clone()),
+                    })]))
+                    .expect("programmer error: unable to serialize known data");
+            }
+
             Ok(Json(res.into_review()))
         }
 
@@ -207,12 +224,21 @@ mod v1alpha1 {
                 }
             };
             let mut res = AdmissionResponse::from(&req);
-            let prev = req.old_object.as_ref();
+            let _prev = req.old_object.as_ref();
             let cur = req.object.as_ref().unwrap();
             debug!(op = ?req.operation, "doing validation");
 
             if req.operation == Operation::Create || req.operation == Operation::Update {
                 let spec = &cur.spec;
+                if spec.image.is_none() {
+                    trace!(op = ?req.operation, "image misconfigured");
+                    return Ok(Json(
+                        res.deny("field \"/spec/image\" must be provided")
+                            .into_review(),
+                    ));
+                }
+                trace!(op = ?req.operation, "image OK");
+
                 if spec.databases.is_none() {
                     trace!(op = ?req.operation, "databases misconfigured");
                     return Ok(Json(
@@ -221,6 +247,7 @@ mod v1alpha1 {
                     ));
                 }
                 trace!(op = ?req.operation, "databases OK");
+
                 if spec.notifier == Some(true)
                     && spec.databases.as_ref().unwrap().notifier.is_none()
                 {
@@ -231,6 +258,7 @@ mod v1alpha1 {
                     ));
                 }
                 trace!(op = ?req.operation, "notifier OK");
+
                 for (i, d) in spec.dropins.iter().enumerate() {
                     if d.config_map_key_ref.is_none() && d.secret_key_ref.is_none() {
                         trace!(op = ?req.operation, index = i, "dropins misconfigured");
@@ -241,17 +269,6 @@ mod v1alpha1 {
                     }
                 }
                 trace!(op = ?req.operation, "dropins OK");
-            }
-
-            if req.operation == Operation::Update {
-                let prev = prev.unwrap();
-                if prev.spec.config_dialect != cur.spec.config_dialect {
-                    trace!(op = ?req.operation, "unable to change configDialect");
-                    return Ok(Json(
-                        res.deny("cannot change field \"/spec/configDialect\"")
-                            .into_review(),
-                    ));
-                }
             }
 
             let cm_api: Api<core::v1::ConfigMap> = Api::default_namespaced(srv.client.clone());

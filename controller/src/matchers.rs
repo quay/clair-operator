@@ -1,46 +1,76 @@
 //! Matchers holds the controller for the "Matcher" CRD.
+use std::sync::{Arc, LazyLock};
 
-use k8s_openapi::DeepMerge;
-use kube::{runtime::controller::Error as CtrlErr, Api};
+use k8s_openapi::merge_strategies;
+use kube::{
+    api::{Api, Patch},
+    client::Client,
+    core::GroupVersionKind,
+    runtime::controller::Error as CtrlErr,
+    ResourceExt,
+};
 use tokio::{
     signal::unix::{signal, SignalKind},
     time::Duration,
 };
 use tokio_stream::wrappers::SignalStream;
 
-use crate::{clair_condition, prelude::*, COMPONENT_LABEL};
+use crate::{clair_condition, cmp_condition, merge_condition, prelude::*};
+use clair_templates::{
+    render_dropin, Build, DeploymentBuilder, HTTPRouteBuilder, HorizontalPodAutoscalerBuilder,
+    ServiceBuilder,
+};
+use v1alpha1::Matcher;
 
-static COMPONENT: &str = "matcher";
+//static COMPONENT: LazyLock<String> = LazyLock::new(|| Matcher::kind(&()).to_ascii_lowercase());
+static SELF_GVK: LazyLock<GroupVersionKind> = LazyLock::new(|| GroupVersionKind {
+    group: Matcher::group(&()).to_string(),
+    version: Matcher::version(&()).to_string(),
+    kind: Matcher::kind(&()).to_string(),
+});
 
-/// .
+/// Controller is the Matcher controller.
 ///
-/// # Errors
-///
-/// This function will return an error if .
+/// An error is returned if any setup fails.
 #[instrument(skip_all)]
 pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<ControllerFuture> {
+    use kcr_gateway_networking_k8s_io::v1::{grpcroutes::GRPCRoute, httproutes::HTTPRoute};
+
     let client = ctx.client.clone();
     let ctlcfg = watcher::Config::default();
     let sig = SignalStream::new(signal(SignalKind::user_defined1())?);
 
-    let ctl = Controller::new(
-        Api::<v1alpha1::Matcher>::default_namespaced(client.clone()),
-        ctlcfg.clone(),
-    )
-    .owns(
-        Api::<apps::v1::Deployment>::default_namespaced(client.clone()),
-        ctlcfg.clone(),
-    )
-    .owns(
-        Api::<autoscaling::v2::HorizontalPodAutoscaler>::default_namespaced(client.clone()),
-        ctlcfg.clone(),
-    )
-    .owns(Api::<core::v1::Service>::default_namespaced(client), ctlcfg)
-    .reconcile_all_on(sig)
-    .graceful_shutdown_on(cancel.cancelled_owned());
-
     Ok(async move {
         info!("spawning matcher controller");
+
+        let mut ctl = Controller::new(Api::<Matcher>::all(client.clone()), ctlcfg.clone())
+            .owns(
+                Api::<apps::v1::Deployment>::all(client.clone()),
+                ctlcfg.clone(),
+            )
+            .owns(
+                Api::<autoscaling::v2::HorizontalPodAutoscaler>::all(client.clone()),
+                ctlcfg.clone(),
+            )
+            .owns(
+                Api::<core::v1::Service>::all(client.clone()),
+                ctlcfg.clone(),
+            );
+        if ctx.gvk_exists(&crate::GATEWAY_NETWORKING_HTTPROUTE).await {
+            ctl = ctl.owns(Api::<HTTPRoute>::all(client.clone()), ctlcfg.clone());
+        }
+        if ctx.gvk_exists(&crate::GATEWAY_NETWORKING_GRPCROUTE).await {
+            ctl = ctl.owns(Api::<GRPCRoute>::all(client.clone()), ctlcfg.clone());
+        }
+        let ctl = ctl
+            .reconcile_all_on(sig)
+            .graceful_shutdown_on(cancel.cancelled_owned());
+
+        if !ctx.gvk_exists(&SELF_GVK).await {
+            error!("CRD is not queryable ({SELF_GVK:?}); is the CRD installed?");
+            return Err(Error::BadName("no CRD".into()));
+        }
+
         ctl.run(reconcile, handle_error, ctx)
             .for_each(|ret| {
                 match ret {
@@ -58,537 +88,302 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
             })
             .await;
         debug!("matcher controller finished");
+
         Ok(())
     }
     .boxed())
 }
 
-#[instrument(skip_all)]
-async fn reconcile(obj: Arc<v1alpha1::Matcher>, ctx: Arc<Context>) -> Result<Action> {
-    trace!("start");
-    let req = Request::new(&ctx.client, obj.object_ref(&()));
-    assert!(obj.meta().name.is_some());
-    let spec = &obj.spec;
-    let mut next = if let Some(status) = &obj.status {
-        status.clone()
-    } else {
-        trace!("no status present");
-        Default::default()
-    };
+#[derive(Debug)]
+struct Reconciler {
+    matcher: Arc<Matcher>,
+    ctx: Arc<Context>,
+    namespace: String,
+    api: Api<Matcher>,
+}
 
-    // Check the spec:
-    let action = "CheckConfig".into();
-    let type_ = clair_condition("SpecOK");
-    trace!("configsource check");
-    if obj.spec.config.is_none() {
-        req.publish(Event {
-            type_: EventType::Warning,
-            reason: "Initialization".into(),
-            note: Some("missing field \"/spec/config\"".into()),
-            action,
-            secondary: None,
-        })
-        .await?;
-        next.add_condition(Condition {
-            last_transition_time: req.now(),
-            message: "\"/spec/config\" missing".into(),
-            observed_generation: obj.metadata.generation,
+impl From<(Arc<Matcher>, Arc<Context>)> for Reconciler {
+    fn from(value: (Arc<Matcher>, Arc<Context>)) -> Self {
+        let (matcher, ctx) = value;
+        let namespace = matcher.namespace().unwrap(); // Matcher is namespace scoped
+        let api: Api<Matcher> = Api::namespaced(ctx.client.clone(), &namespace);
+        Self {
+            matcher,
+            ctx,
+            namespace,
+            api,
+        }
+    }
+}
+
+impl Reconciler {
+    fn client(&self) -> Client {
+        self.ctx.client.clone()
+    }
+    fn ns(&self) -> &str {
+        self.namespace.as_str()
+    }
+    fn name(&self) -> String {
+        self.matcher.name_unchecked()
+    }
+
+    #[instrument(skip(self), ret)]
+    async fn set_condition(&self, cnd: Condition) -> Result<()> {
+        let mut next = self
+            .api
+            .get_status(&self.name())
+            .instrument(debug_span!("get_status"))
+            .await?;
+        next.meta_mut().managed_fields = None;
+        let status = next.status.get_or_insert_default();
+        let cnds = status.conditions.get_or_insert_default();
+        merge_strategies::list::map(cnds, vec![cnd], &[cmp_condition], merge_condition);
+        debug!(payload = ?next, "patching status");
+        self.api
+            .patch_status(&self.name(), &PATCH_PARAMS, &Patch::Apply(&next))
+            .instrument(debug_span!("patch_status"))
+            .await?;
+        Ok(())
+    }
+
+    #[instrument(skip(self), ret)]
+    async fn publish_dropin(&self) -> Result<()> {
+        use self::core::v1::Service;
+
+        let owner = match self
+            .matcher
+            .owner_references()
+            .iter()
+            .find(|&r| r.controller.unwrap_or(false))
+        {
+            None => {
+                trace!("not owned, skipping dropin generation");
+                return Ok(());
+            }
+            Some(o) => o,
+        };
+        trace!(owner = owner.name, "matcher is owned");
+
+        let s = ServiceBuilder::try_from(self.matcher.as_ref())?.build();
+        let srv = Api::<Service>::namespaced(self.client(), self.ns())
+            .get(&s.name_any())
+            .await?;
+
+        let status = v1alpha1::WorkerStatus {
+            dropin: render_dropin::<Matcher>(&srv),
+            ..Default::default()
+        };
+        self.api
+            .patch_status(&self.name(), &PATCH_PARAMS, &Patch::Apply(&status))
+            .instrument(debug_span!("patch_status"))
+            .await
+            .inspect_err(|error| error!(%error, "unable to patch status on self"))?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), ret)]
+    async fn deployment(&self) -> Result<()> {
+        use apps::v1::Deployment;
+
+        let api = Api::<Deployment>::namespaced(self.client(), self.ns());
+        let status = self.matcher.status.clone().unwrap_or_default();
+
+        let d = DeploymentBuilder::try_from(self.matcher.as_ref())?.build();
+        trace!(?d, "created Deployment");
+        let _d = api
+            .patch(&d.name_any(), &PATCH_PARAMS, &Patch::Apply(d))
+            .instrument(debug_span!("patch", kind = "Deployment"))
+            .await?;
+
+        let deployment_ref = status.refs.as_ref().and_then(|d| {
+            d.iter().find(|&objref| {
+                objref.kind == Deployment::kind(&())
+                    && objref.api_group == Deployment::group(&()).to_string().into()
+            })
+        });
+        if deployment_ref.is_some() {
+            debug!("no need to update status");
+            return Ok(());
+        }
+        debug!("updating status");
+
+        let cnd = Condition {
+            message: "created Deployment".into(),
+            observed_generation: self.matcher.metadata.generation,
+            last_transition_time: meta::v1::Time(Utc::now()),
+            reason: "DeploymentCreated".into(),
+            status: "True".into(),
+            type_: clair_condition("DeploymentCreated"),
+        };
+        self.set_condition(cnd).await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), ret)]
+    async fn service(&self) -> Result<()> {
+        use self::core::v1::Service;
+
+        let api = Api::<Service>::namespaced(self.client(), self.ns());
+        let status = self.matcher.status.clone().unwrap_or_default();
+
+        let s = ServiceBuilder::try_from(self.matcher.as_ref())?.build();
+        let _s = api
+            .patch(&s.name_any(), &PATCH_PARAMS, &Patch::Apply(s))
+            .await
+            .inspect_err(|error| error!(%error, "failed to patch Service"))?;
+
+        let service_ref = status.refs.as_ref().and_then(|d| {
+            d.iter().find(|&objref| {
+                objref.kind == Service::kind(&())
+                    && objref.api_group == Service::group(&()).to_string().into()
+            })
+        });
+        if service_ref.is_some() {
+            debug!("no need to update status");
+            return Ok(());
+        }
+        debug!("updating status");
+
+        let cnd = Condition {
+            message: "created Service".into(),
+            observed_generation: self.matcher.metadata.generation,
+            last_transition_time: meta::v1::Time(Utc::now()),
+            reason: "ServiceCreated".into(),
+            status: "True".into(),
+            type_: clair_condition("ServiceCreated"),
+        };
+        self.set_condition(cnd).await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), ret)]
+    async fn horizontal_pod_autoscaler(&self) -> Result<()> {
+        use self::autoscaling::v2::HorizontalPodAutoscaler;
+
+        let api = Api::<HorizontalPodAutoscaler>::namespaced(self.client(), self.ns());
+        let status = self.matcher.status.clone().unwrap_or_default();
+
+        let s = HorizontalPodAutoscalerBuilder::try_from(self.matcher.as_ref())?.build();
+        let _s = api
+            .patch(&s.name_any(), &PATCH_PARAMS, &Patch::Apply(s))
+            .await
+            .inspect_err(|error| error!(%error, "failed to patch HorizontalPodAutoscaler"))?;
+
+        let service_ref = status.refs.as_ref().and_then(|d| {
+            d.iter().find(|&objref| {
+                objref.kind == HorizontalPodAutoscaler::kind(&())
+                    && objref.api_group == HorizontalPodAutoscaler::group(&()).to_string().into()
+            })
+        });
+        if service_ref.is_some() {
+            debug!("no need to update status");
+            return Ok(());
+        }
+        debug!("updating status");
+
+        let cnd = Condition {
+            message: "created HorizontalPodAutoscaler".into(),
+            observed_generation: self.matcher.metadata.generation,
+            last_transition_time: meta::v1::Time(Utc::now()),
+            reason: "HorizontalPodAutoscalerCreated".into(),
+            status: "True".into(),
+            type_: clair_condition("HorizontalPodAutoscalerCreated"),
+        };
+        self.set_condition(cnd).await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), ret)]
+    async fn route(&self) -> Result<()> {
+        use kcr_gateway_networking_k8s_io::v1::httproutes::*;
+
+        let api = Api::<HTTPRoute>::namespaced(self.client(), self.ns());
+        let status = self.matcher.status.clone().unwrap_or_default();
+
+        let r = HTTPRouteBuilder::try_from(self.matcher.as_ref())?.build();
+        let _r = api
+            .patch(&r.name_any(), &PATCH_PARAMS, &Patch::Apply(r))
+            .await
+            .inspect_err(|error| error!(%error, "failed to patch HTTPRoute"))?;
+
+        let route_ref = status.refs.as_ref().and_then(|d| {
+            d.iter().find(|&objref| {
+                objref.kind == HTTPRoute::kind(&())
+                    && objref.api_group == HTTPRoute::group(&()).to_string().into()
+            })
+        });
+        if route_ref.is_some() {
+            debug!("no need to update status");
+            return Ok(());
+        }
+        debug!("updating status");
+
+        let cnd = Condition {
+            message: "created HTTPRoute".into(),
+            observed_generation: self.matcher.metadata.generation,
+            last_transition_time: meta::v1::Time(Utc::now()),
+            reason: "HTTPRouteCreated".into(),
+            status: "True".into(),
+            type_: clair_condition("HTTPRouteCreated"),
+        };
+        self.set_condition(cnd).await?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), ret)]
+    async fn check_spec(&self) -> Result<Option<Action>> {
+        let mut cnd = Condition {
+            last_transition_time: meta::v1::Time(Utc::now()),
+            observed_generation: self.matcher.metadata.generation,
+            type_: clair_condition("SpecOK"),
+            message: "".into(),
             reason: "SpecIncomplete".into(),
             status: "False".into(),
-            type_,
-        });
-        return publish(obj, ctx, req, next).await;
-    }
-    trace!("configsource ok");
-    trace!(
-        provided = spec.image.is_some(),
-        image = spec.image_default(&crate::DEFAULT_IMAGE),
-        "image check"
-    );
-    next.add_condition(Condition {
-        last_transition_time: req.now(),
-        observed_generation: obj.metadata.generation,
-        message: "".into(),
-        reason: "SpecComplete".into(),
-        status: "True".into(),
-        type_: clair_condition("SpecOK"),
-    });
-    trace!("spec ok");
+        };
 
-    macro_rules! check_all {
-        ($($fn:ident),+ $(,)?) => {
-            {
-                'checks: {
-$(
-                    debug!(step = stringify!($fn), "running check");
-                    let cont = $fn(&obj, &ctx, &req, &mut next).await?;
-                    debug!(step = stringify!($fn), "continue" = cont, "ran check");
-                    if !cont {
-                        break 'checks
-                    }
-)+
-                }
-            }
+        if self.matcher.spec.config.is_none() {
+            error!("spec missing ConfigSource");
+            self.set_condition(cnd).await?;
+            return Ok(Action::requeue(Duration::from_secs(3600)).into());
         }
-    }
-    check_all!(
-        check_dropin,
-        check_config,
-        check_deployment,
-        check_service,
-        check_hpa,
-        check_creation
-    );
+        if self.matcher.spec.image.is_none() {
+            error!("spec missing image");
+            self.set_condition(cnd).await?;
+            return Ok(Action::requeue(Duration::from_secs(3600)).into());
+        }
 
-    trace!("done");
-    publish(obj, ctx, req, next).await
+        cnd.status = "True".into();
+        cnd.reason = "SpecComplete".into();
+        self.set_condition(cnd).await?;
+        Ok(None)
+    }
+}
+
+/// Reconcile is the main entrypoint for the reconcile loop.
+#[instrument(skip(ctx, matcher), fields(name = matcher.name_any(), namespace = matcher.namespace().unwrap()))]
+async fn reconcile(matcher: Arc<Matcher>, ctx: Arc<Context>) -> Result<Action> {
+    assert!(matcher.meta().name.is_some());
+    info!("reconciling Matcher");
+    let r = Reconciler::from((matcher.clone(), ctx.clone()));
+
+    if let Some(a) = r.check_spec().await? {
+        return Ok(a);
+    };
+    r.deployment().await?;
+    r.service().await?;
+    r.horizontal_pod_autoscaler().await?;
+    r.route().await?;
+    r.publish_dropin().await?;
+
+    Ok(DEFAULT_REQUEUE.clone())
 }
 
 #[instrument(skip_all)]
-fn handle_error(_obj: Arc<v1alpha1::Matcher>, _err: &Error, _ctx: Arc<Context>) -> Action {
+fn handle_error(_obj: Arc<Matcher>, _err: &Error, _ctx: Arc<Context>) -> Action {
     Action::await_change()
-}
-
-#[instrument(skip_all)]
-async fn publish(
-    obj: Arc<v1alpha1::Matcher>,
-    ctx: Arc<Context>,
-    _req: Request,
-    next: v1alpha1::MatcherStatus,
-) -> Result<Action> {
-    let api: Api<v1alpha1::Matcher> = Api::default_namespaced(ctx.client.clone());
-    let name = obj.name_any();
-
-    let prev = obj.metadata.resource_version.clone().unwrap();
-    let mut cur = None;
-    let mut c = v1alpha1::Matcher::new(&name, Default::default());
-    c.status = Some(next);
-    let mut ct = 0;
-
-    while ct < 3 {
-        c.metadata.resource_version = Some(prev.clone());
-        ct += 1;
-        let buf = serde_json::to_vec(&c)?;
-        match api.replace_status(&name, &CREATE_PARAMS, buf).await {
-            Ok(c) => {
-                cur = c.resource_version();
-                break;
-            }
-            Err(err) => error!(error=%err, "problem updating status"),
-        }
-    }
-
-    if let Some(cur) = cur {
-        debug!(attempt = ct, prev, cur, "published status");
-        if cur == prev {
-            // If there was no change, queue out in the future.
-            Ok(Action::requeue(Duration::from_secs(3600)))
-        } else {
-            // Handled, so discard the event.
-            Ok(Action::await_change())
-        }
-    } else {
-        // Unable to update, so requeue soon.
-        Ok(Action::requeue(Duration::from_secs(5)))
-    }
-}
-async fn check_dropin(
-    obj: &v1alpha1::Matcher,
-    ctx: &Context,
-    _req: &Request,
-    next: &mut v1alpha1::MatcherStatus,
-) -> Result<bool> {
-    use self::core::v1::ConfigMap;
-    use self::v1alpha1::ConfigMapKeySelector;
-
-    let owner = match obj
-        .owner_references()
-        .iter()
-        .find(|&r| r.controller.unwrap_or(false))
-    {
-        None => {
-            trace!("not owned, skipping dropin");
-            return Ok(true);
-        }
-        Some(o) => o,
-    };
-    trace!(owner = owner.name, "indexer is owned");
-
-    let name = obj
-        .status
-        .as_ref()
-        .and_then(|s| s.has_ref::<ConfigMap>())
-        .map(|cm| cm.name)
-        .or_else(|| {
-            Some(format!(
-                "{}-{}",
-                obj.name_any(),
-                v1alpha1::Indexer::kind(&()).to_ascii_lowercase()
-            ))
-        })
-        .unwrap();
-    trace!(name, "looking for ConfigMap");
-    let srvname = obj
-        .status
-        .as_ref()
-        .and_then(|s| s.has_ref::<core::v1::Service>())
-        .map(|cm| cm.name)
-        .or_else(|| {
-            Some(format!(
-                "{}-{}",
-                obj.name_any(),
-                v1alpha1::Indexer::kind(&()).to_ascii_lowercase()
-            ))
-        })
-        .unwrap();
-    trace!(name = srvname, "assuming Service");
-    let clair: v1alpha1::Clair = Api::default_namespaced(ctx.client.clone())
-        .get_status(&owner.name)
-        .await?;
-    let flavor = clair.spec.config_dialect.unwrap_or_default();
-
-    let api: Api<core::v1::ConfigMap> = Api::default_namespaced(ctx.client.clone());
-    let mut ct = 0;
-    while ct < 3 {
-        ct += 1;
-        let entry = api.entry(&name).await?;
-        let mut entry = match entry {
-            Entry::Occupied(e) => e,
-            Entry::Vacant(e) => {
-                trace!(%flavor, "creating ConfigMap");
-                let (k, mut cm) = default_dropin(obj, flavor, ctx)
-                    .await
-                    .expect("dropin failed");
-                cm.merge_from(core::v1::ConfigMap {
-                    data: Some(BTreeMap::from_iter(vec![(k, srvname.clone())])),
-                    ..Default::default()
-                });
-                eprintln!("configmap: {cm:?}");
-                e.insert(cm)
-            }
-        };
-        let cm = entry.get_mut();
-        if let Some(k) = cm.annotations().get(crate::DROPIN_LABEL.as_str()) {
-            if let Some(data) = cm.data.as_ref() {
-                if !data.contains_key(k) {
-                    trace!(name = cm.name_any(), "ConfigMap missing key");
-                    let _ = futures::executor::block_on(_req.publish(Event {
-                        action: "ReconcileConfig".into(),
-                        reason: "Reconcile".into(),
-                        note: Some(format!("missing expected key: {k}")),
-                        secondary: Some(cm.object_ref(&())),
-                        type_: EventType::Warning,
-                    }));
-                } else {
-                    trace!(name = cm.name_any(), "ConfigMap ok");
-                }
-            }
-        }
-        let key = if let Some(key) = cm.annotations().get(crate::DROPIN_LABEL.as_str()) {
-            key.clone()
-        } else {
-            trace!(name = cm.name_any(), "skipping owner update");
-            return Ok(true);
-        };
-        next.add_ref(cm);
-        match entry.commit(&CREATE_PARAMS).await {
-            Ok(()) => (),
-            Err(err) => match err {
-                CommitError::Validate(reason) => {
-                    debug!(reason = reason.to_string(), "commit failed, retrying");
-                    continue;
-                }
-                CommitError::Save(_) => return Err(Error::Commit(err)),
-            },
-        };
-
-        trace!("attempting owner update");
-        let dropin = ConfigMapKeySelector {
-            name: name.clone(),
-            key: key.clone(),
-        };
-        let api: Api<v1alpha1::Clair> = Api::default_namespaced(ctx.client.clone());
-        let entry = api.entry(&owner.name).await?;
-        match entry {
-            Entry::Vacant(_) => (),
-            Entry::Occupied(entry) => {
-                let mut change = false;
-                let mut entry = entry.and_modify(|c| {
-                    let v = &mut c.spec.dropins;
-                    if v.iter_mut().all(|d| {
-                        if let Some(c) = &d.config_map_key_ref {
-                            c != &dropin
-                        } else {
-                            true
-                        }
-                    }) {
-                        trace!("appending dropin");
-                        change = true;
-                        v.push(v1alpha1::DropinSource {
-                            secret_key_ref: None,
-                            config_map_key_ref: Some(ConfigMapKeySelector {
-                                key,
-                                name: name.clone(),
-                            }),
-                        });
-                    }
-                });
-                if !change {
-                    debug!("no update needed");
-                    return Ok(true);
-                }
-                match entry.commit(&CREATE_PARAMS).await {
-                    Ok(()) => {
-                        debug!("updated owning Clair");
-                        return Ok(true);
-                    }
-                    Err(err) => match err {
-                        CommitError::Validate(reason) => {
-                            debug!(reason = reason.to_string(), "commit failed, retrying")
-                        }
-                        CommitError::Save(_) => return Err(Error::Commit(err)),
-                    },
-                };
-            }
-        };
-    }
-    Ok(false)
-}
-
-#[instrument(skip_all)]
-async fn check_config(
-    obj: &v1alpha1::Matcher,
-    _ctx: &Context,
-    _req: &Request,
-    next: &mut v1alpha1::MatcherStatus,
-) -> Result<bool> {
-    if obj.status.is_none() || obj.status.as_ref().unwrap().config.is_none() {
-        next.config = obj.spec.config.clone();
-        return Ok(false);
-    }
-    let want = obj.spec.config.as_ref().unwrap();
-    let got = obj.status.as_ref().unwrap().config.as_ref().unwrap();
-    if got != want {
-        next.config = obj.spec.config.clone();
-        // TODO(hank) Touch the deployment
-        return Ok(false);
-    }
-    Ok(true)
-}
-#[instrument(skip_all)]
-async fn check_deployment(
-    obj: &v1alpha1::Matcher,
-    ctx: &Context,
-    _req: &Request,
-    next: &mut v1alpha1::MatcherStatus,
-) -> Result<bool> {
-    use self::core::v1::EnvVar;
-    let name = obj
-        .status
-        .as_ref()
-        .and_then(|s| s.has_ref::<apps::v1::Deployment>())
-        .map(|cm| cm.name)
-        .or_else(|| {
-            Some(format!(
-                "{}-{}",
-                obj.name_any(),
-                v1alpha1::Matcher::kind(&()).to_ascii_lowercase()
-            ))
-        })
-        .unwrap();
-    trace!(name, "looking for Deployment");
-    let cfgsrc = obj
-        .spec
-        .config
-        .as_ref()
-        .ok_or(Error::BadName("missing needed spec field: config".into()))?;
-    trace!("have configsource");
-    let api = Api::<apps::v1::Deployment>::default_namespaced(ctx.client.clone());
-    let want_image = obj.spec.image_default(&crate::DEFAULT_IMAGE);
-
-    let mut ct = 0;
-    while ct < 3 {
-        ct += 1;
-        trace!(ct, "reconcile attempt");
-        let mut entry = api.entry(&name).await?.or_insert(|| {
-            trace!(ct, name, "creating");
-            futures::executor::block_on(new_templated(obj, ctx)).expect("template failed")
-        });
-        let d = entry.get_mut();
-        trace!("checking deployment");
-        d.labels_mut()
-            .insert(COMPONENT_LABEL.to_string(), COMPONENT.into());
-        let (mut vols, mut mounts, config) = make_volumes(cfgsrc);
-        if let Some(ref mut spec) = d.spec {
-            if spec.selector.match_labels.is_none() {
-                spec.selector.match_labels = Some(Default::default());
-            }
-            spec.selector
-                .match_labels
-                .as_mut()
-                .unwrap()
-                .insert(COMPONENT_LABEL.to_string(), COMPONENT.into());
-            if let Some(ref mut meta) = spec.template.metadata {
-                if meta.labels.is_none() {
-                    meta.labels = Some(Default::default());
-                }
-                meta.labels
-                    .as_mut()
-                    .unwrap()
-                    .insert(COMPONENT_LABEL.to_string(), COMPONENT.into());
-            }
-            if let Some(ref mut spec) = spec.template.spec {
-                if let Some(ref mut vs) = spec.volumes {
-                    vols.append(vs);
-                    vols.sort_by_key(|v| v.name.clone());
-                    vols.dedup_by_key(|v| v.name.clone());
-                    *vs = vols;
-                };
-                if let Some(ref mut c) = spec.containers.iter_mut().find(|c| c.name == "clair") {
-                    c.image = Some(want_image.clone());
-                    if c.volume_mounts.is_none() {
-                        c.volume_mounts = Some(Default::default());
-                    }
-                    if let Some(ref mut ms) = c.volume_mounts {
-                        ms.append(&mut mounts);
-                        ms.sort_by_key(|m| m.name.clone());
-                        ms.dedup_by_key(|m| m.name.clone());
-                    };
-                    if c.env.is_none() {
-                        c.env = Some(Default::default());
-                    }
-                    if let Some(ref mut es) = c.env {
-                        es.push(EnvVar {
-                            name: "CLAIR_CONF".into(),
-                            value: Some(config),
-                            value_from: None,
-                        });
-                        es.push(EnvVar {
-                            name: "CLAIR_MODE".into(),
-                            value: Some(v1alpha1::Matcher::kind(&()).to_ascii_lowercase()),
-                            value_from: None,
-                        });
-                        es.sort_by_key(|e| e.name.clone());
-                        es.dedup_by_key(|e| e.name.clone());
-                    };
-                };
-            }
-            trace!(?spec, "deployment spec");
-        };
-        next.add_ref(d);
-        match entry.commit(&CREATE_PARAMS).await {
-            Ok(()) => break,
-            Err(err) => {
-                trace!(error = ?err, "commit error");
-                match err {
-                    CommitError::Validate(reason) => {
-                        debug!(reason = reason.to_string(), "commit failed, retrying")
-                    }
-                    CommitError::Save(_) => return Err(Error::Commit(err)),
-                };
-            }
-        };
-    }
-    trace!(ct, "reconciled");
-    Ok(ct != 3)
-}
-
-#[instrument(skip_all)]
-async fn check_service(
-    obj: &v1alpha1::Matcher,
-    ctx: &Context,
-    _req: &Request,
-    next: &mut v1alpha1::MatcherStatus,
-) -> Result<bool> {
-    let sref = obj
-        .status
-        .as_ref()
-        .and_then(|s| s.has_ref::<core::v1::Service>());
-    if sref.is_none() {
-        let srv: core::v1::Service = new_templated(obj, ctx).await?;
-        let api = Api::<core::v1::Service>::default_namespaced(ctx.client.clone());
-        let srv = api.create(&CREATE_PARAMS, &srv).await?;
-        debug!(name = srv.name_unchecked(), "created Service");
-        next.add_ref(&srv);
-        return Ok(false);
-    }
-    // TODO
-    Ok(true)
-}
-
-#[instrument(skip_all)]
-async fn check_hpa(
-    obj: &v1alpha1::Matcher,
-    ctx: &Context,
-    _req: &Request,
-    next: &mut v1alpha1::MatcherStatus,
-) -> Result<bool> {
-    let href = obj
-        .status
-        .as_ref()
-        .and_then(|s| s.has_ref::<autoscaling::v2::HorizontalPodAutoscaler>());
-    if href.is_none() {
-        let hpa: autoscaling::v2::HorizontalPodAutoscaler = new_templated(obj, ctx).await?;
-        let api =
-            Api::<autoscaling::v2::HorizontalPodAutoscaler>::default_namespaced(ctx.client.clone());
-        let hpa = api.create(&CREATE_PARAMS, &hpa).await?;
-        debug!(name = hpa.name_unchecked(), "created HPA");
-        next.add_ref(&hpa);
-        return Ok(false);
-    }
-    // TODO
-    Ok(true)
-}
-
-#[instrument(skip_all)]
-async fn check_creation(
-    obj: &v1alpha1::Matcher,
-    _ctx: &Context,
-    req: &Request,
-    next: &mut v1alpha1::MatcherStatus,
-) -> Result<bool> {
-    let refs = [
-        obj.status
-            .as_ref()
-            .and_then(|s| s.has_ref::<apps::v1::Deployment>()),
-        obj.status
-            .as_ref()
-            .and_then(|s| s.has_ref::<core::v1::Service>()),
-        obj.status
-            .as_ref()
-            .and_then(|s| s.has_ref::<autoscaling::v2::HorizontalPodAutoscaler>()),
-    ];
-    let ok = refs.iter().all(|r| r.is_some());
-    let status = if ok { "True" } else { "False" }.to_string();
-    let message = if ok {
-        "".to_string()
-    } else {
-        format!(
-            "missing: {}",
-            refs.iter()
-                .filter_map(|r| r.as_ref().map(|r| r.kind.as_str()))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    };
-
-    next.add_condition(Condition {
-        last_transition_time: req.now(),
-        observed_generation: obj.metadata.generation,
-        reason: "ObjectsCreated".into(),
-        type_: clair_condition("Initialized"),
-        message,
-        status,
-    });
-    if ok {
-        req.publish(Event {
-            type_: EventType::Normal,
-            reason: "Initialization".into(),
-            note: Some("👍".into()),
-            action: "ObjectCreation".into(),
-            secondary: None,
-        })
-        .await?;
-    }
-    Ok(ok)
 }

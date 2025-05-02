@@ -41,7 +41,7 @@ async fn initialize() -> Result<(), Error> {
 async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
     use self::core::v1::Secret;
     use self::meta::v1::ObjectMeta;
-    const NAME: &'static str = "clair-initialize-test";
+    const NAME: &str = "clair-initialize-test";
     let cfgname = format!("{NAME}-db");
 
     let dbcfg = json!({
@@ -60,10 +60,9 @@ async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
         )])),
         ..Default::default()
     };
-    let s = Api::<Secret>::default_namespaced(ctx.client.clone())
+    let _s = Api::<Secret>::default_namespaced(ctx.client.clone())
         .create(&PostParams::default(), &s)
         .await?;
-    eprintln!("created database secret: {s:?}");
 
     let api: Api<Clair> = Api::default_namespaced(ctx.client.clone());
     let c: Clair = serde_json::from_value(json!({
@@ -75,6 +74,7 @@ async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
                 "indexer": { "name": cfgname, "key": "db.json" },
                 "matcher": { "name": cfgname, "key": "db.json" },
             },
+            "image": "quay.io/projectquay/clair:nightly",
         },
     }))?;
     eprintln!("attempting to create new Clair");
@@ -84,17 +84,17 @@ async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
     };
     api.create(&post_params, &c).await?;
     eprintln!("created new Clair");
-    let mut gen: i64 = 0;
+    let mut rev = "".into();
     loop {
         let m = api.get_status(NAME).await?;
-        let cur = m.metadata.generation.unwrap();
-        if cur == gen && m.status.is_some() {
+        let cur = m.metadata.resource_version.unwrap();
+        if cur == rev && m.status.is_some() {
             break;
         }
-        gen = cur;
+        rev = cur;
         tokio::time::sleep(Duration::from_millis(1000)).await;
     }
-    eprintln!("Clair settled: {gen}");
+    eprintln!("Clair settled: {rev}");
 
     // Check Clair members
     let got = api.get_status(NAME).await?;

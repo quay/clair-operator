@@ -9,6 +9,8 @@ use xshell::{cmd, Shell};
 
 pub mod check;
 pub mod find;
+pub mod manifests;
+pub mod olm;
 
 pub type DynError = Box<dyn std::error::Error>;
 pub type Result<T> = std::result::Result<T, DynError>;
@@ -30,7 +32,7 @@ pub static BIN_DIR: LazyLock<PathBuf> = LazyLock::new(|| WORKSPACE.join(".bin"))
 
 /// This is the oldest k8s that KinD supports.
 pub static KUBE_VERSION: LazyLock<String> =
-    LazyLock::new(|| env::var("KUBE_VERSION").unwrap_or(String::from("1.29")));
+    LazyLock::new(|| env::var("KUBE_VERSION").unwrap_or(String::from("1.29.3")));
 pub static KIND_VERSION: LazyLock<String> =
     LazyLock::new(|| env::var("KIND_VERSION").unwrap_or(String::from("0.27.0")));
 pub static KUSTOMIZE_VERSION: LazyLock<String> =
@@ -139,7 +141,7 @@ impl KinDBuilder {
         }
 
         let name = "ci";
-        let k8s_ver = KUBE_VERSION.as_str();
+        let (k8s_ver, _patch) = KUBE_VERSION.rsplit_once('.').unwrap();
         eprintln!("# using k8s version: {k8s_ver}");
         let config = WORKSPACE
             .join("etc/tests/")

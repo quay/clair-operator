@@ -1,0 +1,55 @@
+{
+  "apiVersion": "batch/v1",
+  "kind": "Job",
+  "metadata": {
+    "name": "test-clair",
+    "labels": {
+      "app.kubernetes.io/managed-by": "clair-operator",
+      "app.kubernetes.io/name": "clair"
+    }
+  },
+  "spec": {
+    "activeDeadlineSeconds": 3600,
+    "completionMode": "NonIndexed",
+    "completions": 1,
+    "parallelism": 1,
+    "template": {
+      "metadata": {
+        "name": "test-clair",
+        "labels": {
+          "app.kubernetes.io/managed-by": "clair-operator",
+          "app.kubernetes.io/name": "clair"
+        }
+      },
+      "spec": {
+        "terminationGracePeriodSeconds": 10,
+        "securityContext": {
+          "runAsUser": 65532
+        },
+        "shareProcessNamespace": true,
+        "volumes": [],
+        "containers": [
+          {
+            "name": "clair",
+            "ports": [
+              {
+                "name": "introspection",
+                "containerPort": 8089
+              }
+            ],
+            "volumeMounts": [],
+            "workingDir": "/run/clair",
+            "securityContext": {
+              "allowPrivilegeEscalation": false
+            },
+            "resources": {
+              "requests": {
+                "cpu": "1"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -54,7 +54,7 @@ pub fn kubectl(sh: &Shell) -> Result<()> {
         sh.create_dir(BIN_DIR.as_path())?;
         cmd!(
             sh,
-            "curl -fsSLo {exe} https://storage.googleapis.com/kubernetes-release/release/{version}/bin/{OS}/{arch}/kubectl{EXE_SUFFIX}"
+            "curl -fsSLo {exe} https://dl.k8s.io/release/v{version}/bin/{OS}/{arch}/kubectl{EXE_SUFFIX}"
         )
         .run()?;
         cmd!(sh, "chmod +x {exe}").run()?;

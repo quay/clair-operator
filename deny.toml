@@ -57,7 +57,7 @@ no-default-features = false
 # This option is included since the graphs can be quite large and the addition
 # of features from the crate(s) to all of the graph roots can be far too verbose.
 # This option can be overridden via `--feature-depth` on the cmd line
-feature-depth = 1
+feature-depth = 2
 
 # This section is considered when running `cargo deny check advisories`
 # More documentation for the advisories section can be found here:
@@ -90,6 +90,7 @@ unmaintained = "workspace"
 # See https://spdx.org/licenses/ for list of possible licenses
 # [possible values: any SPDX 3.11 short identifier (+ optional exception)].
 allow = [
+    "0BSD",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-3-Clause",

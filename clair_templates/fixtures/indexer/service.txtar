@@ -1,0 +1,63 @@
+-- input.json --
+{
+  "apiVersion": "clairproject.org/v1alpha1",
+  "kind": "Indexer",
+  "metadata": {
+    "namespace": "default",
+    "name": "test",
+	"uid": "6060"
+  },
+  "spec": {
+    "image": "quay.io/projectquay/clair:nightly",
+    "config": {
+      "root": {
+        "name": "test",
+        "key": "config.json"
+      },
+      "dropins": [
+        {
+          "configMapKeyRef": {
+            "name": "test",
+            "key": "90-config.json-patch"
+          }
+        }
+      ]
+    }
+  }
+}
+-- want.json --
+{
+  "apiVersion": "v1",
+  "kind": "Service",
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "indexer",
+      "app.kubernetes.io/managed-by": "clair-operator",
+      "app.kubernetes.io/name": "clair"
+    },
+    "ownerReferences": [
+      {
+        "apiVersion": "clairproject.org/v1alpha1",
+        "kind": "Indexer",
+        "name": "test",
+        "uid": "6060"
+      }
+    ],
+    "namespace": "default",
+    "name": "test-indexer"
+  },
+  "spec": {
+    "selector": {
+      "app.kubernetes.io/component": "indexer",
+      "app.kubernetes.io/managed-by": "clair-operator",
+      "app.kubernetes.io/name": "clair"
+    },
+    "ports": [
+      {
+        "name": "api",
+        "port": 80,
+        "targetPort": "api"
+      }
+    ]
+  }
+}

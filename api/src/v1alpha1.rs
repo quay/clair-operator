@@ -1,7 +1,7 @@
 //! Module `v1alpha1` implements the v1alpha1 Clair CRD API.
 use k8s_openapi::{api::core, apimachinery::pkg::apis::meta, merge_strategies, DeepMerge};
 use kube::{CELSchema, CustomResource};
-use schemars::JsonSchema;
+use schemars;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -38,7 +38,7 @@ pub struct ClairSpec {
     ///
     /// If unspecified, services will need to have their routing set up manually.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub gateway: Option<Gateway>,
+    pub gateway: Option<RouteParentRef>,
     /// Notifier enables the notifier subsystem.
     ///
     /// The operator does not start the notifier by default. If it's configured via a drop-in, this
@@ -52,16 +52,10 @@ pub struct ClairSpec {
     /// See the Clair documentation for how config drop-ins are handled.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dropins: Vec<DropinSource>,
-    /// ConfigDialect specifies the format to generate for the main config.
-    ///
-    /// This setting affects what format config drop-ins must be in.
-    // TODO(hank): delete this
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config_dialect: Option<ConfigDialect>,
 }
 
 impl ClairSpec {
-    /// With_root creates the desired ConfigSource, using the provided name as the root config.
+    /// With_root creates the desired ConfigSource, using the provided name as the root ConfigMap.
     pub fn with_root<S: ToString>(&self, name: S) -> ConfigSource {
         let mut dropins = self.dropins.clone();
         if let Some(db) = &self.databases {
@@ -83,11 +77,10 @@ impl ClairSpec {
         dropins.sort();
         dropins.dedup();
         let name = name.to_string();
-        let flavor = self.config_dialect.unwrap_or_default();
         ConfigSource {
             root: ConfigMapKeySelector {
                 name,
-                key: format!("config.{flavor}"),
+                key: "config.json".into(),
             },
             dropins,
         }
@@ -101,7 +94,6 @@ impl DeepMerge for ClairSpec {
         self.gateway.merge_from(other.gateway);
         self.notifier.merge_from(other.notifier);
         merge_strategies::list::set(self.dropins.as_mut(), other.dropins);
-        self.config_dialect.merge_from(other.config_dialect);
     }
 }
 
@@ -133,31 +125,9 @@ impl DeepMerge for Databases {
     }
 }
 
-/// Endpoint describes how a frontend (e.g. an Ingress) should be configured.
-#[derive(Clone, Default, Debug, Deserialize, PartialEq, Serialize, Validate, CELSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct Gateway {
-    /// Gateway_class_name is the GatewayClass to use.
-    ///
-    /// If not provided, one will be guessed at.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gateway_class_name: Option<String>,
-    /// Hostname indicates the desired hostname.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hostname: Option<String>,
-    /// TLS inicates the `kubernetes.io/tls`-typed Secret that should be used.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tls: Option<core::v1::LocalObjectReference>,
-}
-
-impl DeepMerge for Gateway {
-    fn merge_from(&mut self, other: Self) {
-        self.hostname.merge_from(other.hostname);
-        self.tls.merge_from(other.tls);
-    }
-}
-
-/// ...
+/// RouteParentRef serves the same purpose as a Gateway API [ParentReference].
+///
+/// [ParentReference]: https://gateway-api.sigs.k8s.io/reference/spec/#parentreference
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RouteParentRef {
@@ -259,46 +229,54 @@ pub struct RouteParentRef {
     pub section_name: Option<String>,
 }
 
+impl DeepMerge for RouteParentRef {
+    fn merge_from(&mut self, other: Self) {
+        self.group.merge_from(other.group);
+        self.kind.merge_from(other.kind);
+        self.namespace.merge_from(other.namespace);
+        self.name.merge_from(other.name);
+        self.section_name.merge_from(other.section_name);
+    }
+}
+
 /// ClairStatus describes the observed state of a Clair instance.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ClairStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "schema::conditions")]
-    pub conditions: Vec<meta::v1::Condition>,
+    pub conditions: Option<Vec<meta::v1::Condition>>,
 
     // Misc other refs we may need to hold onto, like Ingresses, Deployments, etc.
     /// Refs holds on to references to objects needed by this instance.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "schema::typed_local_object_references")]
-    pub refs: Vec<core::v1::TypedLocalObjectReference>,
+    pub refs: Option<Vec<core::v1::TypedLocalObjectReference>>,
 
-    /// Endpoint is a reference to whatever object is providing ingress.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<core::v1::TypedLocalObjectReference>,
-
-    // These are services, to be used by whatever's fronting.
-    /// Indexer is the Service for the Indexer component.
+    /// Indexer is the created Indexer component.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indexer: Option<core::v1::TypedLocalObjectReference>,
-    /// Matcher is the Service for the Matcher component.
+    /// Matcher is the created Matcher component.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matcher: Option<core::v1::TypedLocalObjectReference>,
-    /// Notifier is the Service for the Notifier component.
+    /// Notifier is the created Notifier component.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notifier: Option<core::v1::TypedLocalObjectReference>,
 
     /// Config is configuration sources for the Clair instance.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<ConfigSource>,
+    /// Image is the image that should be used in the managed deployment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /*
     /// Previous_version is the previous verison of a deployed Clair instance, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_version: Option<String>,
     /// Current_version is the current verison of a deployed Clair instance.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_version: Option<String>,
-    /*
     /// Database is the Service for the managed database engine, if used.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database: Option<core::v1::TypedLocalObjectReference>,
@@ -421,6 +399,7 @@ impl DeepMerge for ConfigMapKeySelector {
     }
 }
 
+/*
 /// ConfigDialect selects between the dialects for a Clair config.
 ///
 /// The default for the operator to create is JSON.
@@ -451,7 +430,6 @@ impl DeepMerge for ConfigDialect {
 
 // ImageRef exists to have some Object to hang pre/post Jobs off of.
 // I don't think this is actually needed -- The can/could be driven off of a Condition.
-/*
 /// ImageRefSpec is the spec of an ImageRef.
 #[derive(
     CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema,
@@ -501,6 +479,9 @@ pub struct IndexerSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(required)]
     pub config: Option<ConfigSource>,
+    /// Gateway is the object to attach Gateway API routes to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<RouteParentRef>,
 }
 
 impl DeepMerge for IndexerSpec {
@@ -515,14 +496,14 @@ impl DeepMerge for IndexerSpec {
 pub struct WorkerStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
     #[schemars(schema_with = "schema::conditions")]
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub conditions: Vec<meta::v1::Condition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<Vec<meta::v1::Condition>>,
 
     // Misc other refs we may need to hold onto, like Ingresses, Deployments, etc.
     /// Refs holds on to references to objects needed by this instance.
     #[schemars(schema_with = "schema::typed_local_object_references")]
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub refs: Vec<core::v1::TypedLocalObjectReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refs: Option<Vec<core::v1::TypedLocalObjectReference>>,
 
     /// Dropin is a generated JSON dropin configuration that a Clair instance may use to construct
     /// its configuration.
@@ -573,6 +554,9 @@ pub struct MatcherSpec {
     /// Config is configuration sources for the Clair instance.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<ConfigSource>,
+    /// Gateway is the object to attach Gateway API routes to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<RouteParentRef>,
 }
 
 /// MatcherStatus describes the observed state of a Matcher instance.
@@ -672,6 +656,9 @@ pub struct NotifierSpec {
     /// Config is configuration sources for the Clair instance.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<ConfigSource>,
+    /// Gateway is the object to attach Gateway API routes to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<RouteParentRef>,
 }
 
 /// NotifierStatus describes the observed state of a Notifier instance.

@@ -5,22 +5,21 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use k8s_openapi::{api::core::v1::TypedLocalObjectReference, merge_strategies, DeepMerge};
+use k8s_openapi::{api::core::v1::TypedLocalObjectReference, merge_strategies};
 use kube::{
-    api::{Api, ListParams, Patch},
+    api::{Api, Patch},
     client::Client,
     core::{GroupVersionKind, ObjectMeta},
     runtime::controller::Error as CtrlErr,
 };
-use serde_json::json;
 use tokio::{
     signal::unix::{signal, SignalKind},
     time::Duration,
 };
 use tokio_stream::wrappers::SignalStream;
 
-use crate::{clair_condition, prelude::*, COMPONENT_LABEL, DEFAULT_CONFIG_JSON, DEFAULT_IMAGE};
-use clair_config;
+use crate::{clair_condition, prelude::*, COMPONENT_LABEL, DEFAULT_CONFIG_JSON};
+use clair_templates::{Build, IndexerBuilder, JobBuilder, MatcherBuilder, NotifierBuilder};
 use v1alpha1::Clair;
 
 static COMPONENT: LazyLock<String> = LazyLock::new(|| Clair::kind(&()).to_ascii_lowercase());
@@ -41,7 +40,7 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
     let sig = SignalStream::new(signal(SignalKind::user_defined1())?);
 
     Ok(async move {
-        let mut ctl = Controller::new(root, ctlcfg.clone())
+        let ctl = Controller::new(root, ctlcfg.clone())
             .owns(
                 Api::<v1alpha1::Indexer>::all(client.clone()),
                 ctlcfg.clone(),
@@ -59,14 +58,7 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
                 Api::<core::v1::ConfigMap>::all(client.clone()),
                 ctlcfg.clone(),
             )
-            .owns(Api::<batch::v1::Job>::all(client.clone()), ctlcfg.clone());
-        if ctx.gvk_exists(&crate::GATEWAY_NETWORKING_GATEWAY).await {
-            ctl = ctl.owns(
-                Api::<gateway_api::apis::standard::gateways::Gateway>::all(client.clone()),
-                ctlcfg.clone(),
-            );
-        }
-        ctl = ctl
+            .owns(Api::<batch::v1::Job>::all(client.clone()), ctlcfg.clone())
             .reconcile_all_on(sig)
             .graceful_shutdown_on(cancel.cancelled_owned());
         info!("starting clair controller");
@@ -105,27 +97,80 @@ fn error_policy(obj: Arc<v1alpha1::Clair>, err: &Error, _ctx: Arc<Context>) -> A
     Action::requeue(Duration::from_secs(5))
 }
 
-#[instrument(skip(ctx, clair),fields(name = clair.name_any(), namespace = clair.namespace().unwrap()))]
-async fn reconcile(clair: Arc<v1alpha1::Clair>, ctx: Arc<Context>) -> Result<Action> {
-    let ns = clair.namespace().unwrap(); // Clair is namespace scoped
-    let client = &ctx.client;
-    let clairs: Api<v1alpha1::Clair> = Api::namespaced(client.clone(), &ns);
-
+#[instrument(skip(ctx, clair),fields(
+    name = clair.name_any(),
+    namespace = clair.namespace().unwrap(),
+    generation = clair.metadata.generation,
+    resource_version = clair.metadata.resource_version
+))]
+async fn reconcile(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
     info!("reconciling Clair");
-    let owner_ref = clair.controller_owner_ref(&()).unwrap();
-    let name = clair.name_any();
-    let spec = &clair.spec;
+    let r = Reconciler::from((clair.clone(), ctx.clone()));
 
-    // Configuration
-    'configuration_check: {
+    for (field, present) in [
+        ("$.spec.databases", clair.spec.databases.is_some()),
+        ("$.spec.image", clair.spec.image.is_some()),
+    ] {
+        if !present {
+            info!(field, "missing required field, skipping reconciliation");
+            return Ok(Action::await_change());
+        }
+    }
+
+    r.configuration().await?;
+    r.admin_pre().await?;
+    r.indexer().await?;
+    r.matcher().await?;
+    r.notifier().await?;
+    r.admin_post().await?;
+
+    Ok(DEFAULT_REQUEUE.clone())
+}
+
+#[derive(Debug)]
+struct Reconciler {
+    clair: Arc<Clair>,
+    ctx: Arc<Context>,
+    namespace: String,
+    api: Api<Clair>,
+}
+
+impl From<(Arc<Clair>, Arc<Context>)> for Reconciler {
+    fn from(value: (Arc<Clair>, Arc<Context>)) -> Self {
+        let (clair, ctx) = value;
+        let namespace = clair.namespace().unwrap(); // Clair is namespace scoped
+        let api: Api<Clair> = Api::namespaced(ctx.client.clone(), &namespace);
+        Self {
+            clair,
+            ctx,
+            namespace,
+            api,
+        }
+    }
+}
+
+impl Reconciler {
+    fn client(&self) -> Client {
+        self.ctx.client.clone()
+    }
+    fn ns(&self) -> &str {
+        self.namespace.as_str()
+    }
+    fn name(&self) -> String {
+        self.clair.name_unchecked()
+    }
+
+    #[instrument(skip(self), ret)]
+    async fn configuration(&self) -> Result<()> {
         use self::core::v1::ConfigMap;
-        let api = Api::<ConfigMap>::namespaced(client.clone(), &ns);
+        let api = Api::<ConfigMap>::namespaced(self.client(), self.ns());
 
+        let owner_ref = self.clair.owner_ref(&()).unwrap();
         let mut cm = ConfigMap {
             metadata: ObjectMeta {
-                name: Some(name.clone()),
-                namespace: Some(ns.clone()),
-                owner_references: Some(vec![owner_ref.clone()]),
+                name: Some(self.name()),
+                namespace: Some(self.namespace.clone()),
+                owner_references: Some(vec![owner_ref]),
                 labels: Some(BTreeMap::from([(
                     COMPONENT_LABEL.to_string(),
                     COMPONENT.to_string(),
@@ -135,36 +180,41 @@ async fn reconcile(clair: Arc<v1alpha1::Clair>, ctx: Arc<Context>) -> Result<Act
             ..Default::default()
         };
         let mut contents = BTreeMap::new();
-        let mut dropins = spec.dropins.clone();
+        let mut created_dropins = Vec::new();
 
         contents.insert("config.json".to_string(), DEFAULT_CONFIG_JSON.into());
-        if let Some(ref status) = clair.status {
-            let want = ["Indexer", "Matcher"];
-            if let Some(objref) = status.refs.iter().find(|&objref| {
-                objref.api_group.as_ref().is_some_and(|s| s == api::GROUP)
-                    && want.contains(&objref.kind.as_str())
-            }) {
+        if let Some(ref status) = self.clair.status {
+            // For all of the resources owned by this Clair instance, see if they've published a
+            // dropin snippet to their status resource.
+            //
+            // If so, pull it into the ConfigMap managed by this Clair instance and put a reference
+            // in the main ConfigSource.
+            let to_check = [status.indexer.as_ref(), status.matcher.as_ref()];
+            for objref in to_check.into_iter().flatten() {
                 let kind = objref.kind.as_str().to_ascii_lowercase();
-                let status = match kind.as_str() {
-                    "indexer" => Api::<v1alpha1::Indexer>::namespaced(client.clone(), &ns)
+                debug!(kind, "checking created object");
+                let dropin = match kind.as_str() {
+                    "indexer" => Api::<v1alpha1::Indexer>::namespaced(self.client(), self.ns())
                         .get_status(&objref.name)
+                        .instrument(debug_span!("get_status", kind))
                         .await
                         .ok()
-                        .map(|obj| obj.status),
-                    "matcher" => Api::<v1alpha1::Matcher>::namespaced(client.clone(), &ns)
+                        .and_then(|obj| obj.status),
+                    "matcher" => Api::<v1alpha1::Matcher>::namespaced(self.client(), self.ns())
                         .get_status(&objref.name)
+                        .instrument(debug_span!("get_status", kind))
                         .await
                         .ok()
-                        .map(|obj| obj.status),
+                        .and_then(|obj| obj.status),
                     _ => unreachable!(),
                 }
-                .flatten()
-                .unwrap_or_default();
+                .and_then(|s| s.dropin);
 
-                if let Some(dropin) = status.dropin {
+                debug!(kind, found = dropin.is_some(), "checking dropin");
+                if let Some(dropin) = dropin {
                     let key = format!("00-{kind}.json-patch");
                     contents.insert(key.clone(), dropin);
-                    dropins.push(v1alpha1::DropinSource {
+                    created_dropins.push(v1alpha1::DropinSource {
                         config_map_key_ref: Some(v1alpha1::ConfigMapKeySelector {
                             name: cm.name_any(),
                             key,
@@ -175,728 +225,450 @@ async fn reconcile(clair: Arc<v1alpha1::Clair>, ctx: Arc<Context>) -> Result<Act
             }
         }
         cm.data = Some(contents);
-        let serverside = PatchParams::apply(CONTROLLER_NAME);
-        let cm = api
-            .patch(&cm.name_any(), &serverside, &Patch::Apply(cm))
-            .await?;
 
-        if let Some(dbs) = &spec.databases {
+        let cm = api
+            .patch(&cm.name_any(), &PATCH_PARAMS, &Patch::Apply(cm))
+            .instrument(debug_span!("patch", kind = "ConfigMap"))
+            .await?;
+        info!(
+            config_map.name = cm.metadata.name,
+            config_map.generation = cm.metadata.generation,
+            config_map.resource_version = cm.metadata.resource_version,
+            "patched ConfigMap"
+        );
+
+        if let Some(dbs) = &self.clair.spec.databases {
+            trace!("have databases");
             for &sec in &[&dbs.indexer, &dbs.matcher] {
-                dropins.push(v1alpha1::DropinSource {
+                created_dropins.push(v1alpha1::DropinSource {
                     config_map_key_ref: None,
                     secret_key_ref: Some(sec.clone()),
                 });
             }
             if let Some(ref sec) = dbs.notifier {
-                dropins.push(v1alpha1::DropinSource {
+                trace!("have notifier database");
+                created_dropins.push(v1alpha1::DropinSource {
                     config_map_key_ref: None,
                     secret_key_ref: Some(sec.clone()),
                 });
             };
         }
-        dropins.sort();
-        dropins.dedup();
+        trace!(?created_dropins, "created dropins");
 
-        let config = Some(v1alpha1::ConfigSource {
+        let mut dropins = self.clair.spec.dropins.clone();
+        merge_strategies::list::set(&mut dropins, created_dropins);
+        let config = v1alpha1::ConfigSource {
             root: v1alpha1::ConfigMapKeySelector {
                 name: cm.name_any(),
                 key: "config.json".into(),
             },
             dropins,
-        });
-        if clair.status.is_some() && clair.status.as_ref().unwrap().config == config {
-            break 'configuration_check;
+        };
+        trace!(config_source=?config, "created ConfigSource");
+        if self
+            .clair
+            .status
+            .as_ref()
+            .and_then(|s| s.config.as_ref())
+            .map(|c| c == &config)
+            .unwrap_or_default()
+        {
+            debug!("no need to update status");
+            return Ok(());
         }
+        debug!("updating status");
 
-        let status = json!({
-          "status": {
-            "config": config,
-            "conditions": [
-              Condition {
-                message: "updated ConfigSource object".into(),
-                observed_generation: clair.metadata.generation,
-                last_transition_time: meta::v1::Time(Utc::now()),
-                reason: "ConfigSourcePatched".into(),
-                status: "True".into(),
-                type_: clair_condition("ConfigReady"),
-              }
-            ],
-          },
-        });
-        clairs
-            .patch_status(&clair.name_any(), &PATCH_PARAMS, &Patch::Merge(&status))
+        let mut next = self
+            .api
+            .get_status(&self.name())
+            .instrument(debug_span!("get_status"))
             .await?;
+        {
+            next.meta_mut().managed_fields = None;
+            let status = next.status.get_or_insert_default();
+
+            let update = status.config.is_some();
+            status.config = config.into();
+
+            let cnds = status.conditions.get_or_insert_default();
+            let type_ = clair_condition("ConfigReady");
+            let mut cnd = Condition {
+                message: "created ConfigSource object".into(),
+                observed_generation: self.clair.metadata.generation,
+                last_transition_time: meta::v1::Time(Utc::now()),
+                reason: "ConfigSourceCreated".into(),
+                status: "True".into(),
+                type_: type_.clone(),
+            };
+            if update {
+                cnd.reason = "ConfigSourceUpdated".into();
+                cnd.message = "updated ConfigSource object".into();
+            }
+            match cnds
+                .iter_mut()
+                .find(|cnd| cnd.type_.as_str() == type_.as_str())
+            {
+                None => cnds.push(cnd),
+                Some(e) => *e = cnd,
+            };
+        }
+        debug!(patch = ?next, "applying patch");
+        self.api
+            .patch_status(&self.clair.name_any(), &PATCH_PARAMS, &Patch::Apply(&next))
+            .await?;
+        Ok(())
     }
 
-    // admin job
-    'admin_check: {
-        trace!("checking admin job");
+    /// The admin_pre step is responsible for arranging for the admin pre-upgrade jobs to run and
+    /// for "promoting" the version.
+    #[instrument(skip(self), ret)]
+    async fn admin_pre(&self) -> Result<()> {
         use batch::v1::Job;
-        let api = Api::<Job>::namespaced(client.clone(), &ns);
-        // Need to:
-        // - Determine if the image version is going to get updated.
-        //   - If not, check that the "post" job has run OK.
-        //     - If not, warn somehow.
-        //   - If so, check that the "pre" job has run OK.
-        //     - If not, block the changes.
-        if clair.status.is_none() {
-            break 'admin_check;
-        }
-        let status = clair.status.as_ref().unwrap();
-        if let Some(ref v) = status.current_version {
-            if v != spec.image.as_ref().unwrap_or(&DEFAULT_IMAGE) {
-                // Version mismatch, find out why.
+        let job_type = clair_condition("AdminPreJobDone");
+        let mut update = vec![];
+        let mut promote = false;
+        let cnds = self
+            .clair
+            .status
+            .as_ref()
+            .and_then(|s| s.conditions.clone())
+            .unwrap_or_default();
+        let api = Api::<Job>::namespaced(self.client(), self.ns());
+
+        // If there are no conditions, record the Job as done and continue.
+        //
+        // If there are conditions, check in order:
+        // - If the PreJob condition is not current to the spec:
+        //   - Check on the current image:
+        //     - If changed, start a the new job and set the condtion to False.
+        // - If the PreJob condition is current to the spec:
+        //   - If false, check on the job and update if need be.
+        //   - If true, swap the new image into the status.
+
+        if let Some(cnd) = cnds.iter().find(|&c| c.type_ == job_type) {
+            debug!("checking Condition");
+            if cnd.observed_generation != self.clair.metadata.generation {
+                debug!(
+                    observed = cnd.observed_generation,
+                    current = self.clair.metadata.generation,
+                    "generation differs"
+                );
+                if self.clair.spec.image.as_ref()
+                    == self.clair.status.as_ref().and_then(|s| s.image.as_ref())
+                {
+                    debug!("\"spec.image\" not changed");
+                    update.push(Condition {
+                        message: "spec.image not changed".into(),
+                        observed_generation: self.clair.metadata.generation,
+                        last_transition_time: meta::v1::Time(Utc::now()),
+                        reason: "NoImageUpdate".into(),
+                        status: "True".into(),
+                        type_: job_type,
+                    });
+                } else {
+                    debug!("starting \"admin pre\" job");
+                    update.push(Condition {
+                        message: "spec.image changed, launching \"admin pre\" job".into(),
+                        observed_generation: self.clair.metadata.generation,
+                        last_transition_time: meta::v1::Time(Utc::now()),
+                        reason: "ImageUpdated".into(),
+                        status: "False".into(),
+                        type_: job_type,
+                    });
+                    info!(TODO = true, "launch job");
+
+                    let j = JobBuilder::admin_pre(self.clair.as_ref())?.build();
+                    api.create(&CREATE_PARAMS, &j)
+                        .instrument(debug_span!("create"))
+                        .await?;
+                }
             } else {
-                // Version is current, check for post job.
-                let cnd_post = clair_condition("AdminPostComplete");
-                match status.conditions.iter().find(|c| c.type_ == cnd_post) {
-                    Some(c) => {
-                        // Condition exists
-                        match c.status.as_str() {
-                            "True" => {
-                                // Great, done.
-                                break 'admin_check;
-                            }
-                            "False" | "Unknown" => {
-                                // The Job is either running or needs to be created.
-                                if let Some(j) = api.get_opt("name").await? {
-                                    let s =
-                                        j.status.unwrap_or_default().succeeded.unwrap_or_default();
-                                    debug!("succeeded: {}", s);
-                                } else {
-                                    unimplemented!("create?")
-                                }
-                            }
-                            _ => unreachable!(),
+                debug!("checking ");
+                match cnd.status.as_str() {
+                    "False" => {
+                        info!(TODO = true, "check job");
+                    }
+                    "True" => {
+                        if self.clair.spec.image.as_ref()
+                            != self.clair.status.as_ref().and_then(|s| s.image.as_ref())
+                        {
+                            debug!("promoting image");
+                            promote = true;
                         }
                     }
-                    None => {
-                        // No post job, seemingly. Check for Job creation.
-                        unimplemented!("no post job")
+                    "Unknown" => {
+                        error!(condition = job_type, "job in unknown state???");
+                        return Ok(());
                     }
-                };
+                    _ => unreachable!(),
+                }
             }
         } else {
-            // TODO(hank) In setup, no current version.
+            debug!("fresh instance, skipping \"admin pre\" job");
+            promote = true;
+            update.push(Condition {
+                message: "pre jobs are not needed on a fresh system".into(),
+                observed_generation: self.clair.metadata.generation,
+                last_transition_time: meta::v1::Time(Utc::now()),
+                reason: "NewClair".into(),
+                status: "True".into(),
+                type_: job_type,
+            });
         }
+
+        if !update.is_empty() {
+            let next = self
+                .api
+                .get_status(&self.name())
+                .instrument(debug_span!("get_status"))
+                .await
+                .map(|mut next| {
+                    next.meta_mut().managed_fields = None;
+                    let status = next.status.get_or_insert_default();
+                    if promote {
+                        status.image = self.clair.spec.image.clone();
+                    }
+                    let cnds = status.conditions.get_or_insert_default();
+                    merge_strategies::list::map(cnds, update, &[cmp_condition], merge_condition);
+                    next
+                })?;
+            trace!("patching status");
+            self.api
+                .patch_status(&self.name(), &PATCH_PARAMS, &Patch::Apply(&next))
+                .instrument(debug_span!("patch_status"))
+                .await?;
+        }
+
+        Ok(())
     }
 
-    'app_config_check: {
-        trace!("checking subresource types");
+    #[instrument(skip(self), ret)]
+    async fn admin_post(&self) -> Result<()> {
+        info!(TODO = true, "write admin post job");
+        Ok(())
+    }
 
-        let clair = clairs.get_status(&clair.name_any()).await?;
-        let status = if let Some(ref status) = clair.status {
+    #[instrument(skip(self), ret)]
+    async fn indexer(&self) -> Result<()> {
+        use v1alpha1::Indexer;
+
+        let api = Api::<Indexer>::namespaced(self.client(), self.ns());
+        let status = if let Some(status) = self.clair.status.as_ref() {
             status
         } else {
-            break 'app_config_check;
+            info!("no status object, unable to create Indexer (missing ConfigSource)");
+            return Ok(());
         };
-        let config = if let Some(ref c) = status.config {
-            c
-        } else {
-            debug!("no config on next config");
-            break 'app_config_check;
-        };
-        let p: clair_config::Parts = load_clair_config(&ctx.client, config).await?;
-        let v = p.validate().await?;
-        //let action = String::from("ConfigValidation");
-        //let reason = String::from("ConfigAdded");
-        let message = String::from("🆗");
-        let now = meta::v1::Time(Utc::now());
-        let generation = clair.metadata.generation;
 
-        let mut conditions = vec![];
+        let idx = IndexerBuilder::try_from(self.clair.as_ref())?.build();
 
-        for (sub, res) in [
-            (
-                clair.status.as_ref().and_then(|s| s.indexer.as_ref()),
-                v.indexer,
-            ),
-            (
-                clair.status.as_ref().and_then(|s| s.matcher.as_ref()),
-                v.matcher,
-            ),
-            (
-                clair.status.as_ref().and_then(|s| s.notifier.as_ref()),
-                v.notifier,
-            ),
-            //obj.status.as_ref().and_then(|s| s.updater.as_ref()),
-        ]
-        .iter()
-        .filter(|(sub, _)| sub.is_some())
-        .map(|(sub, res)| (sub.unwrap(), res))
+        trace!(?idx, "created Indexer");
+        let idx = api
+            .patch(&idx.name_any(), &PATCH_PARAMS, &Patch::Apply(idx))
+            .instrument(debug_span!("patch", kind = "Indexer"))
+            .await?;
+
+        if status.indexer.is_some() {
+            debug!("no need to update status");
+            return Ok(());
+        }
+        debug!("updating status");
+
+        let mut next = self
+            .api
+            .get_status(&self.name())
+            .instrument(debug_span!("get_status"))
+            .await?;
         {
-            /*
-            use std::str::FromStr;
-            let gv = sub
-                .api_group
-                .as_ref()
-                .map(|g| kube::core::GroupVersion::from_str(g.as_str()).unwrap())
-                .unwrap();
-            let gvk = GroupVersionKind::gvk(&gv.group, &gv.version, &sub.kind);
-            let (ar, _) = kube::discovery::pinned_kind(&ctx.client, &gvk).await?;
-            let api =
-                Api::<kube::api::DynamicObject>::default_namespaced_with(ctx.client.clone(), &ar);
-            */
-            let type_ = clair_condition(format!("{}ConfigValidated", sub.kind));
+            next.meta_mut().managed_fields = None;
+            let status = next.status.get_or_insert_default();
 
-            match res {
-                Ok(_) => {
-                    conditions.push(Condition {
-                        last_transition_time: now.clone(),
-                        message: message.clone(),
-                        observed_generation: generation,
-                        reason: format!("{}ValidationSuccess", sub.kind),
-                        status: "True".to_string(),
-                        type_,
-                    });
-                }
-                Err(err) => {
-                    conditions.push(Condition {
-                        last_transition_time: now.clone(),
-                        message: err.to_string(),
-                        observed_generation: generation,
-                        reason: format!("{}ValidationFailure", sub.kind),
-                        status: "False".to_string(),
-                        type_,
-                    });
-                    continue;
-                }
+            let mut cnd = Condition {
+                message: "created Indexer object".into(),
+                observed_generation: self.clair.metadata.generation,
+                last_transition_time: meta::v1::Time(Utc::now()),
+                reason: "IndexerCreated".into(),
+                status: "True".into(),
+                type_: clair_condition("IndexerCreated"),
             };
-            /*
-            use json_patch::{AddOperation, Patch as JsonPatch, PatchOperation};
-            let patch = JsonPatch(vec![PatchOperation::Add(AddOperation {
-                path: "/spec/config".into(),
-                value: serde_json::to_value(config.clone())?,
-            })]);
-            let patch = Patch::Json::<()>(patch);
-            api.patch(&sub.name, &PATCH_PARAMS, &patch).await?;
-            info!(name = sub.name, kind = sub.kind, "updated subresource");
-            */
+            if status.indexer.is_some() {
+                cnd.message = "updated Indexer object".into();
+                cnd.reason = "IndexerUpdated".into();
+            }
+            status.indexer = TypedLocalObjectReference {
+                kind: Indexer::kind(&()).to_string(),
+                api_group: Indexer::api_version(&()).to_string().into(),
+                name: idx.name_any(),
+            }
+            .into();
 
-            // TODO(hank) Publish conditions
+            let cnds = status.conditions.get_or_insert_default();
+            merge_strategies::list::map(cnds, vec![cnd], &[cmp_condition], merge_condition);
         }
+        debug!(payload = ?next, "patching status");
+        self.api
+            .patch_status(&self.name(), &PATCH_PARAMS, &Patch::Apply(&next))
+            .instrument(debug_span!("patch_status"))
+            .await?;
+
+        Ok(())
     }
 
-    'indexer_check: {
-        use v1alpha1::{Indexer, IndexerSpec};
+    #[instrument(skip(self), ret)]
+    async fn matcher(&self) -> Result<()> {
+        use v1alpha1::Matcher;
 
-        let api = Api::<Indexer>::namespaced(client.clone(), &ns);
-        let clair = clairs.get_status(&clair.name_any()).await?;
-        let status = if let Some(ref status) = clair.status {
+        let api = Api::<Matcher>::namespaced(self.client(), self.ns());
+        let status = if let Some(status) = self.clair.status.as_ref() {
             status
         } else {
-            break 'indexer_check;
+            info!("no status object, unable to create Matcher (missing ConfigSource)");
+            return Ok(());
         };
 
-        let idx = Indexer {
-            metadata: ObjectMeta {
-                name: Some(clair.name_any()),
-                owner_references: Some(vec![owner_ref.clone()]),
-                labels: Some(BTreeMap::from([(
-                    COMPONENT_LABEL.to_string(),
-                    COMPONENT.to_string(),
-                )])),
-                ..Default::default()
-            },
-            spec: IndexerSpec {
-                image: Some(ctx.image.clone()),
-                config: status.config.clone(),
-            },
-            ..Default::default()
-        };
+        let m = MatcherBuilder::try_from(self.clair.as_ref())?.build();
 
-        let serverside = PatchParams::apply(CONTROLLER_NAME);
-        let idx = api
-            .patch(&idx.name_any(), &serverside, &Patch::Apply(idx))
+        trace!(?m, "created Matcher");
+        let m = api
+            .patch(&m.name_any(), &PATCH_PARAMS, &Patch::Apply(m))
+            .instrument(debug_span!("patch", kind = "Matcher"))
             .await?;
-
-        if clair.status.is_some() && clair.status.as_ref().unwrap().indexer.is_some() {
-            break 'indexer_check;
+        if status.matcher.is_some() {
+            return Ok(());
         }
+        debug!("updating status");
 
-        debug!("initial creation");
-        let status = json!({
-            "status": {
-                "indexer": TypedLocalObjectReference {
-                    kind: Indexer::kind(&()).to_string(),
-                    api_group: Some(Indexer::api_version(&()).to_string()),
-                    name: idx.name_any(),
-                }
+        let mut next = self
+            .api
+            .get_status(&self.name())
+            .instrument(debug_span!("get_status"))
+            .await?;
+        {
+            next.meta_mut().managed_fields = None;
+            let status = next.status.get_or_insert_default();
+
+            status.matcher = TypedLocalObjectReference {
+                kind: Matcher::kind(&()).to_string(),
+                api_group: Matcher::api_version(&()).to_string().into(),
+                name: m.name_any(),
             }
-        });
-        clairs
-            .patch_status(&clair.name_any(), &PATCH_PARAMS, &Patch::Merge(&status))
-            .await?;
-    }
+            .into();
 
-    'matcher_check: {
-        use v1alpha1::{Matcher, MatcherSpec};
-
-        let api = Api::<Matcher>::namespaced(client.clone(), &ns);
-        let clair = clairs.get_status(&clair.name_any()).await?;
-        let status = if let Some(ref status) = clair.status {
-            status
-        } else {
-            break 'matcher_check;
-        };
-
-        let idx = Matcher {
-            metadata: ObjectMeta {
-                name: Some(clair.name_any()),
-                owner_references: Some(vec![owner_ref.clone()]),
-                labels: Some(BTreeMap::from([(
-                    COMPONENT_LABEL.to_string(),
-                    COMPONENT.to_string(),
-                )])),
-                ..Default::default()
-            },
-            spec: MatcherSpec {
-                image: Some(ctx.image.clone()),
-                config: status.config.clone(),
-            },
-            ..Default::default()
-        };
-
-        let serverside = PatchParams::apply(CONTROLLER_NAME);
-        let idx = api
-            .patch(&idx.name_any(), &serverside, &Patch::Apply(idx))
-            .await?;
-
-        if clair.status.is_some() && clair.status.as_ref().unwrap().matcher.is_some() {
-            break 'matcher_check;
-        }
-
-        debug!("initial creation");
-        let status = json!({
-            "status": {
-                "matcher": TypedLocalObjectReference {
-                    kind: Matcher::kind(&()).to_string(),
-                    api_group: Some(Matcher::api_version(&()).to_string()),
-                    name: idx.name_any(),
-                }
-            }
-        });
-        clairs
-            .patch_status(&clair.name_any(), &PATCH_PARAMS, &Patch::Merge(&status))
-            .await?;
-    }
-
-    'notifier_check: {
-        use v1alpha1::{Notifier, NotifierSpec};
-        if !clair.spec.notifier.unwrap_or_default() {
-            break 'notifier_check;
-        }
-
-        let api = Api::<Notifier>::namespaced(client.clone(), &ns);
-        let clair = clairs.get_status(&clair.name_any()).await?;
-        let status = if let Some(ref status) = clair.status {
-            status
-        } else {
-            break 'notifier_check;
-        };
-
-        let idx = Notifier {
-            metadata: ObjectMeta {
-                name: Some(clair.name_any()),
-                owner_references: Some(vec![owner_ref.clone()]),
-                labels: Some(BTreeMap::from([(
-                    COMPONENT_LABEL.to_string(),
-                    COMPONENT.to_string(),
-                )])),
-                ..Default::default()
-            },
-            spec: NotifierSpec {
-                image: Some(ctx.image.clone()),
-                config: status.config.clone(),
-            },
-            ..Default::default()
-        };
-
-        let serverside = PatchParams::apply(CONTROLLER_NAME);
-        let idx = api
-            .patch(&idx.name_any(), &serverside, &Patch::Apply(idx))
-            .await?;
-
-        if clair.status.is_some() && clair.status.as_ref().unwrap().notifier.is_some() {
-            break 'notifier_check;
-        }
-
-        debug!("initial creation");
-        let status = json!({
-            "status": {
-                "notifier": TypedLocalObjectReference {
-                    kind: Notifier::kind(&()).to_string(),
-                    api_group: Some(Notifier::api_version(&()).to_string()),
-                    name: idx.name_any(),
-                }
-            }
-        });
-        clairs
-            .patch_status(&clair.name_any(), &PATCH_PARAMS, &Patch::Merge(&status))
-            .await?;
-    }
-
-    'endpoint_check: {
-        let status = if let Some(ref s) = clair.status {
-            s
-        } else {
-            info!("no status object, skipping");
-            break 'endpoint_check;
-        };
-        if status.indexer.is_none() && status.matcher.is_none() && status.notifier.is_none() {
-            info!("no endpoints configured, skipping");
-            break 'endpoint_check;
-        }
-
-        /*
-        if status.endpoint.is_none() {
-            info!("no endpoint, creating");
-            let objref = initialize_endpoint(obj, ctx, req).await?;
-            next.endpoint = objref;
-        }
-        */
-        let gvk = 'lookup: {
-            for gvk in [
-                GroupVersionKind::gvk("gateway.networking.k8s.io", "v1beta1", "Gateway"),
-                GroupVersionKind::gvk("networking.k8s.io", "v1", "Ingress"),
-            ] {
-                if ctx.gvk_exists(&gvk).await {
-                    break 'lookup Some(gvk);
-                }
-            }
-            None
-        };
-        if let Some(gvk) = gvk {
-            warn!(TODO = true, kind = &gvk.kind, "should create a resource");
-            let name = match gvk.kind.as_str() {
-                "Gateway" => "TODO".into(),
-                "Ingress" => {
-                    /*
-                    use networking::v1::Ingress;
-                    //let action = String::from("IngressCreation");
-                    let ingress = new_ingress(&clair).await?;
-                    let api = Api::<Ingress>::namespaced(client.clone(), &ns);
-                    let ingress = api
-                        .patch(&ingress.name_any(), &serverside, &Patch::Apply(ingress))
-                        .await?;
-                    ingress.name_any()
-                    */
-                    "TODO".into()
-                }
-                _ => unreachable!(),
+            let cnds = status.conditions.get_or_insert_default();
+            let type_ = clair_condition("MatcherCreated");
+            let cnd = Condition {
+                message: "created Matcher object".into(),
+                observed_generation: self.clair.metadata.generation,
+                last_transition_time: meta::v1::Time(Utc::now()),
+                reason: "MatcherPatched".into(),
+                status: "True".into(),
+                type_: type_.clone(),
             };
-            let _endpoint_ref = Some(TypedLocalObjectReference {
-                api_group: Some(gvk.api_version()),
-                kind: gvk.kind.to_string(),
-                name,
-            });
+            match cnds
+                .iter_mut()
+                .find(|cnd| cnd.type_.as_str() == type_.as_str())
+            {
+                None => cnds.push(cnd),
+                Some(e) => *e = cnd,
+            };
         }
+        self.api
+            .patch_status(&self.clair.name_any(), &PATCH_PARAMS, &Patch::Apply(&next))
+            .instrument(debug_span!("patch_status"))
+            .await?;
+        Ok(())
     }
 
-    'ingress_check: {
-        break 'ingress_check;
-    }
+    #[instrument(skip(self), ret)]
+    async fn notifier(&self) -> Result<()> {
+        use v1alpha1::Notifier;
 
-    Ok(DEFAULT_REQUEUE.clone())
-}
-
-#[instrument(skip_all)]
-async fn new_gateway(
-    client: &Client,
-    clair: &v1alpha1::Clair,
-    spec: &v1alpha1::Gateway,
-) -> Result<gateway_api::apis::standard::gateways::Gateway> {
-    use gateway_api::apis::standard::*;
-
-    let gateway_class_name = if let Some(ref name) = spec.gateway_class_name {
-        name.clone()
-    } else {
-        let api = Api::<gatewayclasses::GatewayClass>::all(client.clone());
-        let lp = ListParams::default();
-        let gwcs = api.list(&lp).await?;
-        let found = gwcs
-            .iter()
-            .find(|&gwc| {
-                gwc.status
-                    .as_ref()
-                    .and_then(|status| {
-                        status.conditions.as_ref().and_then(|cnds| {
-                            cnds.iter()
-                                .find(|&cnd| cnd.type_ == "Accepted" && cnd.status == "True")
-                                .map(|_| true)
-                        })
-                    })
-                    .unwrap_or_default()
-            })
-            .ok_or_else(|| Error::MissingName("gatewayclass"))?;
-        found.name_unchecked()
-    };
-
-    let listener = if let Some(ref tls) = spec.tls {
-        gateways::GatewayListeners {
-            hostname: spec.hostname.clone(),
-            port: 443,
-            protocol: "HTTPS".into(),
-            tls: Some(gateways::GatewayListenersTls {
-                mode: Some(gateways::GatewayListenersTlsMode::Terminate),
-                certificate_refs: Some(vec![gateways::GatewayListenersTlsCertificateRefs {
-                    group: None,
-                    kind: Some("Secret".into()),
-                    namespace: clair.namespace(),
-                    name: tls.name.clone(),
-                }]),
-                ..Default::default()
-            }),
-            ..Default::default()
+        if !self.clair.spec.notifier.unwrap_or_default() {
+            debug!("Notifier not asked for, skipping");
+            return Ok(());
         }
-    } else {
-        gateways::GatewayListeners {
-            hostname: spec.hostname.clone(),
-            port: 80,
-            protocol: "HTTP".into(),
-            ..Default::default()
-        }
-    };
-    let spec = gateways::GatewaySpec {
-        gateway_class_name,
-        listeners: vec![listener],
-        ..Default::default()
-    };
-    let g = gateways::Gateway::new(&clair.name_any(), spec);
-    let ns = clair.namespace().unwrap();
-    let api = Api::<gateways::Gateway>::namespaced(client.clone(), &ns);
 
-    let g = api
-        .patch(
-            &clair.name_any(),
-            &PatchParams::apply(CONTROLLER_NAME),
-            &Patch::Apply(g),
-        )
-        .await?;
-    Ok(g)
-}
-
-#[instrument(skip_all)]
-async fn new_ingress(obj: &v1alpha1::Clair) -> Result<networking::v1::Ingress> {
-    use networking::v1::{
-        HTTPIngressPath, Ingress, IngressBackend, IngressRule, IngressServiceBackend, IngressSpec,
-        IngressTLS,
-    };
-    let oref = obj
-        .controller_owner_ref(&())
-        .expect("unable to create owner ref");
-    let mut v: Ingress = templates::render(obj);
-    v.metadata.owner_references = Some(vec![oref]);
-    v.metadata.name = Some(obj.name_any());
-    crate::set_component_label(v.meta_mut(), COMPONENT.as_str());
-
-    let spec = v.spec.as_mut().expect("bad Ingress from template");
-    // Attach TLS config if provided.
-    if let Some(ref endpoint) = obj.spec.gateway {
-        spec.merge_from(IngressSpec {
-            tls: Some(vec![IngressTLS {
-                hosts: endpoint.hostname.as_ref().map(|n| vec![n.into()]),
-                secret_name: endpoint.tls.as_ref().map(|t| t.name.clone()),
-            }]),
-            ..Default::default()
-        });
-    }
-
-    // Swap the hostname if provided.
-    if let Some(hostname) = obj
-        .spec
-        .gateway
-        .as_ref()
-        .and_then(|e| e.hostname.as_deref())
-    {
-        let rule = spec
-            .rules
-            .as_mut()
-            .expect("template should have rules")
-            .first_mut()
-            .expect("template should have one entry");
-        rule.merge_from(IngressRule {
-            host: Some(hostname.into()),
-            ..Default::default()
-        });
-        let paths = rule
-            .http
-            .as_mut()
-            .expect("template should have http rule")
-            .paths
-            .as_mut();
-        merge_strategies::list::map(
-            paths,
-            ["indexer", "matcher", "notifier"]
-                .iter()
-                .map(|n| HTTPIngressPath {
-                    path: Some(format!("/{n}")),
-                    backend: IngressBackend {
-                        service: Some(IngressServiceBackend {
-                            name: format!("{n}-{hostname}"),
-                            port: None,
-                        }),
-                        resource: None,
-                    },
-                    ..Default::default()
-                })
-                .collect::<Vec<HTTPIngressPath>>(),
-            &[|a, b| a.path == b.path],
-            |a, b| a.merge_from(b),
-        )
-    }
-    trace!("created Ingress");
-    Ok(v)
-}
-
-#[instrument(skip_all)]
-async fn load_clair_config(
-    client: &kube::Client,
-    cfgsrc: &v1alpha1::ConfigSource,
-) -> Result<clair_config::Parts> {
-    use clair_config::Builder;
-    let cm_api: Api<core::v1::ConfigMap> = Api::default_namespaced(client.clone());
-    let sec_api: Api<core::v1::Secret> = Api::default_namespaced(client.clone());
-
-    let root = cm_api
-        .get_opt(&cfgsrc.root.name)
-        .await?
-        .ok_or_else(|| Error::BadName(format!("no such config: {}", &cfgsrc.root.name)))?;
-
-    let mut b = Builder::from_root(&root, &cfgsrc.root.key)?;
-    for d in cfgsrc.dropins.iter() {
-        if let Some(r) = &d.config_map_key_ref {
-            let name = &r.name;
-            let m = cm_api
-                .get_opt(name)
-                .await?
-                .ok_or_else(|| Error::BadName(format!("no such config: {name}")))?;
-            b = b.add(m, &r.key)?;
-        } else if let Some(r) = &d.secret_key_ref {
-            let name = &r.name;
-            let m = sec_api
-                .get_opt(name)
-                .await?
-                .ok_or_else(|| Error::BadName(format!("no such config: {name}")))?;
-            b = b.add(m, &r.key)?;
+        let api = Api::<Notifier>::namespaced(self.client(), self.ns());
+        let status = if let Some(status) = self.clair.status.as_ref() {
+            status
         } else {
-            unreachable!()
+            info!("no status object, unable to create Notifier (missing ConfigSource)");
+            return Ok(());
+        };
+
+        let n = NotifierBuilder::try_from(self.clair.as_ref())?.build();
+
+        trace!(?n, "created Notifier");
+        let n = api
+            .patch(&n.name_any(), &PATCH_PARAMS, &Patch::Apply(n))
+            .instrument(debug_span!("patch", kind = "Notifier"))
+            .await?;
+        if status.notifier.is_some() {
+            return Ok(());
         }
+        debug!("updating status");
+
+        let mut next = self
+            .api
+            .get_status(&self.name())
+            .instrument(debug_span!("get_status"))
+            .await?;
+        {
+            next.meta_mut().managed_fields = None;
+            let status = next.status.get_or_insert_default();
+
+            status.notifier = TypedLocalObjectReference {
+                kind: Notifier::kind(&()).to_string(),
+                api_group: Notifier::api_version(&()).to_string().into(),
+                name: n.name_any(),
+            }
+            .into();
+
+            let cnds = status.conditions.get_or_insert_default();
+            let type_ = clair_condition("NotifierCreated");
+            let cnd = Condition {
+                message: "created Notifier object".into(),
+                observed_generation: self.clair.metadata.generation,
+                last_transition_time: meta::v1::Time(Utc::now()),
+                reason: "NotifierPatched".into(),
+                status: "True".into(),
+                type_: type_.clone(),
+            };
+            match cnds
+                .iter_mut()
+                .find(|cnd| cnd.type_.as_str() == type_.as_str())
+            {
+                None => cnds.push(cnd),
+                Some(e) => *e = cnd,
+            };
+        }
+        self.api
+            .patch_status(&self.clair.name_any(), &PATCH_PARAMS, &Patch::Apply(&next))
+            .instrument(debug_span!("patch_status"))
+            .await?;
+
+        Ok(())
     }
-    Ok(b.into())
 }
 
-/*
-#[instrument(skip_all)]
-async fn check_ingress(
-    obj: &v1alpha1::Clair,
-    ctx: &Context,
-    req: &Request,
-    next: &mut v1alpha1::ClairStatus,
-) -> Result<bool> {
-    use self::networking::v1::{Ingress, IngressTLS};
-
-    let api = Api::<Ingress>::default_namespaced(ctx.client.clone());
-    let name = obj.name_any();
-    let spec = &obj.spec;
-    let _status = if let Some(s) = &obj.status {
-        s
-    } else {
-        trace!("no status present");
-        return Ok(true);
-    };
-
-    if spec.endpoint.is_none() {
-        trace!("no endpoint configured");
-        return Ok(true);
-    }
-
-    let mut ct = 0;
-    while ct < 3 {
-        ct += 1;
-
-        let mut entry = api
-            .entry(&name)
-            .await?
-            .or_insert(|| {
-                trace!("need to create ingress");
-                futures::executor::block_on(new_ingress(obj, ctx, req)).expect("template failed")
-            })
-            .and_modify(|ing| {
-                let tgt = ing.spec.as_mut().expect("invalid IngressSpec");
-                if let Some(rules) = &tgt.rules {
-                    if rules.len() != 1 {
-                        info!(
-                            name,
-                            reason = "rules array",
-                            "Ingress in unexepected state, skipping."
-                        );
-                        return;
-                    }
-                }
-                if let Some(tls) = &tgt.tls {
-                    if tls.len() > 1 {
-                        info!(
-                            name,
-                            reason = "tls array",
-                            "Ingress in unexepected state, skipping."
-                        );
-                        return;
-                    }
-                }
-                if spec.endpoint.is_none() {
-                    return;
-                }
-                let endpoint = spec.endpoint.as_ref().unwrap();
-                trace!(?endpoint, "found endpoint");
-                if endpoint.hostname.is_none() {
-                    return;
-                }
-                let hostname = endpoint.hostname.as_ref().unwrap();
-                trace!(?hostname, "found hostname");
-                if let Some(tls) = &endpoint.tls {
-                    if let Some(tgt) = tgt.tls.as_mut() {
-                        match tgt.len() {
-                            0 => {
-                                tgt.push(IngressTLS {
-                                    hosts: Some(vec![hostname.clone()]),
-                                    secret_name: tls.name.clone(),
-                                });
-                            }
-                            1 => {
-                                tgt[0].hosts = Some(vec![hostname.clone()]);
-                                tgt[0].secret_name = tls.name.clone();
-                            }
-                            _ => unreachable!(),
-                        };
-                    }
-                }
-                tgt.rules.as_mut().expect("rules missing")[0].host = Some(hostname.clone());
-            });
-
-        next.endpoint = {
-            let name = entry.get().name_any();
-            Some(TypedLocalObjectReference {
-                kind: Ingress::kind(&()).to_string(),
-                api_group: Some(Ingress::api_version(&()).to_string()),
-                name,
-            })
-        };
-        match entry.commit(&CREATE_PARAMS).await {
-            Ok(()) => break,
-            Err(err) => match err {
-                CommitError::Validate(reason) => {
-                    debug!(reason = reason.to_string(), "commit failed, retrying")
-                }
-                CommitError::Save(reason) => {
-                    debug!(reason = reason.to_string(), "save failed, retrying")
-                }
-            },
-        };
-    }
-    Ok(true)
+fn cmp_condition(a: &Condition, b: &Condition) -> bool {
+    a.type_.as_str() == b.type_.as_str()
 }
-*/
+fn merge_condition(to: &mut Condition, from: Condition) {
+    to.last_transition_time = from.last_transition_time;
+    if let Some(g) = from.observed_generation {
+        to.observed_generation = Some(g);
+    }
+    if !from.message.is_empty() {
+        to.message = from.message;
+    }
+    if !from.reason.is_empty() {
+        to.reason = from.reason;
+    }
+    if !from.status.is_empty() {
+        to.status = from.status;
+    }
+}
 
 /*
 /// Diagnostics to be exposed by the web server

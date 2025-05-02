@@ -12,8 +12,6 @@ use std::collections::BTreeMap;
 use k8s_openapi::api::core;
 use tracing::{debug, trace};
 
-use api::v1alpha1;
-
 mod sys;
 
 /// Error enumerates the errors reported by this module.
@@ -24,8 +22,6 @@ pub enum Error {
     /// Validation failed for some reason.
     Validation(String),
 
-    /// YAML deserialization error.
-    YAML(serde_yaml::Error),
     /// JSON serialiization or deserialization error.
     JSON(serde_json::Error),
     /// JSON Patch error
@@ -56,11 +52,6 @@ impl From<serde_json::Error> for Error {
         Self::JSON(err)
     }
 }
-impl From<serde_yaml::Error> for Error {
-    fn from(err: serde_yaml::Error) -> Self {
-        Self::YAML(err)
-    }
-}
 impl From<json_patch::PatchError> for Error {
     fn from(err: json_patch::PatchError) -> Self {
         Self::Patch(err)
@@ -71,7 +62,6 @@ impl std::fmt::Display for Error {
         match self {
             Error::Invalid(msg) => write!(f, "invalid ConfigSource: {msg}"),
             Error::Validation(msg) => write!(f, "validation failure: {msg}"),
-            Error::YAML(err) => write!(f, "YAML error: {err}"),
             Error::JSON(err) => write!(f, "JSON error: {err}"),
             Error::Patch(err) => write!(f, "json patch error: {err}"),
             #[cfg(test)]
@@ -138,8 +128,6 @@ impl From<Builder> for Parts {
 
 /// Builder constructs all the root and dropins for a configuration.
 pub struct Builder {
-    flavor: v1alpha1::ConfigDialect,
-
     root: Vec<u8>,
     dropins: BTreeMap<String, (Vec<u8>, bool)>,
 }
@@ -156,27 +144,13 @@ impl Builder {
             unreachable!()
         }
         .ok_or_else(|| Error::invalid(format!("missing key: {key}")))?;
-        trace!(key, "loaded key");
-        let flavor = match key.rsplit_once('.') {
-            Some((_, ext)) => match ext {
-                "json" => v1alpha1::ConfigDialect::JSON,
-                "yaml" => v1alpha1::ConfigDialect::YAML,
-                ext => return Err(Error::invalid(format!("unknown file extension: {ext}"))),
-            },
-            None => return Err(Error::invalid("missing file extension")),
-        };
-        trace!(%flavor, "guessed config flavor");
-        let root = to_json(root, &flavor)?;
-        trace!(key, "converted to JSON");
-        debug!("created Builder");
         Ok(Builder {
-            flavor,
             root,
             dropins: Default::default(),
         })
     }
 
-    /// Add adds a dropin, converting to JSON if needed.
+    /// Add adds a dropin.
     pub fn add<M, S>(mut self, map: M, key: S) -> Result<Self>
     where
         M: K8sMap,
@@ -188,8 +162,6 @@ impl Builder {
             .value(key.clone())
             .ok_or_else(|| Error::invalid(format!("missing key: {key}")))?;
         trace!(key, is_patch, "loaded key");
-        let buf = to_json(buf, &self.flavor)?;
-        trace!(key, is_patch, "converted to JSON");
         self.dropins.insert(key, (buf, is_patch));
         debug!("added dropin");
         Ok(self)
@@ -284,17 +256,6 @@ impl std::fmt::Debug for Warnings {
             maxlen,
             out = self.out,
         )
-    }
-}
-
-/// To_json returns the bytes jsonified.
-fn to_json(buf: Vec<u8>, flavor: &v1alpha1::ConfigDialect) -> Result<Vec<u8>> {
-    match flavor {
-        v1alpha1::ConfigDialect::JSON => Ok(buf),
-        v1alpha1::ConfigDialect::YAML => {
-            let v = serde_yaml::from_slice::<serde_json::Value>(&buf)?;
-            Ok(serde_json::to_vec(&v)?)
-        }
     }
 }
 

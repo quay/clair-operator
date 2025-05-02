@@ -1,0 +1,69 @@
+-- input.json --
+{
+  "apiVersion": "clairproject.org/v1alpha1",
+  "kind": "Clair",
+  "metadata": {
+    "namespace": "default",
+    "name": "test",
+    "uid": "6060"
+  },
+  "spec": {
+    "image": "quay.io/projectquay/clair:4.8.0"
+  },
+  "status": {
+    "config": {
+      "root": {
+        "name": "test",
+        "key": "config.json"
+      },
+      "dropins": [
+        {
+          "configMapKeyRef": {
+            "name": "test",
+            "key": "90-config.json-patch"
+          }
+        }
+      ]
+    }
+  }
+}
+-- want.json --
+{
+  "apiVersion": "clairproject.org/v1alpha1",
+  "kind": "Indexer",
+  "metadata": {
+    "namespace": "default",
+    "name": "test",
+    "ownerReferences": [
+      {
+        "controller": true,
+        "apiVersion": "clairproject.org/v1alpha1",
+        "kind": "Clair",
+        "name": "test",
+        "uid": "6060"
+      }
+    ],
+    "labels": {
+      "app.kubernetes.io/managed-by": "clair-operator",
+      "app.kubernetes.io/component": "indexer",
+      "app.kubernetes.io/name": "clair"
+    }
+  },
+  "spec": {
+    "image": "quay.io/projectquay/clair:4.8.0",
+    "config": {
+      "root": {
+        "name": "test",
+        "key": "config.json"
+      },
+      "dropins": [
+        {
+          "configMapKeyRef": {
+            "name": "test",
+            "key": "90-config.json-patch"
+          }
+        }
+      ]
+    }
+  }
+}

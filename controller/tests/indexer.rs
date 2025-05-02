@@ -41,7 +41,7 @@ async fn initialize() -> Result<(), Error> {
 }
 async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
     use self::core::v1::ConfigMap;
-    const NAME: &'static str = "indexers-initialize-test";
+    const NAME: &str = "indexers-initialize-test";
     let cm: Api<ConfigMap> = Api::default_namespaced(ctx.client.clone());
     let api: Api<Indexer> = Api::default_namespaced(ctx.client.clone());
     let params = PostParams::default();
@@ -95,7 +95,7 @@ async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
 
     let got = serde_json::to_value(got)?;
     let v = got
-        .query(format!("$.metadata.name").as_str())
+        .query("$.metadata.name")
         .ok()
         .and_then(|vs| vs.first().and_then(|v| v.as_str()))
         .expect("$.metadata.name not populated");
@@ -105,7 +105,7 @@ async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
     for kind in ["Deployment", "Service", "HorizontalPodAutoscaler"] {
         let v = got
             .query(format!("$.status.conditions[?value(@.type) == \"{kind}Created\"]").as_str())
-            .expect(format!("condition for {kind} not populated").as_str());
+            .unwrap_or_else(|error| panic!("condition for {kind} not populated: {error}"));
         eprintln!("resource {kind}: {v:?}");
     }
 

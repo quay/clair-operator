@@ -1,0 +1,148 @@
+-- input.json --
+{
+  "apiVersion": "clairproject.org/v1alpha1",
+  "kind": "Clair",
+  "metadata": {
+    "namespace": "default",
+    "name": "test",
+	"uid": "6060"
+  },
+  "spec": {
+    "image": "quay.io/projectquay/clair:4.8.0"
+  },
+  "status": {
+    "config": {
+      "root": {
+        "name": "test",
+        "key": "config.json"
+      },
+      "dropins": [
+        {
+          "configMapKeyRef": {
+            "name": "test",
+            "key": "90-config.json-patch"
+          }
+        }
+      ]
+    }
+  }
+}
+-- want.json --
+{
+  "apiVersion": "batch/v1",
+  "kind": "Job",
+  "metadata": {
+    "namespace": "default",
+    "name": "test-admin-pre-4.8.0",
+    "labels": {
+      "app.kubernetes.io/component": "clair",
+      "app.kubernetes.io/managed-by": "clair-operator",
+      "app.kubernetes.io/name": "clair"
+    },
+    "ownerReferences": [
+      {
+        "apiVersion": "clairproject.org/v1alpha1",
+        "kind": "Clair",
+        "name": "test",
+        "uid": "6060"
+      }
+    ]
+  },
+  "spec": {
+    "template": {
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "clair",
+          "app.kubernetes.io/managed-by": "clair-operator",
+          "app.kubernetes.io/name": "clair"
+        }
+      },
+      "spec": {
+        "containers": [
+          {
+            "command": [
+              "clairctl",
+              "admin",
+              "pre"
+            ],
+            "args": [
+              "4.8.0"
+            ],
+            "env": [
+              {
+                "name": "CLAIR_CONF",
+                "value": "/etc/clair/config.json"
+              }
+            ],
+            "image": "quay.io/projectquay/clair:4.8.0",
+            "name": "clair",
+            "resources": {
+              "requests": {
+                "cpu": "1"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false
+            },
+            "volumeMounts": [
+              {
+                "mountPath": "/etc/clair/config.json",
+                "name": "root-config",
+                "subPath": "config.json"
+              },
+              {
+                "mountPath": "/etc/clair/config.json.d",
+                "name": "dropin-config"
+              }
+            ],
+            "workingDir": "/run/clair"
+          }
+        ],
+        "securityContext": {
+          "runAsUser": 65532
+        },
+        "shareProcessNamespace": true,
+        "terminationGracePeriodSeconds": 10,
+        "volumes": [
+          {
+            "configMap": {
+              "items": [
+                {
+                  "key": "config.json",
+                  "mode": 438,
+                  "path": "config.json"
+                }
+              ],
+              "name": "test"
+            },
+            "name": "root-config"
+          },
+          {
+            "name": "dropin-config",
+            "projected": {
+              "defaultMode": 420,
+              "sources": [
+                {
+                  "configMap": {
+                    "items": [
+                      {
+                        "key": "90-config.json-patch",
+                        "path": "90-config.json-patch"
+                      }
+                    ],
+                    "name": "test",
+                    "optional": false
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "completionMode": "NonIndexed",
+    "activeDeadlineSeconds": 3600,
+    "completions": 1,
+    "parallelism": 1
+  }
+}

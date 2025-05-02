@@ -94,14 +94,13 @@ fn main() {
                 .about("run CI setup, then tests")
                 .args(&[Arg::new("pass").trailing_var_arg(true).num_args(..)]),
             Command::new("manifests")
-                .about("generate CRD manifests")
+                .about("generate manifests for CRDs and operator")
                 .args(&[
                     Arg::new("out_dir")
                         .long("out-dir")
                         .value_name("DIR")
-                        .help("CRD output directory")
-                        .long_help("CRD output directory.")
-                        .default_value(CONFIG_DIR.join("crd").into_os_string())
+                        .help("output directory")
+                        .default_value(CONFIG_DIR.as_os_str())
                         .value_hint(ValueHint::DirPath),
                 ]),
             Command::new("install").about("install CRDs into the current kubernetes cluster"),
@@ -129,7 +128,7 @@ fn main() {
         Some(("demo", m)) => demo(m.into()),
         Some(("deploy", m)) => deploy(sh, m.into()),
         Some(("install", _)) => install(sh),
-        Some(("manifests", m)) => manifests(m.into()),
+        Some(("manifests", m)) => manifests::command(sh, m.into()),
         Some(("undeploy", m)) => undeploy(sh, m.into()),
         Some(("uninstall", _)) => uninstall(sh),
         Some((unknown, _)) => Err(format!("unknown subcommand: {unknown}").into()),
@@ -157,8 +156,8 @@ fn demo(opts: DemoOpts) -> Result<()> {
     check::kubectl(&sh)?;
     check::kustomize(&sh)?;
     let _guard = KinDBuilder::default()
-        .with_ingress_nginx()
         .with_gateway()
+        .with_istio()
         .build(&sh)?;
 
     eprintln!("# loading CRDs");
@@ -168,6 +167,7 @@ fn demo(opts: DemoOpts) -> Result<()> {
         eprintln!("# running controllers");
         Some(
             Command::new(cargo)
+                .env("KUBECONFIG", &cfgpath)
                 .current_dir(WORKSPACE.as_path())
                 .args(["run", "--package", "controller", "--", "run"])
                 .spawn()?,
@@ -382,56 +382,6 @@ impl From<&clap::ArgMatches> for BundleOpts {
     }
 }
 
-macro_rules! write_crds {
-    ($out_dir:ident,  $($kind:ty),+ $(,)?) =>{
-        eprintln!("# writing to dir: {}", rel($out_dir));
-        $( write_crd::<$kind, _>($out_dir)?; )+
-    }
-}
-
-fn manifests(opts: ManifestsOpts) -> Result<()> {
-    use api::v1alpha1;
-    let out = &opts.out_dir;
-    write_crds!(
-        out,
-        v1alpha1::Clair,
-        v1alpha1::Indexer,
-        v1alpha1::Matcher,
-        v1alpha1::Updater,
-        v1alpha1::Notifier,
-    );
-    Ok(())
-}
-
-fn write_crd<K, P>(out_dir: P) -> Result<()>
-where
-    K: Resource<DynamicType = ()> + CustomResourceExt,
-    P: AsRef<Path>,
-{
-    use std::fs::File;
-
-    let doc = serde_json::to_value(K::crd())?;
-    let out = out_dir.as_ref().join(format!("{}.yaml", K::crd_name()));
-    let w = File::create(&out)?;
-    serde_yaml::to_writer(&w, &doc)?;
-    eprintln!("# wrote: {}", out.file_name().unwrap().to_string_lossy());
-    Ok(())
-}
-
-struct ManifestsOpts {
-    out_dir: PathBuf,
-}
-
-impl From<&clap::ArgMatches> for ManifestsOpts {
-    fn from(m: &clap::ArgMatches) -> Self {
-        let mut out_dir = m.get_one::<String>("out_dir").map(PathBuf::from).unwrap();
-        if !out_dir.is_absolute() {
-            out_dir = WORKSPACE.join(out_dir);
-        }
-        Self { out_dir }
-    }
-}
-
 fn install(sh: Shell) -> Result<()> {
     let cargo: &Path = &CARGO;
     cmd!(sh, "{cargo} xtask manifests").run()?;
@@ -441,7 +391,7 @@ fn install(sh: Shell) -> Result<()> {
     let tmpfile = _tmp.path().join("out");
     let crds = CONFIG_DIR.join("crd");
     cmd!(sh, "kustomize build --output={tmpfile} {crds}").run()?;
-    cmd!(sh, "kubectl apply --file={tmpfile}").run()?;
+    cmd!(sh, "kubectl apply --filename={tmpfile}").run()?;
     Ok(())
 }
 
