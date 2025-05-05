@@ -118,8 +118,6 @@ kind: Clair
 metadata:
   name: basic
 spec:
-  endpoint:
-    hostname: example.com
   databases:
     indexer:
       name: database
