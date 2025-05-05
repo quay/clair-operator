@@ -42,7 +42,7 @@ use k8s_openapi::{
         util::intstr::IntOrString,
     },
 };
-use kube_core::{Resource, ResourceExt};
+use kube::{Resource, ResourceExt};
 use serde_json::json;
 
 use api::v1alpha1::*;

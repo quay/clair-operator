@@ -11,7 +11,7 @@ api = { path = "../api" }
 gateway_networking_k8s_io = { path = "../gateway_networking_k8s_io" }
 
 k8s-openapi.workspace = true
-kube-core.workspace = true
+kube.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 

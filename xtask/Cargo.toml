@@ -12,6 +12,7 @@ publish.workspace = true
 api = { path = "../api" }
 
 clap.workspace = true
+kube.workspace = true
 json-patch.workspace = true
 schemars.workspace = true
 serde_json.workspace = true
@@ -22,11 +23,6 @@ scopeguard = "1"
 signal-hook = "0.3"
 xshell = "0.2"
 
-[dependencies.kube]
-version = "0.99"
-default-features = false
-features = ["derive"]
-
 [dependencies.k8s-openapi]
 workspace = true
-features = ["earliest", "schemars"]
+features = ["earliest"]

@@ -9,15 +9,15 @@ publish.workspace = true
 [dependencies]
 api = { path = "../api" }
 
-json-patch = { workspace = true }
-k8s-openapi = { workspace = true , features = ["schemars"] }
-serde_json = { workspace = true }
-serde_yaml = { workspace = true }
-tokio = { workspace = true }
+json-patch.workspace = true
+k8s-openapi.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
 
 libc = "0.2"
 tracing = "0.1"
 
 [build-dependencies]
 bindgen = "0.71"
-serde = { workspace = true }
+serde.workspace = true

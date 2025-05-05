@@ -51,19 +51,20 @@ metrics = "0.24"
 serde_json = "1"
 serde_yaml = "0.9"
 tracing = "0.1"
-k8s-openapi = "0.24"
-kube-core = "0.99"
-kube-derive = "0.99"
 clap = { version = "4", features = ["cargo", "env", "string"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1.37", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net", "signal"] }
 schemars = { version = "0.8", features = ["chrono"] }
 
-#[workspace.dependencies.kube]
-#version = "0.99"
-#default-features = false
-#features = ["runtime", "derive", "client", "config", "admission", "openssl-tls", "ws", "gzip", "jsonpatch"]
+[workspace.dependencies.k8s-openapi]
+version = "0.24"
+features = ["schemars"]
+
+[workspace.dependencies.kube]
+version = "0.99"
+default-features = false
+features = ["runtime", "derive", "client", "config", "admission", "openssl-tls", "ws", "gzip", "jsonpatch"]
 
 [profile.dev]
 split-debuginfo = "unpacked"

@@ -7,17 +7,10 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
+k8s-openapi.workspace = true
+kube.workspace = true
 schemars.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 
 automod = "1.0"
-
-[dependencies.k8s-openapi]
-workspace = true
-features = ["schemars"]
-
-[dependencies.kube]
-version = "0.99"
-default-features = false
-features = ["derive"]
