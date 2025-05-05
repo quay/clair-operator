@@ -4,11 +4,17 @@
 
 use std::{
     env,
+    fs::File,
     path::PathBuf,
     process::{self, Command},
+    time::{Duration, SystemTime},
 };
 
 fn main() {
+    // The generated header is created after the stdout capture file, and so will _always_ mark
+    // this crate as needing to be rebuilt. Capturing the start time means the script can back-date
+    // the mtime after successfully running.
+    let start = SystemTime::now();
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let src_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let go_src = src_dir.join("go");
@@ -41,15 +47,22 @@ fn main() {
         process::exit(1);
     }
 
+    let header = out_dir.join("libconfig.h");
     let cb = Box::new(bindgen::CargoCallbacks::new());
     let bindings = bindgen::Builder::default()
-        .header(out_dir.join("libconfig.h").to_string_lossy())
+        .header((&header).to_string_lossy())
         .parse_callbacks(cb)
         .generate()
         .expect("Unable to generate bindings");
     bindings
         .write_to_file(out_dir.join("bindings.rs"))
         .expect("Couldn't write bindings!");
+
+    let t = start
+        .checked_sub(Duration::from_secs(1))
+        .expect("unable to set time to before build.rs start");
+    let f = File::open(&header).expect("unable to open generated header");
+    f.set_modified(t).expect("unable to set header mtime");
 }
 
 fn map_platform<S: AsRef<str>>(p: S) -> &'static str {
