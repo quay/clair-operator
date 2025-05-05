@@ -33,6 +33,7 @@
 
 use std::{collections::BTreeMap, sync::LazyLock};
 
+use gateway_networking_k8s_io::v1::httproutes::HTTPRoute;
 use k8s_openapi::{
     api::{apps::v1::*, autoscaling::v2::*, batch::v1::*, core::v1::*},
     apimachinery::pkg::{
@@ -41,7 +42,6 @@ use k8s_openapi::{
         util::intstr::IntOrString,
     },
 };
-use kcr_gateway_networking_k8s_io::v1::httproutes::HTTPRoute;
 use kube_core::{Resource, ResourceExt};
 use serde_json::json;
 
@@ -800,7 +800,7 @@ impl Build for HTTPRouteBuilder {
     type Output = HTTPRoute;
 
     fn build(self) -> Self::Output {
-        use kcr_gateway_networking_k8s_io::v1::httproutes::*;
+        use gateway_networking_k8s_io::v1::httproutes::*;
 
         let r = HTTPRoute {
             metadata: ObjectMeta {
@@ -864,9 +864,9 @@ enum RouteKind {
     Notifier,
 }
 
-impl From<&RouteKind> for kcr_gateway_networking_k8s_io::v1::httproutes::HTTPRouteRulesMatches {
+impl From<&RouteKind> for gateway_networking_k8s_io::v1::httproutes::HTTPRouteRulesMatches {
     fn from(value: &RouteKind) -> Self {
-        use kcr_gateway_networking_k8s_io::v1::httproutes::*;
+        use gateway_networking_k8s_io::v1::httproutes::*;
 
         let prefix = match value {
             RouteKind::Indexer => "/indexer/api/v1/",
@@ -886,12 +886,10 @@ impl From<&RouteKind> for kcr_gateway_networking_k8s_io::v1::httproutes::HTTPRou
     }
 }
 
-impl From<&RouteKind>
-    for Vec<kcr_gateway_networking_k8s_io::v1::grpcroutes::GRPCRouteRulesMatches>
-{
+impl From<&RouteKind> for Vec<gateway_networking_k8s_io::v1::grpcroutes::GRPCRouteRulesMatches> {
     /// None, yet.
     fn from(_value: &RouteKind) -> Self {
-        //use kcr_gateway_networking_k8s_io::v1::grpcroutes::*;
+        //use gateway_networking_k8s_io::v1::grpcroutes::*;
         vec![]
     }
 }

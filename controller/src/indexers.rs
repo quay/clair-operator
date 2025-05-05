@@ -38,7 +38,7 @@ static SELF_GVK: LazyLock<GroupVersionKind> = LazyLock::new(|| GroupVersionKind 
 /// An error is returned if any setup fails.
 #[instrument(skip_all)]
 pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<ControllerFuture> {
-    use kcr_gateway_networking_k8s_io::v1::{grpcroutes::GRPCRoute, httproutes::HTTPRoute};
+    use gateway_networking_k8s_io::v1::{grpcroutes::GRPCRoute, httproutes::HTTPRoute};
 
     let client = ctx.client.clone();
     let ctlcfg = watcher::Config::default();

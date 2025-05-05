@@ -5,6 +5,7 @@ members = [
 	"clair_config",
 	"clair_templates",
 	"controller",
+	"gateway_networking_k8s_io",
 	"xtask",
 ]
 default-members = [
