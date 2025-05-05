@@ -1,3 +1,4 @@
+#[allow(unused_imports)]
 use std::{
     collections::BTreeMap,
     fs::File,
@@ -7,6 +8,7 @@ use std::{
 use kube::{CustomResourceExt, Resource};
 use xshell::{cmd, Shell};
 
+#[allow(unused_imports)]
 use crate::{check, olm::cluster_service_versions::*, Result, WORKSPACE};
 use api::v1alpha1::*;
 

@@ -6,7 +6,6 @@ use std::{
     process,
 };
 
-use kube::{CustomResourceExt, Resource};
 use signal_hook::{consts::SIGINT, low_level::pipe};
 use xshell::{cmd, Shell};
 
