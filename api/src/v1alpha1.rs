@@ -1,6 +1,6 @@
 //! Module `v1alpha1` implements the v1alpha1 Clair CRD API.
 use k8s_openapi::{api::core, apimachinery::pkg::apis::meta, merge_strategies, DeepMerge};
-use kube::{CELSchema, CustomResource};
+use kube::{CustomResource, KubeSchema};
 use schemars;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
@@ -10,7 +10,7 @@ pub static VERSION: &str = "v1alpha1";
 
 /// ClairSpec describes the desired state of a Clair instance.
 #[derive(
-    CELSchema, Clone, CustomResource, Debug, Default, Deserialize, PartialEq, Serialize, Validate,
+    KubeSchema, Clone, CustomResource, Debug, Default, Deserialize, PartialEq, Serialize, Validate,
 )]
 #[kube(
     group = "clairproject.org",
@@ -24,7 +24,7 @@ pub static VERSION: &str = "v1alpha1";
     derive = "PartialEq"
 )]
 #[serde(rename_all = "camelCase")]
-#[cel_validate(rule = Rule::new("(has(self.notifier) && self.notifier) ? has(self.databases.notifier) : true").message(r#"notifier database configuration must be provided"#))]
+#[x_kube(validation = ("(has(self.notifier) && self.notifier) ? has(self.databases.notifier) : true", r#"notifier database configuration must be provided"#))]
 pub struct ClairSpec {
     /// Databases indicates the Secret keys holding config drop-ins that services should connect
     /// to.
@@ -103,7 +103,7 @@ impl DeepMerge for ClairSpec {
 /// configuration.
 // The generated openAPI schema for these SecretKeySelectors are patched to remove the nullability
 // of the "name" member.
-#[derive(Clone, Default, Debug, Deserialize, PartialEq, Serialize, Validate, CELSchema)]
+#[derive(Clone, Default, Debug, Deserialize, PartialEq, Serialize, Validate, KubeSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Databases {
     /// Indexer references the Secret key holding database details for the indexer database.
@@ -128,7 +128,7 @@ impl DeepMerge for Databases {
 /// RouteParentRef serves the same purpose as a Gateway API [ParentReference].
 ///
 /// [ParentReference]: https://gateway-api.sigs.k8s.io/reference/spec/#parentreference
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, KubeSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RouteParentRef {
     /// Group is the group of the referent.
@@ -240,7 +240,7 @@ impl DeepMerge for RouteParentRef {
 }
 
 /// ClairStatus describes the observed state of a Clair instance.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, KubeSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ClairStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
@@ -251,7 +251,7 @@ pub struct ClairStatus {
     // Misc other refs we may need to hold onto, like Ingresses, Deployments, etc.
     /// Refs holds on to references to objects needed by this instance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "schema::typed_local_object_references")]
+    #[x_kube(merge_strategy = ListMerge::Map(vec!["kind".into()]))]
     pub refs: Option<Vec<core::v1::TypedLocalObjectReference>>,
 
     /// Indexer is the created Indexer component.
@@ -288,7 +288,7 @@ pub struct ClairStatus {
 /// All referenced configs need to be in the same dialect as specified on the parent ClairSpec to
 /// load properly.
 #[derive(
-    Clone, Debug, Deserialize, PartialEq, PartialOrd, Eq, Ord, Serialize, Validate, CELSchema,
+    Clone, Debug, Deserialize, PartialEq, PartialOrd, Eq, Ord, Serialize, Validate, KubeSchema,
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigSource {
@@ -308,7 +308,7 @@ impl DeepMerge for ConfigSource {
 
 /// DropinSource represents a source for the value of a Clair configuration dropin.
 #[derive(
-    CELSchema,
+    KubeSchema,
     Clone,
     Debug,
     Default,
@@ -321,7 +321,7 @@ impl DeepMerge for ConfigSource {
     Validate,
 )]
 #[serde(rename_all = "camelCase")]
-#[cel_validate(rule = Rule::new("(has(self.configMapKeyRef) && !has(self.secretKeyRef)) || (!has(self.configMapKeyRef) && has(self.secretKeyRef))").message(r#"exactly one key ref must be provided"#))]
+#[x_kube(validation = ("(has(self.configMapKeyRef) && !has(self.secretKeyRef)) || (!has(self.configMapKeyRef) && has(self.secretKeyRef))", r#"exactly one key ref must be provided"#))]
 pub struct DropinSource {
     /// Selects a key of a ConfigMap.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -343,10 +343,10 @@ pub struct DropinSource {
     Ord,
     Serialize,
     Validate,
-    CELSchema,
+    KubeSchema,
 )]
 #[serde(rename_all = "camelCase")]
-#[cel_validate(rule = Rule::new("self.name != '' && self.key != ''").message(r#""key" and "name" must be populated"#))]
+#[x_kube(validation = ("self.name != '' && self.key != ''", r#""key" and "name" must be populated"#))]
 pub struct SecretKeySelector {
     /// The key to select.
     pub key: String,
@@ -377,10 +377,10 @@ impl DeepMerge for SecretKeySelector {
     PartialOrd,
     Serialize,
     Validate,
-    CELSchema,
+    KubeSchema,
 )]
 #[serde(rename_all = "camelCase")]
-#[cel_validate(rule = Rule::new("self.name != '' && self.key != ''").message(r#""key" and "name" must be populated"#))]
+#[x_kube(validation = ("self.name != '' && self.key != ''", r#""key" and "name" must be populated"#))]
 pub struct ConfigMapKeySelector {
     /// The key to select.
     pub key: String,
@@ -432,7 +432,7 @@ impl DeepMerge for ConfigDialect {
 // I don't think this is actually needed -- The can/could be driven off of a Condition.
 /// ImageRefSpec is the spec of an ImageRef.
 #[derive(
-    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema,
+    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, KubeSchema,
 )]
 #[kube(
     group = "clairproject.org",
@@ -451,14 +451,14 @@ pub struct ImageRefSpec {
 }
 
 /// ImageRefStatus is the status of an ImageRef.
-#[derive(Clone, Debug, Deserialize, Default, PartialEq, Serialize, Validate, CELSchema)]
+#[derive(Clone, Debug, Deserialize, Default, PartialEq, Serialize, Validate, KubeSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageRefStatus {}
 */
 
 /// IndexerSpec describes the desired state of an Indexer instance.
 #[derive(
-    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema,
+    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, KubeSchema,
 )]
 #[kube(
     group = "clairproject.org",
@@ -491,7 +491,7 @@ impl DeepMerge for IndexerSpec {
     }
 }
 /// WorkerStatus describes the observed state of a worker instance.
-#[derive(Clone, Debug, Deserialize, Default, PartialEq, Serialize, Validate, CELSchema)]
+#[derive(Clone, Debug, Deserialize, Default, PartialEq, Serialize, Validate, KubeSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
@@ -512,7 +512,7 @@ pub struct WorkerStatus {
 }
 
 /// IndexerStatus describes the observed state of a Indexer instance.
-#[derive(Clone, Debug, Deserialize, Default, PartialEq, Serialize, Validate, CELSchema)]
+#[derive(Clone, Debug, Deserialize, Default, PartialEq, Serialize, Validate, KubeSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexerStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
@@ -534,7 +534,7 @@ pub struct IndexerStatus {
 
 /// MatcherSpec describes the desired state of an Matcher instance.
 #[derive(
-    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema,
+    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, KubeSchema,
 )]
 #[kube(
     group = "clairproject.org",
@@ -560,7 +560,7 @@ pub struct MatcherSpec {
 }
 
 /// MatcherStatus describes the observed state of a Matcher instance.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, KubeSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MatcherStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
@@ -582,7 +582,7 @@ pub struct MatcherStatus {
 
 /// UpdaterSpec describes the desired state of an Updater instance.
 #[derive(
-    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema,
+    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, KubeSchema,
 )]
 #[kube(
     group = "clairproject.org",
@@ -616,7 +616,7 @@ pub struct UpdaterSpec {
 }
 
 /// UpdaterStatus describes the observed state of a Updater instance.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, KubeSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdaterStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
@@ -637,7 +637,7 @@ pub struct UpdaterStatus {
 
 /// NotifierSpec describes the desired state of an Notifier instance.
 #[derive(
-    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, CELSchema,
+    CustomResource, Clone, Debug, Default, Deserialize, PartialEq, Serialize, Validate, KubeSchema,
 )]
 #[kube(
     group = "clairproject.org",
@@ -662,7 +662,7 @@ pub struct NotifierSpec {
 }
 
 /// NotifierStatus describes the observed state of a Notifier instance.
-#[derive(Clone, Default, Debug, Deserialize, PartialEq, Serialize, Validate, CELSchema)]
+#[derive(Clone, Default, Debug, Deserialize, PartialEq, Serialize, Validate, KubeSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct NotifierStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
@@ -964,6 +964,7 @@ mod schema {
         obj.array().items = Some(condition(generator).into());
         Schema::Object(obj)
     }
+
     pub fn condition(generator: &mut SchemaGenerator) -> Schema {
         let mut obj = generator
             .subschema_for::<meta::v1::Condition>()

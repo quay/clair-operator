@@ -978,7 +978,7 @@ impl Build for DeploymentBuilder {
                         .into(),
                         spec: PersistentVolumeClaimSpec {
                             access_modes: vec!["ReadWriteOnce".into()].into(),
-                            resources: ResourceRequirements {
+                            resources: VolumeResourceRequirements {
                                 requests: BTreeMap::from([(
                                     "storage".into(),
                                     Quantity("10Gi".into()),
