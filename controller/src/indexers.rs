@@ -17,6 +17,7 @@ use serde_json::json;
 use tokio::{
     signal::unix::{signal, SignalKind},
     time::Duration,
+    try_join,
 };
 use tokio_stream::wrappers::SignalStream;
 
@@ -98,24 +99,28 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
     .boxed())
 }
 
-#[derive(Debug)]
 struct Reconciler {
     indexer: Arc<Indexer>,
     ctx: Arc<Context>,
     namespace: String,
     api: Api<Indexer>,
+    recorder: Recorder,
 }
 
 impl From<(Arc<Indexer>, Arc<Context>)> for Reconciler {
     fn from(value: (Arc<Indexer>, Arc<Context>)) -> Self {
+        use crate::REPORTER;
+
         let (indexer, ctx) = value;
         let namespace = indexer.namespace().unwrap(); // Indexer is namespace scoped
         let api: Api<Indexer> = Api::namespaced(ctx.client.clone(), &namespace);
+        let recorder = Recorder::new(ctx.client.clone(), REPORTER.clone());
         Self {
             indexer,
             ctx,
             namespace,
             api,
+            recorder,
         }
     }
 }
@@ -177,12 +182,27 @@ impl Reconciler {
             dropin: render_dropin::<Indexer>(&srv),
             ..Default::default()
         };
-        self.api
+        let cur = self
+            .api
             .patch_status(&self.name(), &PATCH_PARAMS, &Patch::Apply(&status))
             .instrument(debug_span!("patch_status"))
             .await
             .inspect_err(|error| error!(%error, "unable to patch status on self"))?;
 
+        if cur.resource_version() != self.indexer.resource_version() {
+            self.recorder
+                .publish(
+                    &Event {
+                        type_: EventType::Normal,
+                        reason: "DropinUpdated".into(),
+                        action: "Patch".into(),
+                        note: None,
+                        secondary: None,
+                    },
+                    &cur.object_ref(&()),
+                )
+                .await?;
+        }
         Ok(())
     }
 
@@ -303,6 +323,7 @@ impl Reconciler {
 
     #[instrument(skip(self), ret)]
     async fn check_spec(&self) -> Result<Option<Action>> {
+        let objref = self.indexer.object_ref(&());
         let mut cnd = Condition {
             last_transition_time: meta::v1::Time(Utc::now()),
             observed_generation: self.indexer.metadata.generation,
@@ -311,28 +332,35 @@ impl Reconciler {
             reason: "SpecIncomplete".into(),
             status: "False".into(),
         };
+        let mut res = Action::requeue(Duration::from_secs(3600)).into();
+        let mut ev = Event {
+            type_: EventType::Warning,
+            action: "CheckSpec".into(),
+            reason: "".into(),
+            note: None,
+            secondary: None,
+        };
 
         if self.indexer.spec.config.is_none() {
-            error!(
-                hint = "is the admission webhook running?",
-                "spec missing ConfigSource"
-            );
-            self.set_condition(cnd).await?;
-            return Ok(Action::requeue(Duration::from_secs(3600)).into());
-        }
-        if self.indexer.spec.image.is_none() {
-            error!(
-                hint = "is the admission webhook running?",
-                "spec missing image"
-            );
-            self.set_condition(cnd).await?;
-            return Ok(Action::requeue(Duration::from_secs(3600)).into());
+            let note = "spec missing ConfigSource";
+            error!(hint = "is the admission webhook running?", note);
+            ev.note = Some(note.into());
+        } else if self.indexer.spec.image.is_none() {
+            let note = "spec missing image";
+            error!(hint = "is the admission webhook running?", note);
+            ev.note = Some(note.into());
+        } else {
+            cnd.status = "True".into();
+            cnd.reason = "SpecComplete".into();
+            res = None;
+            ev.type_ = EventType::Normal;
         }
 
-        cnd.status = "True".into();
-        cnd.reason = "SpecComplete".into();
-        self.set_condition(cnd).await?;
-        Ok(None)
+        try_join!(
+            self.set_condition(cnd),
+            self.recorder.publish(&ev, &objref).map_err(Error::from)
+        )?;
+        Ok(res)
     }
 }
 

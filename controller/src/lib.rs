@@ -202,7 +202,6 @@ impl Context {
 /// ControllerFuture is the type the controller constructors should return.
 pub type ControllerFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
 
-#[allow(dead_code)]
 static REPORTER: LazyLock<events::Reporter> = LazyLock::new(|| events::Reporter {
     controller: CONTROLLER_NAME.to_string(),
     instance: Some(
