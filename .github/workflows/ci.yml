@@ -18,7 +18,7 @@ jobs:
     name: Build test artifacts
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       with:
         # By default actions/checkout checks out a merge commit. Check out the PR head instead.
         # https://github.com/actions/checkout#checkout-pull-request-head-commit-instead-of-merge-commit
@@ -54,7 +54,7 @@ jobs:
         partition: [1, 2]
     steps:
     # The source directory must be checked out.
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       with:
         # By default actions/checkout checks out a merge commit. Check out the PR head instead.
         # https://github.com/actions/checkout#checkout-pull-request-head-commit-instead-of-merge-commit
