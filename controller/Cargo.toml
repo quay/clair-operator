@@ -72,7 +72,7 @@ version = "0.6"
 features = ["trace"]
 
 [dependencies.tracing-opentelemetry]
-version = "0.30"
+version = "0.32"
 features = ["metrics"]
 
 [dependencies.tracing-subscriber]
