@@ -40,7 +40,7 @@ jobs:
     - name: Build and archive tests
       run: cargo nextest archive -F test_ci --archive-file tests.tar.zst
     - name: Upload archive to workflow
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: nextest-archive
         path: tests.tar.zst
