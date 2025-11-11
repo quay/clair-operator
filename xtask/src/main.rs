@@ -7,12 +7,12 @@ use std::{
 };
 
 use signal_hook::{consts::SIGINT, low_level::pipe};
-use xshell::{cmd, Shell};
+use xshell::{Shell, cmd};
 
 use xtask::*;
 
 fn main() {
-    use clap::{crate_authors, crate_name, crate_version, Arg, ArgAction, Command, ValueHint};
+    use clap::{Arg, ArgAction, Command, ValueHint, crate_authors, crate_name, crate_version};
     let deploy_args = [
         Arg::new("image")
             .long("image")

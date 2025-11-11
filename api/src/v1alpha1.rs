@@ -1,5 +1,5 @@
 //! Module `v1alpha1` implements the v1alpha1 Clair CRD API.
-use k8s_openapi::{api::core, apimachinery::pkg::apis::meta, merge_strategies, DeepMerge};
+use k8s_openapi::{DeepMerge, api::core, apimachinery::pkg::apis::meta, merge_strategies};
 use kube::{CustomResource, KubeSchema};
 use schemars;
 use serde::{Deserialize, Serialize};
@@ -950,7 +950,7 @@ impl_subspec!(IndexerSpec, MatcherSpec, NotifierSpec);
 
 mod schema {
     use k8s_openapi::{api::core, apimachinery::pkg::apis::meta};
-    use schemars::{gen::SchemaGenerator, schema::Schema};
+    use schemars::{r#gen::SchemaGenerator, schema::Schema};
     use serde_json::json;
 
     pub fn conditions(generator: &mut SchemaGenerator) -> Schema {
