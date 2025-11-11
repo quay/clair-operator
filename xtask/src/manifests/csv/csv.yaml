@@ -1,0 +1,54 @@
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  labels:
+    operatorframework.io/arch.amd64: supported
+    operatorframework.io/os.linux: supported
+  annotations:
+    alm-examples: '[]'
+    capabilities: Basic Install
+  name: clair.v0.1.0
+spec:
+  # This is in source-order, just to have some order: 
+  # https://pkg.go.dev/github.com/operator-framework/api@v0.17.6/pkg/operators/v1alpha1#ClusterServiceVersionSpec
+  install:
+    strategy: deployment
+    spec:
+      clusterPermissions: []
+      deployments:
+      - name: clair-operator
+      permissions:
+      - serviceAccountName: clair-operator
+  version: 0.1.0
+  maturity: alpha
+  customresourcedefinitions:
+    # Added via patches because the annotations are quite large.
+    owned: []
+    required: []
+  webhookdefinitions: []
+  minKubeVersion: 1.25.0
+  displayName: Clair Operator
+  description: This is an operator for Clair.
+  keywords:
+  - clair
+  - security
+  maintainers:
+  - name: The Clair Authors
+    url: https://clairproject.org/
+  provider:
+  - name: The Clair Authors
+    url: https://clairproject.org/
+  links:
+  - name: Source Code
+    url: https://github.com/quay/clair-operator
+  icon: []
+  installModes:
+  - supported: true
+    type: OwnNamespace
+  - supported: false
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: false
+    type: AllNamespaces

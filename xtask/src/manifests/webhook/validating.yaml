@@ -1,0 +1,29 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validate.clairproject.org
+webhooks:
+- name: v1alpha1.validate.clairproject.org
+  matchPolicy: Equivalent
+  sideEffects: None
+  failurePolicy: Fail
+  admissionReviewVersions: [v1]
+  rules:
+  - operations:
+    - CREATE
+    - UPDATE
+    apiGroups: [clairproject.org]
+    apiVersions: [v1alpha1]
+    resources:
+    - clairs
+    - indexers
+    - matchers
+    - updaters
+    - notifiers
+    scope: Namespaced
+  clientConfig:
+    service:
+      name: webhook-clairproject-org
+      namespace: system
+      path: /validate/v1alpha1

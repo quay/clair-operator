@@ -1,0 +1,107 @@
+- op: add
+  path: /spec/customresourcedefinitions/owned/-
+  value:
+    name: clairs.clairproject.org
+    version: v1alpha1
+    kind: Clair
+    description: Resource describing a Clair system.
+    displayName: Clair
+    resources:
+    - version: v1
+      kind: ConfigMap
+    - version: v1
+      kind: Secret
+    - version: networking.k8s.io/v1
+      kind: Ingress
+    - version: clairproject.org/v1alpha1
+      kind: Indexer
+      name: indexers
+    - version: clairproject.org/v1alpha1
+      kind: Matcher
+      name: matchers
+    - version: clairproject.org/v1alpha1
+      kind: Notifier
+      name: notifiers
+    - version: clairproject.org/v1alpha1
+      kind: Updater
+      name: updaters
+    specDescriptors:
+    - description: ''
+      displayName: ''
+      path: databases.indexer
+      x-descriptors: []
+    - description: ''
+      displayName: Indexer database Secret name
+      path: databases.indexer.name
+      x-descriptors:
+      - urn:alm:descriptor:io.kubernetes:Secret
+    - description: ''
+      displayName: Indexer database Secret key
+      path: databases.indexer.key
+      x-descriptors:
+      - urn:alm:descriptor:com:tectonic.ui:text
+    - description: ''
+      displayName: ''
+      path: databases.matcher
+      x-descriptors: []
+    - description: ''
+      displayName: Matcher database Secret name
+      path: databases.matcher.name
+      x-descriptors:
+      - urn:alm:descriptor:io.kubernetes:Secret
+    - description: ''
+      displayName: Matcher database Secret key
+      path: databases.matcher.key
+      x-descriptors:
+      - urn:alm:descriptor:com:tectonic.ui:text
+    - description: ''
+      displayName: ''
+      path: databases.notifier
+      x-descriptors:
+      - urn:alm:descriptor:com.tectonic.ui:fieldDependency:notifier:true
+    - description: ''
+      displayName: Notifier database Secret name
+      path: databases.notifier.name
+      x-descriptors:
+      - urn:alm:descriptor:io.kubernetes:Secret
+    - description: ''
+      displayName: Notifier database Secret key
+      path: databases.notifier.key
+      x-descriptors:
+      - urn:alm:descriptor:com:tectonic.ui:text
+    - description: Configuration dropins
+      displayName: Dropins
+      path: dropins
+      x-descriptors: []
+    - description: ''
+      displayName: Name of referent
+      path: dropins[0].configMapKeyRef.name
+      x-descriptors:
+      - urn:alm:descriptor:io.kubernetes:ConfigMap
+    - description: ''
+      displayName: ''
+      path: dropins[0].configMapKeyRef.key
+      x-descriptors:
+      - urn:alm:descriptor:com:tectonic.ui:text
+    - description: ''
+      displayName: Name of referent
+      path: dropins[0].secretKeyRef.name
+      x-descriptors:
+      - urn:alm:descriptor:io.kubernetes:Secret
+    - description: ''
+      displayName: ''
+      path: dropins[0].secretKeyRef.key
+      x-descriptors:
+      - urn:alm:descriptor:com:tectonic.ui:text
+    - description: The container image to use for Deployments
+      displayName: Clair container image
+      path: image
+      x-descriptors:
+      - urn:alm:descriptor:com:tectonic.ui:text
+      - urn:alm:descriptor:com.tectonic.ui:advanced
+    - description: Enable the Notifier component.
+      displayName: Notifier
+      path: notifier
+      x-descriptors:
+      - urn:alm:descriptor:com.tectonic.ui:booleanSwitch
+    statusDescriptors: []

@@ -1,0 +1,18 @@
+- op: add
+  path: /spec/customresourcedefinitions/required/-
+  value:
+    name: gateways.gateway.networking.k8s.io
+    version: v1
+    kind: Gateway
+- op: add
+  path: /spec/customresourcedefinitions/required/-
+  value:
+    name: gateways.gateway.networking.k8s.io
+    version: v1
+    kind: HTTPRoute
+- op: add
+  path: /spec/customresourcedefinitions/required/-
+  value:
+    name: gateways.gateway.networking.k8s.io
+    version: v1
+    kind: GRPCRoute

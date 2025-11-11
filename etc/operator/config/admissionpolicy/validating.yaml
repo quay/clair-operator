@@ -1,0 +1,52 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: clairs.validate.clairproject.org
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups:   ["clairproject.org"]
+      apiVersions: ["v1alpha1"]
+      operations:  ["CREATE", "UPDATE"]
+      resources:   ["clairs"]
+      scope: Namespaced
+  validations:
+  - expression: "has(object.spec.image)"
+    message: field "/spec/image" must be provided
+  - expression: "has(object.spec.databases)"
+    message: field "/spec/databases" must be provided
+  - expression: >-
+      (has(object.spec.notifier) && object.spec.notifier)
+      ?
+      has(object.spec.databases.notifier)
+      :
+      true
+    message: field "/spec/databases/notifier" must be provided when "/spec/notifier" is set
+  - expression: >-
+      has(object.spec.dropins)
+      ?
+      object.spec.dropins.all(x, has(x.configMapKeyRef) || has(x.secretKeyRef))
+      :
+      true
+    message: a dropin ("/spec/dropins") has no ref specified 
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: indexers.validate.clairproject.org
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups:   ["clairproject.org"]
+      apiVersions: ["v1alpha1"]
+      operations:  ["CREATE", "UPDATE"]
+      resources:   ["indexers"]
+      scope: Namespaced
+  validations:
+  - expression: "has(object.spec.image)"
+    message: field "/spec/image" must be provided
+  - expression: "has(object.spec.config)"
+    message: field "/spec/config" must be provided

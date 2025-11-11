@@ -1,0 +1,111 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: clair-controller
+rules:
+  # Owned kinds:
+  - apiGroups:
+      - clairproject.org
+    resources:
+      - clairs
+      - indexers
+      - matchers
+      - notifiers
+      - updaters
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - clairproject.org
+    resources:
+      - clairs/finalizers
+      - indexers/finalizers
+      - matchers/finalizers
+      - notifiers/finalizers
+      - updaters/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - clairproject.org
+    resources:
+      - clairs/status
+      - indexers/status
+      - matchers/status
+      - notifiers/status
+      - updaters/status
+    verbs:
+      - get
+      - patch
+      - update
+  # Platform kinds:
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - autoscaling
+    resources:
+      - horizontalpodautoscaler
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - configmap
+      - secret
+      - service
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+  - apiGroups:
+      - events.k8s.io
+    resources:
+      - events
+    verbs:
+      - create
+  # Dependent kinds:
+  - apiGroups:
+      - gateways.gateway.k8s.io
+    resources:
+      - httproutes
+      - grpcroutes
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch

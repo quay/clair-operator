@@ -1,0 +1,45 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- csv.yaml
+  #- ../default
+  #- ../samples
+  #- ../scorecard
+  #- ../webhook
+patches:
+- path: owned/clair.yaml
+  target:
+    group: operators.coreos.com
+    version: v1alpha1
+    kind: ClusterServiceVersion
+- path: owned/indexer.yaml
+  target:
+    group: operators.coreos.com
+    version: v1alpha1
+    kind: ClusterServiceVersion
+- path: owned/matcher.yaml
+  target:
+    group: operators.coreos.com
+    version: v1alpha1
+    kind: ClusterServiceVersion
+- path: owned/notifier.yaml
+  target:
+    group: operators.coreos.com
+    version: v1alpha1
+    kind: ClusterServiceVersion
+- path: owned/updater.yaml
+  target:
+    group: operators.coreos.com
+    version: v1alpha1
+    kind: ClusterServiceVersion
+- path: icon.yaml
+  target:
+    group: operators.coreos.com
+    version: v1alpha1
+    kind: ClusterServiceVersion
+- path: required.yaml
+  target:
+    group: operators.coreos.com
+    version: v1alpha1
+    kind: ClusterServiceVersion

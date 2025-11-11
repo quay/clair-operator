@@ -1,0 +1,21 @@
+- op: add
+  path: /spec/customresourcedefinitions/owned/-
+  value:
+    name: indexers.clairproject.org
+    version: v1alpha1
+    kind: Indexer
+    description: Resource describing an Indexer component.
+    displayName: Indexer
+    resources:
+    - version: v1
+      kind: ConfigMap
+    - version: v1
+      kind: Secret
+    - version: v1
+      kind: Service
+    - version: apps/v1
+      kind: Deployment
+    - version: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+    specDescriptors: []
+    statusDescriptors: []

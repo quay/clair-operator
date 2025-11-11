@@ -1,0 +1,19 @@
+- op: add
+  path: /spec/customresourcedefinitions/owned/-
+  value:
+    name: updaters.clairproject.org
+    version: v1alpha1
+    kind: Updater
+    description: Resource describing an Updater component.
+    displayName: Updater
+    resources:
+    - version: v1
+      kind: ConfigMap
+    - version: v1
+      kind: Secret
+    - version: v1
+      kind: Service
+    - version: batch/v1
+      kind: CronJob
+    specDescriptors: []
+    statusDescriptors: []

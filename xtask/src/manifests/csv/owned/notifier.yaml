@@ -1,0 +1,21 @@
+- op: add
+  path: /spec/customresourcedefinitions/owned/-
+  value:
+    name: notifiers.clairproject.org
+    version: v1alpha1
+    kind: Notifier
+    description: Resource describing a Notifier component.
+    displayName: Notifier
+    resources:
+    - version: v1
+      kind: ConfigMap
+    - version: v1
+      kind: Secret
+    - version: v1
+      kind: Service
+    - version: apps/v1
+      kind: Deployment
+    - version: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+    specDescriptors: []
+    statusDescriptors: []

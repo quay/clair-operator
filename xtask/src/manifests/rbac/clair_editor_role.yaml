@@ -1,0 +1,24 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: clair-editor-role
+rules:
+- apiGroups:
+  - clairproject.org
+  resources:
+  - clairs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - clairproject.org
+  resources:
+  - clairs/status
+  verbs:
+  - get
