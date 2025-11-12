@@ -1,10 +1,10 @@
 use std::pin::pin;
 
 use api::v1alpha1::Indexer;
-use controller::{indexers, Context, Error};
+use controller::{Context, Error, indexers};
 use futures::{StreamExt, TryStreamExt};
 use k8s_openapi::api::core;
-use kube::runtime::{watcher, WatchStreamExt};
+use kube::runtime::{WatchStreamExt, watcher};
 
 mod util;
 use util::prelude::*;
@@ -74,15 +74,18 @@ async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
     }))?;
     api.create(&params, &indexer).await?;
 
-    let gen: i64 = 0;
+    let generation: i64 = 0;
     let watcher_config = watcher::Config::default().timeout(60).streaming_lists();
     let mut wait = watcher(api.clone(), watcher_config)
         .default_backoff()
         .applied_objects()
         .try_take_while(|indexer| {
             let cur = indexer.metadata.generation.unwrap();
-            eprintln!("cur: {cur} gen: {gen} status: {}", indexer.status.is_some());
-            futures::future::ready(Ok(cur == gen || indexer.status.is_none()))
+            eprintln!(
+                "cur: {cur} gen: {generation} status: {}",
+                indexer.status.is_some()
+            );
+            futures::future::ready(Ok(cur == generation || indexer.status.is_none()))
         })
         .take(1);
     let got = if let Some(got) = pin!(wait).next().await {

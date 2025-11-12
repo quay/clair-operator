@@ -1,4 +1,4 @@
-use xshell::{cmd, Shell};
+use xshell::{Shell, cmd};
 
 use crate::*;
 

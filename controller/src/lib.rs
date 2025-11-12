@@ -26,28 +26,27 @@ pub(crate) mod prelude {
         apimachinery::pkg::apis::meta::{self, v1::Condition},
     };
     pub use kube::{
-        self,
+        self, Resource, ResourceExt,
         api::{
-            entry::{CommitError, Entry},
             Api, PatchParams, PostParams,
+            entry::{CommitError, Entry},
         },
         runtime::{
             controller::{Action, Controller},
             events::{Event, EventType, Recorder, Reporter},
             watcher,
         },
-        Resource, ResourceExt,
     };
     pub use tokio_util::sync::CancellationToken;
     pub use tracing::{
-        debug, debug_span, error, info, info_span, instrument, span, trace, trace_span, warn,
-        Instrument, Level,
+        Instrument, Level, debug, debug_span, error, info, info_span, instrument, span, trace,
+        trace_span, warn,
     };
 
     pub use api::v1alpha1;
 
-    pub use super::{Context, ControllerFuture, Error, Result};
     pub use super::{CONTROLLER_NAME, CREATE_PARAMS, DEFAULT_REQUEUE, PATCH_PARAMS};
+    pub use super::{Context, ControllerFuture, Error, Result};
 }
 
 pub mod clairs;
@@ -449,7 +448,7 @@ pub static DEFAULT_CONFIG_YAML: LazyLock<String> = LazyLock::new(|| {
     serde_yaml::to_string(&v).expect("programmer error: bad config")
 });
 
-/// COMPONENT_LABEL is the well-know "component" label.
+/// COMPONENT_LABEL is the well-known "component" label.
 pub static COMPONENT_LABEL: LazyLock<String> = LazyLock::new(|| k8s_label("component"));
 
 /// APP_NAME_LABEL is a label for Clair in the "app.kubernetes.io" space.

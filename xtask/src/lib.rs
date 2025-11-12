@@ -5,7 +5,7 @@ use std::{
     sync::LazyLock,
 };
 
-use xshell::{cmd, Shell};
+use xshell::{Shell, cmd};
 
 pub mod check;
 pub mod find;

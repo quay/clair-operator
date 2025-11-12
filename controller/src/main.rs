@@ -13,8 +13,8 @@ use controller::*;
 
 fn main() {
     use clap::{
-        crate_authors, crate_description, crate_name, crate_version, Arg, ArgAction, Command,
-        ValueHint,
+        Arg, ArgAction, Command, ValueHint, crate_authors, crate_description, crate_name,
+        crate_version,
     };
     use std::process;
     let cmd = Command::new(crate_name!())

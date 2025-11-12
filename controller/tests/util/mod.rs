@@ -18,8 +18,8 @@ pub async fn test_context() -> Arc<Context> {
 pub async fn load_crds(client: &kube::Client) -> Result<()> {
     use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
     use kube::{
-        api::{Api, PostParams},
         ResourceExt,
+        api::{Api, PostParams},
     };
     use serde::Deserialize;
     let api: Api<CustomResourceDefinition> = Api::all(client.clone());
@@ -66,7 +66,7 @@ pub mod prelude {
 
     pub use json_patch::Patch;
     pub use k8s_openapi::api::networking;
-    pub use kube::{api::PostParams, Api};
+    pub use kube::{Api, api::PostParams};
     pub use serde_json::json;
     pub use test_log::test;
     pub use tokio::{signal, task, time::Duration};

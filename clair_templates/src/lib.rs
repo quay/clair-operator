@@ -1277,7 +1277,7 @@ mod tests {
 
     use assert_json_diff::assert_json_eq;
     use serde::de::DeserializeOwned;
-    use serde_json::{from_str, to_value, Value};
+    use serde_json::{Value, from_str, to_value};
     use simple_txtar::Archive;
 
     type Result = std::result::Result<(), Box<dyn std::error::Error>>;

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use axum::{extract, routing::post, Json, Router};
+use axum::{Json, Router, extract, routing::post};
 use tower_http::trace::TraceLayer;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, instrument, trace};
@@ -36,13 +36,13 @@ pub fn app(srv: State) -> Router {
 mod prelude {
     pub use std::sync::Arc;
 
-    pub use axum::{extract, http::StatusCode, Json};
+    pub use axum::{Json, extract, http::StatusCode};
     pub use k8s_openapi::api::core;
     pub use kube::{
         api::Api,
         core::{
-            admission::{AdmissionRequest, AdmissionResponse, AdmissionReview, Operation},
             DynamicObject, ResourceExt,
+            admission::{AdmissionRequest, AdmissionResponse, AdmissionReview, Operation},
         },
     };
     pub use serde::Deserialize;

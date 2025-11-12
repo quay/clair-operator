@@ -6,10 +6,10 @@ use std::{
 };
 
 use kube::{CustomResourceExt, Resource};
-use xshell::{cmd, Shell};
+use xshell::{Shell, cmd};
 
 #[allow(unused_imports)]
-use crate::{check, olm::cluster_service_versions::*, Result, WORKSPACE};
+use crate::{Result, WORKSPACE, check, olm::cluster_service_versions::*};
 use api::v1alpha1::*;
 
 macro_rules! write_crds {

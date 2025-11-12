@@ -3,22 +3,22 @@ use std::sync::{Arc, LazyLock};
 
 use k8s_openapi::merge_strategies;
 use kube::{
+    ResourceExt,
     api::{Api, Patch},
     client::Client,
     core::GroupVersionKind,
     runtime::controller::Error as CtrlErr,
-    ResourceExt,
 };
 use tokio::{
-    signal::unix::{signal, SignalKind},
+    signal::unix::{SignalKind, signal},
     time::Duration,
 };
 use tokio_stream::wrappers::SignalStream;
 
 use crate::{clair_condition, cmp_condition, merge_condition, prelude::*};
 use clair_templates::{
-    render_dropin, Build, DeploymentBuilder, HTTPRouteBuilder, HorizontalPodAutoscalerBuilder,
-    ServiceBuilder,
+    Build, DeploymentBuilder, HTTPRouteBuilder, HorizontalPodAutoscalerBuilder, ServiceBuilder,
+    render_dropin,
 };
 use v1alpha1::Matcher;
 

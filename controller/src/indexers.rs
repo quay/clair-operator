@@ -7,15 +7,15 @@ use std::sync::{Arc, LazyLock};
 
 use k8s_openapi::merge_strategies;
 use kube::{
+    ResourceExt,
     api::{Api, Patch},
     client::Client,
     core::GroupVersionKind,
     runtime::controller::Error as CtrlErr,
-    ResourceExt,
 };
 use serde_json::json;
 use tokio::{
-    signal::unix::{signal, SignalKind},
+    signal::unix::{SignalKind, signal},
     time::Duration,
     try_join,
 };
@@ -23,7 +23,7 @@ use tokio_stream::wrappers::SignalStream;
 
 use crate::{clair_condition, cmp_condition, merge_condition, prelude::*};
 use clair_templates::{
-    render_dropin, Build, DeploymentBuilder, HorizontalPodAutoscalerBuilder, ServiceBuilder,
+    Build, DeploymentBuilder, HorizontalPodAutoscalerBuilder, ServiceBuilder, render_dropin,
 };
 use v1alpha1::Indexer;
 
@@ -46,8 +46,14 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
     let sig = SignalStream::new(signal(SignalKind::user_defined1())?);
 
     Ok(async move {
+        // Bail if the Indexer GVK isn't installed in the cluster.
+        if !ctx.gvk_exists(&SELF_GVK).await {
+            error!("CRD is not queryable ({SELF_GVK:?}); is the CRD installed?");
+            return Err(Error::BadName("no CRD".into()));
+        }
         info!("spawning indexer controller");
 
+        // Set up the Controller for all the GVKs an Indexer owns.
         let mut ctl = Controller::new(Api::<Indexer>::all(client.clone()), ctlcfg.clone())
             .owns(
                 Api::<apps::v1::Deployment>::all(client.clone()),
@@ -61,21 +67,19 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
                 Api::<core::v1::Service>::all(client.clone()),
                 ctlcfg.clone(),
             );
+        // Opportunisitically enable HTTP and gRPC support:
         if ctx.gvk_exists(&crate::GATEWAY_NETWORKING_HTTPROUTE).await {
             ctl = ctl.owns(Api::<HTTPRoute>::all(client.clone()), ctlcfg.clone());
         }
         if ctx.gvk_exists(&crate::GATEWAY_NETWORKING_GRPCROUTE).await {
             ctl = ctl.owns(Api::<GRPCRoute>::all(client.clone()), ctlcfg.clone());
         }
+        // Finish set up.
         let ctl = ctl
             .reconcile_all_on(sig)
             .graceful_shutdown_on(cancel.cancelled_owned());
 
-        if !ctx.gvk_exists(&SELF_GVK).await {
-            error!("CRD is not queryable ({SELF_GVK:?}); is the CRD installed?");
-            return Err(Error::BadName("no CRD".into()));
-        }
-
+        // Run until the event stream closes.
         ctl.run(reconcile, handle_error, ctx)
             .for_each(|ret| {
                 match ret {
@@ -155,6 +159,10 @@ impl Reconciler {
         Ok(())
     }
 
+    /// Publish_dropin renders a Clair configuration dropin that points any Indexer URL fields to
+    /// this Indexer's Service endpoint.
+    ///
+    /// The dropin is only created if the Indexer is owned by a Clair.
     #[instrument(skip(self), ret)]
     async fn publish_dropin(&self) -> Result<()> {
         use self::core::v1::Service;
@@ -206,6 +214,7 @@ impl Reconciler {
         Ok(())
     }
 
+    /// Deployment attempts to bring the owned Deployment into spec.
     #[instrument(skip(self), ret)]
     async fn deployment(&self) -> Result<()> {
         use apps::v1::Deployment;
@@ -245,6 +254,7 @@ impl Reconciler {
         Ok(())
     }
 
+    /// Service attempts to bring the owned Service into spec.
     #[instrument(skip(self), ret)]
     async fn service(&self) -> Result<()> {
         use self::core::v1::Service;
@@ -283,6 +293,7 @@ impl Reconciler {
         Ok(())
     }
 
+    /// Horizontal_pod_autoscaler attempts to bring the owned HorizontalPodAutoscaler into spec.
     #[instrument(skip(self), ret)]
     async fn horizontal_pod_autoscaler(&self) -> Result<()> {
         use self::autoscaling::v2::HorizontalPodAutoscaler;
@@ -321,6 +332,7 @@ impl Reconciler {
         Ok(())
     }
 
+    /// Check_spec reports `Some` if the spec is incomplete or `None` if processing can proceed.
     #[instrument(skip(self), ret)]
     async fn check_spec(&self) -> Result<Option<Action>> {
         let objref = self.indexer.object_ref(&());

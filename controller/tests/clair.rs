@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
-use k8s_openapi::{api::core, apimachinery::pkg::apis::meta, ByteString};
+use k8s_openapi::{ByteString, api::core, apimachinery::pkg::apis::meta};
 
 use api::v1alpha1::Clair;
-use controller::{clairs, Context, Error};
+use controller::{Context, Error, clairs};
 mod util;
 use util::prelude::*;
 

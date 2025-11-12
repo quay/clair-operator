@@ -13,12 +13,12 @@ use kube::{
     runtime::controller::Error as CtrlErr,
 };
 use tokio::{
-    signal::unix::{signal, SignalKind},
+    signal::unix::{SignalKind, signal},
     time::Duration,
 };
 use tokio_stream::wrappers::SignalStream;
 
-use crate::{clair_condition, prelude::*, COMPONENT_LABEL, DEFAULT_CONFIG_JSON};
+use crate::{COMPONENT_LABEL, DEFAULT_CONFIG_JSON, clair_condition, prelude::*};
 use clair_templates::{Build, IndexerBuilder, JobBuilder, MatcherBuilder, NotifierBuilder};
 use v1alpha1::Clair;
 
