@@ -67,6 +67,7 @@ mod v1alpha1 {
     /// Review is an enum containing any of the possible types that can be sent to the webhooks.
     #[derive(Deserialize)]
     #[serde(untagged)]
+    #[allow(clippy::large_enum_variant)]
     pub enum Review {
         Clair(AdmissionReview<Clair>),
         Indexer(AdmissionReview<Indexer>),
@@ -279,10 +280,10 @@ mod v1alpha1 {
                 Ok(root) => root,
                 Err(err) => return Ok(Json(AdmissionResponse::invalid(err).into_review())),
             };
-            let root = if root.is_none() {
-                return Ok(Json(res.deny("no such config: {name}").into_review()));
+            let root = if let Some(root) = root {
+                root
             } else {
-                root.unwrap()
+                return Ok(Json(res.deny("no such config: {name}").into_review()));
             };
 
             let mut b = match clair_config::Builder::from_root(&root, cfgsrc.root.key.clone()) {
