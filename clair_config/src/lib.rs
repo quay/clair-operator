@@ -182,15 +182,15 @@ pub trait K8sMap: Sealed {
 impl Sealed for core::v1::ConfigMap {}
 impl K8sMap for core::v1::ConfigMap {
     fn value(&self, key: String) -> Option<Vec<u8>> {
-        if let Some(data) = &self.data {
-            if let Some(buf) = data.get(&key) {
-                return Some(buf.clone().into_bytes());
-            };
+        if let Some(data) = &self.data
+            && let Some(buf) = data.get(&key)
+        {
+            return Some(buf.clone().into_bytes());
         };
-        if let Some(data) = &self.binary_data {
-            if let Some(buf) = data.get(&key) {
-                return Some(buf.0.clone());
-            };
+        if let Some(data) = &self.binary_data
+            && let Some(buf) = data.get(&key)
+        {
+            return Some(buf.0.clone());
         };
         None
     }
@@ -199,10 +199,10 @@ impl K8sMap for core::v1::ConfigMap {
 impl Sealed for core::v1::Secret {}
 impl K8sMap for core::v1::Secret {
     fn value(&self, key: String) -> Option<Vec<u8>> {
-        if let Some(data) = &self.data {
-            if let Some(buf) = data.get(&key) {
-                return Some(buf.0.clone());
-            };
+        if let Some(data) = &self.data
+            && let Some(buf) = data.get(&key)
+        {
+            return Some(buf.0.clone());
         };
         None
     }

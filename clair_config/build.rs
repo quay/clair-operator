@@ -50,7 +50,7 @@ fn main() {
     let header = out_dir.join("libconfig.h");
     let cb = Box::new(bindgen::CargoCallbacks::new());
     let bindings = bindgen::Builder::default()
-        .header((&header).to_string_lossy())
+        .header(header.to_string_lossy())
         .parse_callbacks(cb)
         .generate()
         .expect("Unable to generate bindings");
