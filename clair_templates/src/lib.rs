@@ -1,6 +1,11 @@
+#![cfg_attr(debug_assertions, warn(missing_docs))]
+#![cfg_attr(debug_assertions, warn(rustdoc::broken_intra_doc_links))]
+#![cfg_attr(not(debug_assertions), deny(missing_docs))]
+#![cfg_attr(not(debug_assertions), deny(rustdoc::broken_intra_doc_links))]
+
 //! Clair_templates holds the templating logic for controllers.
 //!
-//! To create Kubernetes objects, use [TryFrom] on a reference to a `clairproject.org/v1alpha1`
+//! To create Kubernetes objects, use [`TryFrom`] on a reference to a `clairproject.org/v1alpha1`
 //! object.
 //!
 //! ```
@@ -43,24 +48,48 @@ use k8s_openapi::{
     },
 };
 use kube::{Resource, ResourceExt};
-use serde_json::json;
+use serde_json::{json, to_string as json_string};
 
 use api::v1alpha1::*;
 
 /// DEFAULT_CONFIG is a minimal default configuration for a Clair system.
+///
+/// The returned value depends on the minimum version feature selected.
 pub static DEFAULT_CONFIG: LazyLock<String> = LazyLock::new(|| {
+    #[cfg(feature = "v1_4")]
     let v = json!({
-      "http_listen_addr": ":6060",
-      "introspection_addr": ":8089",
-      "log_level": "info",
-      "matcher":  { "migrations": true },
-      "indexer":  { "migrations": true },
-      "notifier": { "migrations": true },
-      "metrics": {
-        "name": "prometheus"
-      },
+        "http_listen_addr": ":6060",
+        "introspection_addr": ":8089",
+        "log_level": "info",
+        "matcher": { "migrations": true },
+        "indexer": { "migrations": true },
+        "notifier": { "migrations": true },
+        "metrics": {
+            "name": "prometheus"
+        },
     });
-    serde_json::to_string(&v).expect("programmer error: static data")
+    #[cfg(feature = "v1_5")]
+    let v = json!({
+       "log_level": "info",
+       "matcher": { "migrations": true },
+       "indexer": { "migrations": true },
+       "notifier": { "migrations": true },
+       "metrics": {
+           "name": "prometheus"
+       },
+       "api": {
+            "v1": {
+                "enabled": true,
+                "network": "tcp",
+                "address": ":6060",
+            },
+       },
+       "introspection": {
+           "network": "tcp",
+           "address": ":8089",
+       },
+    });
+    json_string(&v).expect("programmer error: static data")
 });
 
 const CONFIG_ROOT_VOLUME_NAME: &str = "root-config";
@@ -71,20 +100,37 @@ const LAYER_VOLUME_NAME: &str = "layer-scratch";
 /// Error is the error domain for creating templates.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    /// Unable to determine a namespace.
     #[error("unable to determine namespace")]
     Namespace,
+    /// Missing an image name.
     #[error("missing required information: image")]
     MissingImage,
+    /// Missing the configuration source.
     #[error("missing required information: ConfigSource")]
     MissingConfigSource,
+    /// Unable to construct an owner reference.
     #[error("unable to construct owner reference")]
     OwnerReference,
+    /// Error while parsing a value.
     #[error("parse error: {0}")]
     Parse(#[from] strum::ParseError),
+    /// Any other error.
     #[error("other error: {0}")]
     Other(&'static str),
 }
 
+// Some helpers:
+
+/// S is a helper to return an `Option<String>`.
+#[inline]
+fn s<S: ToString>(v: S) -> Option<String> {
+    v.to_string().into()
+}
+
+/// Render_dropin returns a config json-patch as a string.
+///
+/// If used for a [`Service`] that doesn't need a dropin, [`None`] is reported.
 pub fn render_dropin<O>(srv: &Service) -> Option<String>
 where
     O: Resource<DynamicType = ()>,
@@ -105,9 +151,10 @@ where
         _ => return None,
     };
 
-    serde_json::to_string(&v).ok()
+    json_string(&v).ok()
 }
 
+/// Standard_Labels is the standard set of labels for resources created by this module.
 fn standard_labels<S: ToString>(component: S) -> BTreeMap<String, String> {
     BTreeMap::from([
         ("app.kubernetes.io/name".into(), "clair".into()),
@@ -119,6 +166,8 @@ fn standard_labels<S: ToString>(component: S) -> BTreeMap<String, String> {
     ])
 }
 
+/// Make_volumes creates a vector of required volume specifications needed to make use of the
+/// `ConfigSource`.
 fn make_volumes(cfgsrc: &ConfigSource) -> Vec<Volume> {
     enum Projection {
         ConfigMap(String, KeyToPath),
@@ -198,9 +247,14 @@ fn make_volumes(cfgsrc: &ConfigSource) -> Vec<Volume> {
     ]
 }
 
+/// Build is a common trait for constructing an object from a builder.
 pub trait Build {
+    /// Output is the output type.
     type Output;
 
+    /// Build constructs and returns the final object.
+    ///
+    /// This is infallible because values are checked when set on the builder.
     fn build(self) -> Self::Output;
 }
 
@@ -214,7 +268,7 @@ pub trait Build {
 // `TryFrom` for deriving builders from "remote" types. That means the error checking only happens
 // at the top-most interaction and doesn't have to get pushed all the way to a `build()` call.
 
-/// IndexerBuilder constructs an `Indexer` from a `Clair`.
+/// IndexerBuilder constructs an [`Indexer`] from a [`Clair`].
 pub struct IndexerBuilder {
     namespace: String,
     name: String,
@@ -276,6 +330,7 @@ impl Build for IndexerBuilder {
     }
 }
 
+/// MatcherBuilder constructs a [`Matcher`] from a [`Clair`].
 pub struct MatcherBuilder {
     namespace: String,
     name: String,
@@ -335,6 +390,7 @@ impl Build for MatcherBuilder {
     }
 }
 
+/// NotifierBuilder constructs a [`Notifier`] from a [`Clair`].
 pub struct NotifierBuilder {
     namespace: String,
     name: String,
@@ -394,6 +450,8 @@ impl Build for NotifierBuilder {
         }
     }
 }
+
+/// CronJobBuilder is a builder for a [`CronJob`].
 pub struct CronJobBuilder {
     namespace: String,
     name: String,
@@ -450,9 +508,9 @@ impl Build for CronJobBuilder {
                 ..Default::default()
             },
             spec: CronJobSpec {
-                concurrency_policy: "Forbid".to_string().into(),
+                concurrency_policy: s("Forbid"),
                 starting_deadline_seconds: 10.into(),
-                time_zone: "Etc/UTC".to_string().into(),
+                time_zone: s("Etc/UTC"),
                 schedule: "0 */8 * * *".to_string(),
                 job_template: JobTemplateSpec {
                     metadata: ObjectMeta {
@@ -462,7 +520,7 @@ impl Build for CronJobBuilder {
                     .into(),
                     spec: JobSpec {
                         active_deadline_seconds: 3600.into(),
-                        completion_mode: "NonIndexed".to_string().into(),
+                        completion_mode: s("NonIndexed"),
                         completions: 1.into(),
                         parallelism: 1.into(),
                         template: PodTemplateSpec {
@@ -497,6 +555,7 @@ impl Build for CronJobBuilder {
     }
 }
 
+/// JobBuilder is a builder for a [`Job`].
 pub struct JobBuilder {
     namespace: String,
     name: String,
@@ -515,10 +574,12 @@ enum JobKind {
 }
 
 impl JobBuilder {
+    /// Admin_pre creates a builder to run a `clairctl admin pre` command.
     pub fn admin_pre(clair: &Clair) -> Result<Self, Error> {
         Self::new(clair, JobKind::AdminPre)
     }
 
+    /// Admin_post creates a builder to run a `clairctl admin post` command.
     pub fn admin_post(clair: &Clair) -> Result<Self, Error> {
         Self::new(clair, JobKind::AdminPost)
     }
@@ -569,7 +630,7 @@ impl Build for JobBuilder {
             },
             spec: JobSpec {
                 active_deadline_seconds: 3600.into(),
-                completion_mode: "NonIndexed".to_string().into(),
+                completion_mode: s("NonIndexed"),
                 completions: 1.into(),
                 parallelism: 1.into(),
                 template: PodTemplateSpec {
@@ -600,6 +661,7 @@ impl Build for JobBuilder {
     }
 }
 
+/// HorizontalPodAutoscalerBuilder is a builder for a [`HorizontalPodAutoscaler`].
 pub struct HorizontalPodAutoscalerBuilder {
     namespace: String,
     name: String,
@@ -607,6 +669,7 @@ pub struct HorizontalPodAutoscalerBuilder {
     owner_ref: OwnerReference,
 }
 
+/// This is a macro to write the repetitive [`TryFrom`] implementations.
 macro_rules! tryfrom_impls_hpa {
     ($($from:ty),+) => {
         $(
@@ -658,7 +721,7 @@ impl Build for HorizontalPodAutoscalerBuilder {
             spec: HorizontalPodAutoscalerSpec {
                 max_replicas: 10,
                 scale_target_ref: CrossVersionObjectReference {
-                    api_version: "apps/v1".to_string().into(),
+                    api_version: s("apps/v1"),
                     kind: "Deployment".into(),
                     name: self.name,
                 },
@@ -684,6 +747,7 @@ impl Build for HorizontalPodAutoscalerBuilder {
     }
 }
 
+/// ServiceBuilder is a builder for a [`Service`].
 pub struct ServiceBuilder {
     namespace: String,
     name: String,
@@ -691,6 +755,7 @@ pub struct ServiceBuilder {
     owner_ref: OwnerReference,
 }
 
+/// This is a macro to write the repetitive [`TryFrom`] implementations.
 macro_rules! tryfrom_impls_service {
     ($($from:ty),+) => {
         $(
@@ -726,7 +791,7 @@ enum ServiceKind {
 }
 
 static API_PORT: LazyLock<ServicePort> = LazyLock::new(|| ServicePort {
-    name: "api".to_string().into(),
+    name: s("api"),
     port: 80,
     target_port: IntOrString::String("api".into()).into(),
     ..Default::default()
@@ -757,6 +822,7 @@ impl Build for ServiceBuilder {
     }
 }
 
+/// HTTPRouteBuilder is a builder for a [`HTTPRoute`].
 pub struct HTTPRouteBuilder {
     namespace: String,
     name: String,
@@ -766,6 +832,8 @@ pub struct HTTPRouteBuilder {
 
     gateway: Option<RouteParentRef>,
 }
+
+/// This is a macro to write the repetitive [`TryFrom`] implementations.
 macro_rules! tryfrom_impls_httproute {
     ($($from:ty),+) => {
         $(
@@ -808,7 +876,7 @@ impl Build for HTTPRouteBuilder {
                 owner_references: vec![self.owner_ref].into(),
                 ..Default::default()
             },
-            spec: HTTPRouteSpec {
+            spec: HttpRouteSpec {
                 ..Default::default()
             },
             ..Default::default()
@@ -818,7 +886,7 @@ impl Build for HTTPRouteBuilder {
         }
         let gateway = self.gateway.unwrap();
 
-        let parent_ref = HTTPRouteParentRefs {
+        let parent_ref = HttpRouteParentRefs {
             namespace: gateway.namespace.clone(),
             name: gateway.name.clone().unwrap_or_else(|| self.name.clone()),
 
@@ -828,9 +896,9 @@ impl Build for HTTPRouteBuilder {
 
             ..Default::default()
         };
-        let rule = HTTPRouteRules {
-            matches: vec![HTTPRouteRulesMatches::from(&self.kind)].into(),
-            backend_refs: vec![HTTPRouteRulesBackendRefs {
+        let rule = HttpRouteRules {
+            matches: vec![HttpRouteRulesMatches::from(&self.kind)].into(),
+            backend_refs: vec![HttpRouteRulesBackendRefs {
                 namespace: self.namespace.clone().into(),
                 name: self.service.name_any(),
                 group: Service::group(&()).to_string().into(),
@@ -846,7 +914,7 @@ impl Build for HTTPRouteBuilder {
                 name: self.name.clone().into(),
                 ..Default::default()
             },
-            spec: HTTPRouteSpec {
+            spec: HttpRouteSpec {
                 parent_refs: vec![parent_ref].into(),
                 rules: vec![rule].into(),
                 ..Default::default()
@@ -864,21 +932,20 @@ enum RouteKind {
     Notifier,
 }
 
-impl From<&RouteKind> for gateway_networking_k8s_io::v1::httproutes::HTTPRouteRulesMatches {
-    fn from(value: &RouteKind) -> Self {
+impl From<&RouteKind> for gateway_networking_k8s_io::v1::httproutes::HttpRouteRulesMatches {
+    fn from(kind: &RouteKind) -> Self {
         use gateway_networking_k8s_io::v1::httproutes::*;
 
-        let prefix = match value {
+        let value = s(match kind {
             RouteKind::Indexer => "/indexer/api/v1/",
             RouteKind::Matcher => "/matcher/api/v1/",
             RouteKind::Notifier => "/notifier/api/v1/",
-        }
-        .to_string();
+        });
 
-        HTTPRouteRulesMatches {
-            path: HTTPRouteRulesMatchesPath {
-                r#type: HTTPRouteRulesMatchesPathType::PathPrefix.into(),
-                value: prefix.into(),
+        HttpRouteRulesMatches {
+            path: HttpRouteRulesMatchesPath {
+                r#type: HttpRouteRulesMatchesPathType::PathPrefix.into(),
+                value,
             }
             .into(),
             ..Default::default()
@@ -886,7 +953,7 @@ impl From<&RouteKind> for gateway_networking_k8s_io::v1::httproutes::HTTPRouteRu
     }
 }
 
-impl From<&RouteKind> for Vec<gateway_networking_k8s_io::v1::grpcroutes::GRPCRouteRulesMatches> {
+impl From<&RouteKind> for Vec<gateway_networking_k8s_io::v1::grpcroutes::GrpcRouteRulesMatches> {
     /// None, yet.
     fn from(_value: &RouteKind) -> Self {
         //use gateway_networking_k8s_io::v1::grpcroutes::*;
@@ -894,6 +961,7 @@ impl From<&RouteKind> for Vec<gateway_networking_k8s_io::v1::grpcroutes::GRPCRou
     }
 }
 
+/// DeploymentBuilder is a builder for a [`Deployment`].
 pub struct DeploymentBuilder {
     namespace: String,
     name: String,
@@ -902,6 +970,8 @@ pub struct DeploymentBuilder {
     cfgsrc: ConfigSource,
     owner_ref: OwnerReference,
 }
+
+/// This is a macro to write the repetitive [`TryFrom`] implementations.
 macro_rules! tryfrom_impls_deployment {
     ($($from:ty),+) => {
         $(
@@ -945,6 +1015,7 @@ enum DeploymentKind {
 }
 
 impl DeploymentBuilder {
+    /// Image sets the "image" for the resulting [`Deployment`].
     pub fn image<S>(self, image: S) -> Self
     where
         S: ToString,
@@ -954,6 +1025,8 @@ impl DeploymentBuilder {
             ..self
         }
     }
+
+    /// Config_source sets the "config source" for the resulting [`Deployment`].
     pub fn config_source(self, cfgsrc: &ConfigSource) -> Self {
         let cfgsrc = cfgsrc.clone();
         Self { cfgsrc, ..self }
@@ -1018,7 +1091,7 @@ impl Build for DeploymentBuilder {
                 revision_history_limit: 3.into(),
                 progress_deadline_seconds: 60.into(),
                 strategy: DeploymentStrategy {
-                    type_: "Recreate".to_string().into(),
+                    type_: s("Recreate"),
                     ..Default::default()
                 }
                 .into(),
@@ -1062,6 +1135,7 @@ struct ContainerBuilder {
     argv: Option<Vec<String>>,
 }
 
+/// This is a macro to write the repetitive [`From`] implementations.
 macro_rules! from_impls_container{
     ($($from:ty),+) => {
         $(
@@ -1085,6 +1159,7 @@ macro_rules! from_impls_container{
 from_impls_container!(DeploymentBuilder, JobBuilder, CronJobBuilder);
 
 impl ContainerBuilder {
+    /// Set the arguments for the Container.
     fn args<V>(self, argv: V) -> Self
     where
         V: IntoIterator,
@@ -1112,7 +1187,7 @@ impl Build for ContainerBuilder {
             image: self.image.into(),
             args: self.argv,
             command: vec!["clair".into()].into(),
-            working_dir: "/run/clair".to_string().into(),
+            working_dir: s("/run/clair"),
             security_context: SecurityContext {
                 allow_privilege_escalation: false.into(),
                 ..Default::default()
@@ -1120,7 +1195,7 @@ impl Build for ContainerBuilder {
             .into(),
             env: vec![EnvVar {
                 name: "CLAIR_CONF".into(),
-                value: CONFIG_FILENAME.to_string().into(),
+                value: s(CONFIG_FILENAME),
                 ..Default::default()
             }]
             .into(),
@@ -1128,7 +1203,7 @@ impl Build for ContainerBuilder {
                 VolumeMount {
                     name: CONFIG_ROOT_VOLUME_NAME.into(),
                     mount_path: CONFIG_FILENAME.into(),
-                    sub_path: Some(cfgsrc.root.key.clone()),
+                    sub_path: s(&cfgsrc.root.key),
                     ..Default::default()
                 },
                 VolumeMount {
@@ -1139,7 +1214,7 @@ impl Build for ContainerBuilder {
             ]
             .into(),
             ports: vec![ContainerPort {
-                name: "introspection".to_string().into(),
+                name: s("introspection"),
                 container_port: 8089,
                 ..Default::default()
             }]
@@ -1160,7 +1235,7 @@ impl Build for ContainerBuilder {
             | ContainerKind::Updater => {
                 c.env.get_or_insert_default().push(EnvVar {
                     name: "CLAIR_MODE".into(),
-                    value: self.kind.to_string().into(),
+                    value: s(self.kind),
                     ..Default::default()
                 });
             }
@@ -1171,7 +1246,7 @@ impl Build for ContainerBuilder {
         match self.kind {
             ContainerKind::Indexer | ContainerKind::Matcher | ContainerKind::Notifier => {
                 c.ports.get_or_insert_default().push(ContainerPort {
-                    name: "api".to_string().into(),
+                    name: s("api"),
                     container_port: 6060,
                     ..Default::default()
                 });
@@ -1189,7 +1264,7 @@ impl Build for ContainerBuilder {
                 c.liveness_probe = Probe {
                     http_get: HTTPGetAction {
                         port: IntOrString::String("introspection".into()),
-                        path: "/healthz".to_string().into(),
+                        path: s("/healthz"),
                         ..Default::default()
                     }
                     .into(),
@@ -1201,7 +1276,7 @@ impl Build for ContainerBuilder {
                 c.readiness_probe = Probe {
                     http_get: HTTPGetAction {
                         port: IntOrString::String("introspection".into()),
-                        path: "/readyz".to_string().into(),
+                        path: s("/readyz"),
                         ..Default::default()
                     }
                     .into(),
@@ -1240,14 +1315,21 @@ impl Build for ContainerBuilder {
     }
 }
 
+/// ContainerKind enumerates all the ways a Clair container is used.
 #[derive(Clone, Copy, strum::Display, strum::EnumString, strum::AsRefStr)]
 #[strum(serialize_all = "lowercase")]
 enum ContainerKind {
+    /// Container used as an indexer.
     Indexer,
+    /// Container used as an matcher.
     Matcher,
+    /// Container used as an notifier.
     Notifier,
+    /// Container used as an updater.
     Updater,
+    /// Container used to run `admin pre`.
     AdminPre,
+    /// Container used to run `admin post`.
     AdminPost,
 }
 

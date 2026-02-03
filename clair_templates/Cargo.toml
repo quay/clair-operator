@@ -25,3 +25,15 @@ features = ["derive"]
 assert-json-diff = "2"
 jsonpath-rust = "1"
 simple_txtar = "1.1"
+[dev-dependencies.k8s-openapi]
+workspace = true
+features = ["v1_35"]
+
+[features]
+default = ["latest"]
+__check = ["k8s-openapi/v1_35"]
+
+latest = ["v1_5"]
+earliest = ["v1_4"]
+v1_4 = []
+v1_5 = []
