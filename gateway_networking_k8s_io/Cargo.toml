@@ -6,6 +6,11 @@ edition.workspace = true
 authors.workspace = true
 publish.workspace = true
 
+# Prevent some warnings in the generated documentation.
+[lints.clippy]
+tabs_in_doc_comments = "allow"
+doc_lazy_continuation = "allow"
+
 [dependencies]
 k8s-openapi.workspace = true
 kube.workspace = true
