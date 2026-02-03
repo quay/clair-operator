@@ -244,7 +244,7 @@ impl Reconciler {
         let cnd = Condition {
             message: "created Deployment".into(),
             observed_generation: self.indexer.metadata.generation,
-            last_transition_time: meta::v1::Time(Utc::now()),
+            last_transition_time: meta::v1::Time(Timestamp::now()),
             reason: "DeploymentCreated".into(),
             status: "True".into(),
             type_: clair_condition("DeploymentCreated"),
@@ -283,7 +283,7 @@ impl Reconciler {
         let cnd = Condition {
             message: "created Service".into(),
             observed_generation: self.indexer.metadata.generation,
-            last_transition_time: meta::v1::Time(Utc::now()),
+            last_transition_time: meta::v1::Time(Timestamp::now()),
             reason: "ServiceCreated".into(),
             status: "True".into(),
             type_: clair_condition("ServiceCreated"),
@@ -322,7 +322,7 @@ impl Reconciler {
         let cnd = Condition {
             message: "created HorizontalPodAutoscaler".into(),
             observed_generation: self.indexer.metadata.generation,
-            last_transition_time: meta::v1::Time(Utc::now()),
+            last_transition_time: meta::v1::Time(Timestamp::now()),
             reason: "HorizontalPodAutoscalerCreated".into(),
             status: "True".into(),
             type_: clair_condition("HorizontalPodAutoscalerCreated"),
@@ -337,7 +337,7 @@ impl Reconciler {
     async fn check_spec(&self) -> Result<Option<Action>> {
         let objref = self.indexer.object_ref(&());
         let mut cnd = Condition {
-            last_transition_time: meta::v1::Time(Utc::now()),
+            last_transition_time: meta::v1::Time(Timestamp::now()),
             observed_generation: self.indexer.metadata.generation,
             type_: clair_condition("SpecOK"),
             message: "".into(),

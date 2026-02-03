@@ -295,7 +295,7 @@ impl Reconciler {
             let mut cnd = Condition {
                 message: "created ConfigSource object".into(),
                 observed_generation: self.clair.metadata.generation,
-                last_transition_time: meta::v1::Time(Utc::now()),
+                last_transition_time: meta::v1::Time(Timestamp::now()),
                 reason: "ConfigSourceCreated".into(),
                 status: "True".into(),
                 type_: type_.clone(),
@@ -360,7 +360,7 @@ impl Reconciler {
                     update.push(Condition {
                         message: "spec.image not changed".into(),
                         observed_generation: self.clair.metadata.generation,
-                        last_transition_time: meta::v1::Time(Utc::now()),
+                        last_transition_time: meta::v1::Time(Timestamp::now()),
                         reason: "NoImageUpdate".into(),
                         status: "True".into(),
                         type_: job_type,
@@ -370,7 +370,7 @@ impl Reconciler {
                     update.push(Condition {
                         message: "spec.image changed, launching \"admin pre\" job".into(),
                         observed_generation: self.clair.metadata.generation,
-                        last_transition_time: meta::v1::Time(Utc::now()),
+                        last_transition_time: meta::v1::Time(Timestamp::now()),
                         reason: "ImageUpdated".into(),
                         status: "False".into(),
                         type_: job_type,
@@ -409,7 +409,7 @@ impl Reconciler {
             update.push(Condition {
                 message: "pre jobs are not needed on a fresh system".into(),
                 observed_generation: self.clair.metadata.generation,
-                last_transition_time: meta::v1::Time(Utc::now()),
+                last_transition_time: meta::v1::Time(Timestamp::now()),
                 reason: "NewClair".into(),
                 status: "True".into(),
                 type_: job_type,
@@ -486,7 +486,7 @@ impl Reconciler {
             let mut cnd = Condition {
                 message: "created Indexer object".into(),
                 observed_generation: self.clair.metadata.generation,
-                last_transition_time: meta::v1::Time(Utc::now()),
+                last_transition_time: meta::v1::Time(Timestamp::now()),
                 reason: "IndexerCreated".into(),
                 status: "True".into(),
                 type_: clair_condition("IndexerCreated"),
@@ -559,7 +559,7 @@ impl Reconciler {
             let cnd = Condition {
                 message: "created Matcher object".into(),
                 observed_generation: self.clair.metadata.generation,
-                last_transition_time: meta::v1::Time(Utc::now()),
+                last_transition_time: meta::v1::Time(Timestamp::now()),
                 reason: "MatcherPatched".into(),
                 status: "True".into(),
                 type_: type_.clone(),
@@ -629,7 +629,7 @@ impl Reconciler {
             let cnd = Condition {
                 message: "created Notifier object".into(),
                 observed_generation: self.clair.metadata.generation,
-                last_transition_time: meta::v1::Time(Utc::now()),
+                last_transition_time: meta::v1::Time(Timestamp::now()),
                 reason: "NotifierPatched".into(),
                 status: "True".into(),
                 type_: type_.clone(),

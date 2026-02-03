@@ -19,11 +19,11 @@ pub(crate) mod prelude {
     #![allow(unused_imports)]
     pub use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
-    pub use chrono::Utc;
     pub use futures::prelude::*;
     pub use k8s_openapi::{
         api::*,
         apimachinery::pkg::apis::meta::{self, v1::Condition},
+        jiff::Timestamp,
     };
     pub use kube::{
         self, Resource, ResourceExt,

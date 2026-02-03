@@ -49,17 +49,12 @@ features = ["http1", "json", "tracing"]
 version = "0.7"
 features = ["tls-openssl"]
 
-[dependencies.chrono]
-version = "0.4"
-default-features = false
-features = ["clock", "serde"]
-
 [dependencies.k8s-openapi]
 workspace = true
 features = ["earliest"]
 
 [dependencies.metrics-exporter-prometheus]
-version = "0.17"
+version = "0.18"
 default-features = false
 features = ["http-listener"]
 
@@ -72,7 +67,7 @@ version = "0.6"
 features = ["trace"]
 
 [dependencies.tracing-opentelemetry]
-version = "0.31"
+version = "0.32"
 features = ["metrics"]
 
 [dependencies.tracing-subscriber]
@@ -86,7 +81,7 @@ tower = "0.5"
 simple_txtar = "1.1"
 
 [dev-dependencies.reqwest]
-version = "0.12"
+version = "0.13"
 default-features = false
 features = ["native-tls", "json"]
 

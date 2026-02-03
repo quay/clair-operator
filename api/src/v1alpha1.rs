@@ -950,90 +950,78 @@ impl_subspec!(IndexerSpec, MatcherSpec, NotifierSpec);
 
 mod schema {
     use k8s_openapi::{api::core, apimachinery::pkg::apis::meta};
-    use schemars::{r#gen::SchemaGenerator, schema::Schema};
+    use schemars::{Schema, generate::SchemaGenerator};
     use serde_json::json;
 
     pub fn conditions(generator: &mut SchemaGenerator) -> Schema {
-        let mut obj = generator
-            .subschema_for::<Vec<meta::v1::Condition>>()
-            .into_object();
-        obj.extensions.extend([
-            ("x-kubernetes-list-type".into(), "map".into()),
-            ("x-kubernetes-list-map-keys".into(), json!(["type"])),
-        ]);
-        obj.array().items = Some(condition(generator).into());
-        Schema::Object(obj)
+        let mut schema = generator.subschema_for::<Vec<meta::v1::Condition>>();
+
+        schema
+            .ensure_object()
+            .entry("x-kubernetes-list-type")
+            .or_insert_with(|| json!("map"));
+        schema
+            .ensure_object()
+            .entry("x-kubernetes-list-map-keys")
+            .or_insert_with(|| json!(["type"]));
+        schema
+            .ensure_object()
+            .insert("items".into(), condition(generator).into());
+
+        schema
     }
 
     pub fn condition(generator: &mut SchemaGenerator) -> Schema {
-        let mut obj = generator
-            .subschema_for::<meta::v1::Condition>()
-            .into_object();
+        let mut schema = generator.subschema_for::<meta::v1::Condition>();
 
-        obj.object().required.extend(
-            ["type", "status", "lastTransitionTime", "reason", "message"].map(String::from),
-        );
-
-        let properties = &mut obj.object().properties;
-
-        properties.entry("type".into()).and_modify(|s| match s {
-            Schema::Bool(_) => unreachable!(),
-            Schema::Object(obj) => {
-                let s = obj.string();
-                s.pattern = Some(r#"^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$"#.into());
-                s.max_length = Some(316);
-            }
-        });
-        properties.entry("status".into()).and_modify(|s| match s {
-            Schema::Bool(_) => unreachable!(),
-            Schema::Object(obj) => {
-                obj.enum_values = Some(vec!["True".into(), "False".into(), "Unknown".into()]);
-            }
-        });
-        properties
-            .entry("observedGeneration".into())
-            .and_modify(|s| match s {
-                Schema::Bool(_) => unreachable!(),
-                Schema::Object(obj) => {
-                    obj.number().minimum = Some(0f64);
-                }
-            });
-        properties
-            .entry("lastTransitionTime".into())
-            .and_modify(|s| match s {
-                Schema::Bool(_) => unreachable!(),
-                Schema::Object(obj) => {
-                    obj.format = Some("date-time".into());
-                }
-            });
-        properties.entry("reason".into()).and_modify(|s| match s {
-            Schema::Bool(_) => unreachable!(),
-            Schema::Object(obj) => {
-                let s = obj.string();
-                s.pattern = Some(r#"^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$"#.into());
-                s.max_length = Some(1024);
-                s.min_length = Some(1);
-            }
-        });
-        properties.entry("message".into()).and_modify(|s| match s {
-            Schema::Bool(_) => unreachable!(),
-            Schema::Object(obj) => {
-                let s = obj.string();
-                s.max_length = Some(32768);
-            }
+        schema.ensure_object().entry("required").or_insert_with(|| {
+            json!(["type", "status", "lastTransitionTime", "reason", "message"])
         });
 
-        Schema::Object(obj)
+        schema
+            .ensure_object()
+            .entry("properties")
+            .or_insert_with(|| json!({
+                "type": {
+                    "type": "string",
+                    "pattern": r#"^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$"#,
+                    "max_length": 316,
+                },
+                "status": {
+                    "enum": ["True", "False", "Unknown"],
+                },
+                "observedGeneration": {
+                    "type": "number",
+                    "minimum": 0,
+                },
+                "lastTransitionTime": { "format": "date-time" },
+                "reason": {
+                    "type": "string",
+                    "pattern": r#"^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$"#,
+                    "min_length": 1,
+                    "max_length": 1024,
+                },
+                "message": {
+                    "type": "string",
+                    "max_length": 32768,
+                },
+            }));
+
+        schema
     }
 
     pub fn typed_local_object_references(generator: &mut SchemaGenerator) -> Schema {
-        let mut obj = generator
-            .subschema_for::<Vec<core::v1::TypedLocalObjectReference>>()
-            .into_object();
-        obj.extensions.extend([
-            ("x-kubernetes-list-type".into(), "map".into()),
-            ("x-kubernetes-list-map-keys".into(), json!(["kind"])),
-        ]);
-        Schema::Object(obj)
+        let mut schema = generator.subschema_for::<Vec<core::v1::TypedLocalObjectReference>>();
+
+        schema
+            .ensure_object()
+            .entry("x-kubernetes-list-type")
+            .or_insert_with(|| json!("map"));
+        schema
+            .ensure_object()
+            .entry("x-kubernetes-list-map-keys")
+            .or_insert_with(|| json!(["kind"]));
+
+        schema
     }
 }

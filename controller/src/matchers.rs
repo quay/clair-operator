@@ -211,7 +211,7 @@ impl Reconciler {
         let cnd = Condition {
             message: "created Deployment".into(),
             observed_generation: self.matcher.metadata.generation,
-            last_transition_time: meta::v1::Time(Utc::now()),
+            last_transition_time: meta::v1::Time(Timestamp::now()),
             reason: "DeploymentCreated".into(),
             status: "True".into(),
             type_: clair_condition("DeploymentCreated"),
@@ -249,7 +249,7 @@ impl Reconciler {
         let cnd = Condition {
             message: "created Service".into(),
             observed_generation: self.matcher.metadata.generation,
-            last_transition_time: meta::v1::Time(Utc::now()),
+            last_transition_time: meta::v1::Time(Timestamp::now()),
             reason: "ServiceCreated".into(),
             status: "True".into(),
             type_: clair_condition("ServiceCreated"),
@@ -287,7 +287,7 @@ impl Reconciler {
         let cnd = Condition {
             message: "created HorizontalPodAutoscaler".into(),
             observed_generation: self.matcher.metadata.generation,
-            last_transition_time: meta::v1::Time(Utc::now()),
+            last_transition_time: meta::v1::Time(Timestamp::now()),
             reason: "HorizontalPodAutoscalerCreated".into(),
             status: "True".into(),
             type_: clair_condition("HorizontalPodAutoscalerCreated"),
@@ -325,7 +325,7 @@ impl Reconciler {
         let cnd = Condition {
             message: "created HTTPRoute".into(),
             observed_generation: self.matcher.metadata.generation,
-            last_transition_time: meta::v1::Time(Utc::now()),
+            last_transition_time: meta::v1::Time(Timestamp::now()),
             reason: "HTTPRouteCreated".into(),
             status: "True".into(),
             type_: clair_condition("HTTPRouteCreated"),
@@ -338,7 +338,7 @@ impl Reconciler {
     #[instrument(skip(self), ret)]
     async fn check_spec(&self) -> Result<Option<Action>> {
         let mut cnd = Condition {
-            last_transition_time: meta::v1::Time(Utc::now()),
+            last_transition_time: meta::v1::Time(Timestamp::now()),
             observed_generation: self.matcher.metadata.generation,
             type_: clair_condition("SpecOK"),
             message: "".into(),
