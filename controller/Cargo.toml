@@ -46,7 +46,7 @@ version = "0.8"
 features = ["http1", "json", "tracing"]
 
 [dependencies.axum-server]
-version = "0.7"
+version = "0.8"
 features = ["tls-openssl"]
 
 [dependencies.k8s-openapi]

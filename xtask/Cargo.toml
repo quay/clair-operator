@@ -20,7 +20,7 @@ serde.workspace = true
 serde_yaml.workspace = true
 
 scopeguard = "1"
-signal-hook = "0.3"
+signal-hook = "0.4"
 xshell = "0.2"
 
 [dependencies.k8s-openapi]
