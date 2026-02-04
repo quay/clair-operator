@@ -5,6 +5,8 @@ use std::{
     sync::LazyLock,
 };
 
+use serde::Deserialize;
+use serde_json;
 use xshell::{Shell, cmd};
 
 pub mod check;
@@ -29,22 +31,82 @@ pub static CONFIG_DIR: LazyLock<PathBuf> = LazyLock::new(|| WORKSPACE.join("etc/
 pub static BIN_DIR: LazyLock<PathBuf> = LazyLock::new(|| WORKSPACE.join(".bin"));
 
 // Versions:
+static METADATA: LazyLock<CargoMetadata> = LazyLock::new(|| {
+    let cargo: &Path = &CARGO;
+    let sh = Shell::new().expect("unable to create xshell");
+    let out = cmd!(sh, "{cargo} metadata --format-version=1")
+        .quiet()
+        .output()
+        .expect("failed to get cargo metadata");
+    serde_json::from_slice(&out.stdout).expect("unable to parse JSON")
+});
 
-/// This is the oldest k8s that KinD supports.
+#[derive(Deserialize)]
+struct CargoMetadata {
+    metadata: Metadata,
+}
+
+impl CargoMetadata {
+    fn kube(&self) -> String {
+        self.metadata.ci.kube.clone()
+    }
+    fn kind(&self) -> String {
+        self.metadata.ci.kind.clone()
+    }
+    fn kustomize(&self) -> String {
+        self.metadata.ci.kustomize.clone()
+    }
+    fn operator_sdk(&self) -> String {
+        self.metadata.ci.operator_sdk.clone()
+    }
+    fn opm(&self) -> String {
+        self.metadata.ci.opm.clone()
+    }
+    fn istio(&self) -> String {
+        self.metadata.ci.istio.clone()
+    }
+    fn gateway_api(&self) -> String {
+        self.metadata.ci.gateway_api.clone()
+    }
+}
+
+#[derive(Deserialize)]
+struct Metadata {
+    ci: CiVersions,
+}
+
+#[derive(Deserialize)]
+struct CiVersions {
+    #[serde(rename = "kube-version")]
+    kube: String,
+    #[serde(rename = "kind-version")]
+    kind: String,
+    #[serde(rename = "kustomize-version")]
+    kustomize: String,
+    #[serde(rename = "operator-sdk-version")]
+    operator_sdk: String,
+    #[serde(rename = "opm-version")]
+    opm: String,
+    #[serde(rename = "istio-version")]
+    istio: String,
+    #[serde(rename = "gateway-api-version")]
+    gateway_api: String,
+}
+
 pub static KUBE_VERSION: LazyLock<String> =
-    LazyLock::new(|| env::var("KUBE_VERSION").unwrap_or(String::from("1.29.3")));
+    LazyLock::new(|| env::var("KUBE_VERSION").unwrap_or_else(|_| METADATA.kube()));
 pub static KIND_VERSION: LazyLock<String> =
-    LazyLock::new(|| env::var("KIND_VERSION").unwrap_or(String::from("0.27.0")));
+    LazyLock::new(|| env::var("KIND_VERSION").unwrap_or_else(|_| METADATA.kind()));
 pub static KUSTOMIZE_VERSION: LazyLock<String> =
-    LazyLock::new(|| env::var("KUSTOMIZE_VERSION").unwrap_or(String::from("5.6.0")));
+    LazyLock::new(|| env::var("KUSTOMIZE_VERSION").unwrap_or_else(|_| METADATA.kustomize()));
 pub static OPERATOR_SDK_VERSION: LazyLock<String> =
-    LazyLock::new(|| env::var("OPERATOR_SDK_VERSION").unwrap_or(String::from("1.39.2")));
+    LazyLock::new(|| env::var("OPERATOR_SDK_VERSION").unwrap_or_else(|_| METADATA.operator_sdk()));
 pub static OPM_VERSION: LazyLock<String> =
-    LazyLock::new(|| env::var("OPM_VERSION").unwrap_or(String::from("1.51.0")));
+    LazyLock::new(|| env::var("OPM_VERSION").unwrap_or_else(|_| METADATA.opm()));
 pub static ISTIO_VERSION: LazyLock<String> =
-    LazyLock::new(|| env::var("ISTIO_VERSION").unwrap_or(String::from("1.25.2")));
+    LazyLock::new(|| env::var("ISTIO_VERSION").unwrap_or_else(|_| METADATA.istio()));
 pub static GATEWAY_API_VERSION: LazyLock<String> =
-    LazyLock::new(|| env::var("GATEWAY_API_VERSION").unwrap_or(String::from("1.2.1")));
+    LazyLock::new(|| env::var("GATEWAY_API_VERSION").unwrap_or_else(|_| METADATA.gateway_api()));
 
 // URLs:
 pub static INGRESS_NGINX_MANIFEST_URL: LazyLock<String> = LazyLock::new(|| {

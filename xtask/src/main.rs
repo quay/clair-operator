@@ -82,7 +82,7 @@ fn main() {
                         .help("bundle tag version")
                         .long_help("Bundle tag version. If not provided, one will be guessed based on git tags."),
                     Arg::new("out_dir")
-                        .long("out_dir")
+                        .long("out-dir")
                         .value_name("DIR")
                         .help("catalog output directory")
                         .long_help("Catalog output directory.")
