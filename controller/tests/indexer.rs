@@ -76,7 +76,7 @@ async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
 
     let generation: i64 = 0;
     let watcher_config = watcher::Config::default().timeout(60).streaming_lists();
-    let mut wait = watcher(api.clone(), watcher_config)
+    let wait = watcher(api.clone(), watcher_config)
         .default_backoff()
         .applied_objects()
         .try_take_while(|indexer| {
