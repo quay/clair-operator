@@ -245,7 +245,7 @@ impl DeepMerge for RouteParentRef {
 pub struct ClairStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "schema::conditions")]
+    #[x_kube(merge_strategy = ListMerge::Map(vec!["type".into()]))]
     pub conditions: Option<Vec<meta::v1::Condition>>,
 
     // Misc other refs we may need to hold onto, like Ingresses, Deployments, etc.
@@ -495,14 +495,14 @@ impl DeepMerge for IndexerSpec {
 #[serde(rename_all = "camelCase")]
 pub struct WorkerStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
-    #[schemars(schema_with = "schema::conditions")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[x_kube(merge_strategy = ListMerge::Map(vec!["type".into()]))]
     pub conditions: Option<Vec<meta::v1::Condition>>,
 
     // Misc other refs we may need to hold onto, like Ingresses, Deployments, etc.
     /// Refs holds on to references to objects needed by this instance.
-    #[schemars(schema_with = "schema::typed_local_object_references")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[x_kube(merge_strategy = ListMerge::Map(vec!["kind".into()]))]
     pub refs: Option<Vec<core::v1::TypedLocalObjectReference>>,
 
     /// Dropin is a generated JSON dropin configuration that a Clair instance may use to construct
@@ -517,11 +517,12 @@ pub struct WorkerStatus {
 pub struct IndexerStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    //#[schemars(schema_with = "conditions")]
+    #[x_kube(merge_strategy = ListMerge::Map(vec!["type".into()]))]
     pub conditions: Vec<meta::v1::Condition>,
     // Misc other refs we may need to hold onto, like Ingresses, Deployments, etc.
     /// Refs holds on to references to objects needed by this instance.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[x_kube(merge_strategy = ListMerge::Map(vec!["kind".into()]))]
     pub refs: Vec<core::v1::TypedLocalObjectReference>,
     /// Config is configuration sources for the Clair instance.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -565,11 +566,12 @@ pub struct MatcherSpec {
 pub struct MatcherStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    //#[schemars(schema_with = "conditions")]
+    #[x_kube(merge_strategy = ListMerge::Map(vec!["type".into()]))]
     pub conditions: Vec<meta::v1::Condition>,
     // Misc other refs we may need to hold onto, like Ingresses, Deployments, etc.
     /// Refs holds on to references to objects needed by this instance.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[x_kube(merge_strategy = ListMerge::Map(vec!["kind".into()]))]
     pub refs: Vec<core::v1::TypedLocalObjectReference>,
     /// Config is configuration sources for the Clair instance.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -621,11 +623,12 @@ pub struct UpdaterSpec {
 pub struct UpdaterStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    //#[schemars(schema_with = "conditions")]
+    #[x_kube(merge_strategy = ListMerge::Map(vec!["type".into()]))]
     pub conditions: Vec<meta::v1::Condition>,
     // Misc other refs we may need to hold onto, like Ingresses, Deployments, etc.
     /// Refs holds on to references to objects needed by this instance.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[x_kube(merge_strategy = ListMerge::Map(vec!["kind".into()]))]
     pub refs: Vec<core::v1::TypedLocalObjectReference>,
     /// CronJob the operator has configured for this Updater.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -667,11 +670,12 @@ pub struct NotifierSpec {
 pub struct NotifierStatus {
     /// Conditions reports k8s-style conditions for various parts of the system.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    //#[schemars(schema_with = "conditions")]
+    #[x_kube(merge_strategy = ListMerge::Map(vec!["type".into()]))]
     pub conditions: Vec<meta::v1::Condition>,
     // Misc other refs we may need to hold onto, like Ingresses, Deployments, etc.
     /// Refs holds on to references to objects needed by this instance.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[x_kube(merge_strategy = ListMerge::Map(vec!["kind".into()]))]
     pub refs: Vec<core::v1::TypedLocalObjectReference>,
     /// Config is configuration sources for the Clair instance.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -947,81 +951,3 @@ macro_rules! impl_subspec {
 }
 impl_subspec!(IndexerSpec, MatcherSpec, NotifierSpec);
 */
-
-mod schema {
-    use k8s_openapi::{api::core, apimachinery::pkg::apis::meta};
-    use schemars::{Schema, generate::SchemaGenerator};
-    use serde_json::json;
-
-    pub fn conditions(generator: &mut SchemaGenerator) -> Schema {
-        let mut schema = generator.subschema_for::<Vec<meta::v1::Condition>>();
-
-        schema
-            .ensure_object()
-            .entry("x-kubernetes-list-type")
-            .or_insert_with(|| json!("map"));
-        schema
-            .ensure_object()
-            .entry("x-kubernetes-list-map-keys")
-            .or_insert_with(|| json!(["type"]));
-        schema
-            .ensure_object()
-            .insert("items".into(), condition(generator).into());
-
-        schema
-    }
-
-    pub fn condition(generator: &mut SchemaGenerator) -> Schema {
-        let mut schema = generator.subschema_for::<meta::v1::Condition>();
-
-        schema.ensure_object().entry("required").or_insert_with(|| {
-            json!(["type", "status", "lastTransitionTime", "reason", "message"])
-        });
-
-        schema
-            .ensure_object()
-            .entry("properties")
-            .or_insert_with(|| json!({
-                "type": {
-                    "type": "string",
-                    "pattern": r#"^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$"#,
-                    "max_length": 316,
-                },
-                "status": {
-                    "enum": ["True", "False", "Unknown"],
-                },
-                "observedGeneration": {
-                    "type": "number",
-                    "minimum": 0,
-                },
-                "lastTransitionTime": { "format": "date-time" },
-                "reason": {
-                    "type": "string",
-                    "pattern": r#"^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$"#,
-                    "min_length": 1,
-                    "max_length": 1024,
-                },
-                "message": {
-                    "type": "string",
-                    "max_length": 32768,
-                },
-            }));
-
-        schema
-    }
-
-    pub fn typed_local_object_references(generator: &mut SchemaGenerator) -> Schema {
-        let mut schema = generator.subschema_for::<Vec<core::v1::TypedLocalObjectReference>>();
-
-        schema
-            .ensure_object()
-            .entry("x-kubernetes-list-type")
-            .or_insert_with(|| json!("map"));
-        schema
-            .ensure_object()
-            .entry("x-kubernetes-list-map-keys")
-            .or_insert_with(|| json!(["kind"]));
-
-        schema
-    }
-}
