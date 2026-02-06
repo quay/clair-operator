@@ -5,7 +5,7 @@
   "metadata": {
     "namespace": "default",
     "name": "test",
-	"uid": "6060"
+    "uid": "6060"
   },
   "spec": {
     "image": "quay.io/projectquay/clair:4.8.0"
@@ -18,10 +18,9 @@
       },
       "dropins": [
         {
-          "configMapKeyRef": {
-            "name": "test",
-            "key": "90-config.json-patch"
-          }
+          "type": "ConfigMap",
+          "name": "test",
+          "key": "90-config.json-patch"
         }
       ]
     }

@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use k8s_openapi::{ByteString, api::core, apimachinery::pkg::apis::meta};
 
 use api::v1alpha1::Clair;
-use controller::{Context, Error, clairs};
+use controller::{Error, State, clairs};
+
 mod util;
 use util::prelude::*;
 
@@ -38,7 +39,7 @@ async fn initialize() -> Result<(), Error> {
     Ok(())
 }
 
-async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
+async fn initialize_inner(ctx: Arc<State>) -> Result<(), Error> {
     use self::core::v1::Secret;
     use self::meta::v1::ObjectMeta;
     const NAME: &str = "clair-initialize-test";

@@ -1,7 +1,7 @@
 use std::pin::pin;
 
 use api::v1alpha1::Indexer;
-use controller::{Context, Error, indexers};
+use controller::{Error, State, indexers};
 use futures::{StreamExt, TryStreamExt};
 use k8s_openapi::api::core;
 use kube::runtime::{WatchStreamExt, watcher};
@@ -39,7 +39,7 @@ async fn initialize() -> Result<(), Error> {
     }
     Ok(())
 }
-async fn initialize_inner(ctx: Arc<Context>) -> Result<(), Error> {
+async fn initialize_inner(ctx: Arc<State>) -> Result<(), Error> {
     use self::core::v1::ConfigMap;
     const NAME: &str = "indexers-initialize-test";
     let cm: Api<ConfigMap> = Api::default_namespaced(ctx.client.clone());

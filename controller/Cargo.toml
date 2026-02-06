@@ -13,6 +13,7 @@ workspace = true
 [features]
 default = []
 test_ci = []
+telemetry = ["opentelemetry-otlp"]
 
 [dependencies]
 api = { path = "../api" }
@@ -58,6 +59,20 @@ version = "0.18"
 default-features = false
 features = ["http-listener"]
 
+[dependencies.opentelemetry]
+version = "0.31"
+features = ["trace", "metrics"]
+
+[dependencies.opentelemetry-otlp]
+version = "0.31"
+optional = true
+default-features = false
+features = ["trace", "grpc-tonic"]
+
+[dependencies.opentelemetry_sdk]
+version = "0.31"
+features = ["rt-tokio"]
+
 [dependencies.strum]
 version = "0.27"
 features = ["derive"]
@@ -76,8 +91,10 @@ features = ["json", "env-filter"]
 
 [dev-dependencies]
 assert-json-diff = "2"
+http = "1"
 jsonpath-rust = "1"
 tower = "0.5"
+tower-test = "0.4"
 simple_txtar = "1.1"
 
 [dev-dependencies.reqwest]

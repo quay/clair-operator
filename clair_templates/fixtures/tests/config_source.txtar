@@ -1,0 +1,41 @@
+-- input.json --
+{
+  "apiVersion": "v1",
+  "kind": "ConfigMap",
+  "metadata": {
+    "namespace": "default",
+    "name": "test",
+    "ownerReferences": [
+      {
+        "controller": true,
+        "apiVersion": "clairproject.org/v1alpha1",
+        "kind": "Clair",
+        "name": "test",
+        "uid": "6060"
+      }
+    ],
+    "labels": {
+      "app.kubernetes.io/managed-by": "clair-operator",
+      "app.kubernetes.io/component": "configmap",
+      "app.kubernetes.io/name": "clair"
+    }
+  },
+  "data": {
+    "config.json": "{\"api\":{\"v1\":{\"address\":\":6060\",\"enabled\":true,\"network\":\"tcp\"}},\"indexer\":{\"migrations\":true},\"introspection\":{\"address\":\":8089\",\"network\":\"tcp\"},\"log_level\":\"info\",\"matcher\":{\"migrations\":true},\"metrics\":{\"name\":\"prometheus\"},\"notifier\":{\"migrations\":true}}",
+    "00-indexer-dropin.json-patch": "[{\"op\":\"add\",\"path\":\"/matcher/indexer_addr\",\"value\":\"test-indexer.test.svc.cluster.local\"},{\"op\":\"add\",\"path\":\"/notifier/indexer_addr\",\"value\":\"test-indexer.test.svc.cluster.local\"}]"
+  }
+}
+-- want.json --
+{
+  "root": {
+    "name": "test",
+    "key": "config.json"
+  },
+  "dropins": [
+    {
+      "type": "ConfigMap",
+      "name": "test",
+      "key": "00-indexer-dropin.json-patch"
+    }
+  ]
+}

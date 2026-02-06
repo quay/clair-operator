@@ -116,8 +116,8 @@ impl TryFrom<&clap::ArgMatches> for Args {
 }
 
 impl Args {
-    fn context(&self, client: kube::Client) -> Arc<Context> {
-        Arc::new(Context::new(client, &self.image))
+    fn context(&self, client: kube::Client) -> Arc<State> {
+        Arc::new(State::new(client, &self.image))
     }
 }
 
@@ -145,6 +145,7 @@ fn startup(args: Args) -> controller::Result<()> {
     let rt = runtime::Builder::new_multi_thread().enable_all().build()?;
     let token = CancellationToken::new();
     rt.handle().spawn(async move {
+        telemetry::init().await;
         if let Err(e) = prom.install() {
             error!("error setting up prometheus endpoint: {e}");
         }

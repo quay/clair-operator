@@ -4,7 +4,12 @@
 //! Controller implements common functionality for the controller binary and controller functions
 //! themselves.
 
-use std::{collections::HashMap, env, pin::Pin, sync::LazyLock};
+use std::{
+    collections::HashMap,
+    env,
+    pin::Pin,
+    sync::{Arc, LazyLock},
+};
 
 use futures::Future;
 use k8s_openapi::apimachinery::pkg::apis::meta::{self, v1::Condition};
@@ -46,16 +51,24 @@ pub(crate) mod prelude {
     pub use api::v1alpha1;
 
     pub use super::{CONTROLLER_NAME, CREATE_PARAMS, DEFAULT_REQUEUE, PATCH_PARAMS};
-    pub use super::{Context, ControllerFuture, Error, Result};
+    pub use super::{ControllerFuture, Error, Result, State};
+    pub use crate::telemetry;
 }
 
 pub mod clairs;
 pub mod indexers;
 pub mod matchers;
 //pub mod subresource;
+mod util;
 
 pub mod updaters;
 pub mod webhook;
+
+pub mod metrics;
+pub mod telemetry;
+
+#[cfg(test)]
+pub mod testing;
 
 // NB The docs are unclear, but backtraces are unsupported on stable.
 /// Error ...
@@ -70,6 +83,11 @@ pub enum Error {
     /// Kube is a generic error from the `kube` crate.
     #[error("kube error: {0}")]
     Kube(#[from] kube::Error),
+    /// Error occurred in the finalizer
+    #[error("finalizer error: {0}")]
+    // NB: awkward type because finalizer::Error embeds the reconciler error (which is this)
+    // so boxing this error to break cycles
+    Finalizer(#[source] Box<kube::runtime::finalizer::Error<Error>>),
     /// KubeConfig inidicates the process was unable to find a kubeconfig.
     #[error("kubeconfig error: {0}")]
     KubeConfig(#[from] kube::config::InferConfigError),
@@ -126,8 +144,8 @@ pub enum Error {
 /// Result typedef for controllers.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// Context is common context for controllers.
-pub struct Context {
+/// State is common context for controllers.
+pub struct State {
     /// Client is a k8s client. This should be only ever be `clone()`'d out of the Context.
     pub client: kube::Client,
     /// Image is the fallback container image to use.
@@ -136,14 +154,14 @@ pub struct Context {
     kinds: RwLock<HashMap<GroupVersionKind, bool>>,
 }
 
-impl std::fmt::Debug for Context {
+impl std::fmt::Debug for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ctx")
     }
 }
 
-impl Context {
-    /// New creates a Context object.
+impl State {
+    /// New creates a [`State`] object.
     pub fn new<S>(client: kube::Client, image: S) -> Self
     where
         S: ToString,
@@ -195,6 +213,28 @@ impl Context {
             kinds.insert(gvk.clone(), exists);
         }
         exists
+    }
+}
+
+/// Context for a reconciler.
+#[derive(Clone)]
+pub struct Context {
+    /// Kubernetes client
+    pub client: kube::Client,
+    /// Event recorder
+    pub recorder: events::Recorder,
+    ///// Diagnostics read by the web server
+    //pub diagnostics: Arc<RwLock<Diagnostics>>,
+    ///// Prometheus metrics
+    //pub metrics: Arc<Metrics>,
+}
+
+impl From<Arc<State>> for Context {
+    fn from(ctx: Arc<State>) -> Self {
+        let reporter = REPORTER.clone();
+        let client = ctx.client.clone();
+        let recorder = events::Recorder::new(client.clone(), reporter);
+        Self { client, recorder }
     }
 }
 
@@ -291,126 +331,6 @@ fn merge_condition(to: &mut Condition, from: Condition) {
     }
 }
 
-/*
-/// New_templated returns a `K` with patches for `S` applied and the owner set to `obj`.
-#[instrument(skip_all)]
-pub async fn new_templated<S, K>(obj: &S, _ctx: &Context) -> Result<K>
-where
-    S: kube::Resource<DynamicType = ()>,
-    K: kube::Resource<DynamicType = ()> + serde::de::DeserializeOwned,
-{
-    Ok(templates::render(obj))
-    /*
-    use kube::ResourceExt;
-    let oref = obj
-        .controller_owner_ref(&())
-        .expect("unable to create owner ref");
-    let okind = S::kind(&()).to_ascii_lowercase();
-
-    let kind = K::kind(&()).to_ascii_lowercase();
-    trace!(kind, owner = ?oref, "requesting template");
-    let mut v: K = match crate::templates::resource_for(&okind).await {
-        Ok(v) => v,
-        Err(err) => return Err(Error::Assets(err.to_string())),
-    };
-    v.meta_mut().owner_references = Some(vec![oref]);
-    v.meta_mut().name = Some(format!("{}-{okind}", obj.name_any()));
-
-    Ok(v)
-    */
-}
-
-/// Make_volumes generates the Volumes and VolumeMounts for the provided ConfigSource. The created
-/// Volumes and VolumeMounts are returned, along with the created path of the root config.
-#[instrument(skip_all)]
-pub fn make_volumes(
-    cfgsrc: &v1alpha1::ConfigSource,
-) -> (Vec<core::v1::Volume>, Vec<core::v1::VolumeMount>, String) {
-    use self::core::v1::{
-        ConfigMapProjection, ConfigMapVolumeSource, KeyToPath, ProjectedVolumeSource,
-        SecretProjection, Volume, VolumeMount, VolumeProjection,
-    };
-    let mut vols = Vec::new();
-    let mut mounts = Vec::new();
-
-    let root = String::from("/etc/clair/");
-    let rootname = String::from("root-config");
-    let filename = format!("{root}/{}", &cfgsrc.root.key);
-    assert!(filename.ends_with(".json") || filename.ends_with(".yaml"));
-    vols.push(Volume {
-        name: rootname.clone(),
-        config_map: Some(ConfigMapVolumeSource {
-            name: cfgsrc.root.name.clone(),
-            items: Some(vec![KeyToPath {
-                key: cfgsrc.root.key.clone(),
-                path: cfgsrc.root.key.clone(),
-                mode: Some(0o666),
-            }]),
-            ..Default::default()
-        }),
-        ..Default::default()
-    });
-    trace!(filename, "arranged for root config to be mounted");
-    mounts.push(VolumeMount {
-        name: rootname,
-        mount_path: filename.clone(),
-        sub_path: Some(cfgsrc.root.key.clone()),
-        ..Default::default()
-    });
-
-    let mut proj = Vec::new();
-    trace!(?cfgsrc.dropins, "dropins");
-    for d in cfgsrc.dropins.iter() {
-        assert!(d.config_map_key_ref.is_some() || d.secret_key_ref.is_some());
-        trace!(?d.config_map_key_ref, ?d.secret_key_ref, "checking dropin");
-        let mut v: VolumeProjection = Default::default();
-        if let Some(cfgref) = d.config_map_key_ref.as_ref() {
-            v.config_map = Some(ConfigMapProjection {
-                name: cfgref.name.clone(),
-                optional: Some(false),
-                items: Some(vec![KeyToPath {
-                    path: cfgref.key.clone(),
-                    key: cfgref.key.clone(),
-                    mode: None,
-                }]),
-            })
-        } else if let Some(secref) = d.secret_key_ref.as_ref() {
-            v.secret = Some(SecretProjection {
-                name: secref.name.clone(),
-                optional: Some(false),
-                items: Some(vec![KeyToPath {
-                    path: secref.key.clone(),
-                    key: secref.key.clone(),
-                    mode: None,
-                }]),
-            })
-        } else {
-            unreachable!()
-        };
-        proj.push(v);
-    }
-    trace!(?proj, "projected volumes");
-    vols.push(Volume {
-        name: "dropins".into(),
-        projected: Some(ProjectedVolumeSource {
-            sources: Some(proj),
-            default_mode: Some(0o644),
-        }),
-        ..Default::default()
-    });
-    let mut cfg_d = filename.clone();
-    cfg_d.push_str(".d");
-    trace!(dir = cfg_d, "arranged for dropins to be mounted");
-    mounts.push(VolumeMount {
-        name: "dropins".into(),
-        mount_path: cfg_d,
-        ..Default::default()
-    });
-
-    (vols, mounts, filename)
-}
-*/
-
 /// Set_component_label sets the component label to `c`.
 pub fn set_component_label(meta: &mut meta::v1::ObjectMeta, c: &str) {
     let mut l = meta.labels.take().unwrap_or_default();
@@ -476,7 +396,11 @@ pub static DEFAULT_REQUEUE: LazyLock<kube::runtime::controller::Action> = LazyLo
 });
 
 /// CONTROLLER_NAME is the name the controller uses whenever it needs a human-readable name.
-pub const CONTROLLER_NAME: &str = "clair-controller";
+pub const CONTROLLER_NAME: &str = if cfg!(test) {
+    "clair-controller-test"
+} else {
+    "clair-controller"
+};
 
 /// GVK for `gateway.networking.k8s.io/v1/Gateway`.
 pub static GATEWAY_NETWORKING_GATEWAY: LazyLock<GroupVersionKind> =

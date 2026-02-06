@@ -259,17 +259,6 @@ mod v1alpha1 {
                     ));
                 }
                 trace!(op = ?req.operation, "notifier OK");
-
-                for (i, d) in spec.dropins.iter().enumerate() {
-                    if d.config_map_key_ref.is_none() && d.secret_key_ref.is_none() {
-                        trace!(op = ?req.operation, index = i, "dropins misconfigured");
-                        return Ok(Json(
-                            res.deny(format!("invalid dropin at index {i}: no ref specified"))
-                                .into_review(),
-                        ));
-                    }
-                }
-                trace!(op = ?req.operation, "dropins OK");
             }
 
             let cm_api: Api<core::v1::ConfigMap> = Api::default_namespaced(srv.client.clone());
@@ -292,29 +281,18 @@ mod v1alpha1 {
             };
             let mut ds = Vec::new();
             for d in cfgsrc.dropins.iter() {
-                if let Some(r) = &d.config_map_key_ref {
-                    let name = &r.name;
-                    let m = match cm_api.get_opt(name).await {
-                        Ok(m) => m,
-                        Err(err) => return Ok(Json(AdmissionResponse::invalid(err).into_review())),
-                    };
-                    if m.is_none() {
-                        return Ok(Json(res.deny("no such config: {name}").into_review()));
-                    };
-                    ds.push((Either::from(m.unwrap()), &r.key));
-                } else if let Some(r) = &d.secret_key_ref {
-                    let name = &r.name;
-                    let m = match sec_api.get_opt(name).await {
-                        Ok(m) => m,
-                        Err(err) => return Ok(Json(AdmissionResponse::invalid(err).into_review())),
-                    };
-                    if m.is_none() {
-                        return Ok(Json(res.deny("no such config: {name}").into_review()));
-                    };
-                    ds.push((Either::from(m.unwrap()), &r.key));
-                } else {
-                    unreachable!()
-                }
+                let name = d.name.as_str();
+                let obj = match d.type_ {
+                    DropinType::ConfigMap => {
+                        cm_api.get_opt(name).await.map(|o| o.map(Either::from))
+                    }
+                    DropinType::Secret => sec_api.get_opt(name).await.map(|o| o.map(Either::from)),
+                };
+                match obj {
+                    Err(err) => return Ok(Json(AdmissionResponse::invalid(err).into_review())),
+                    Ok(None) => return Ok(Json(res.deny("no such config: {name}").into_review())),
+                    Ok(Some(e)) => ds.push((e, d.key.as_str())),
+                };
             }
             for (d, key) in ds {
                 b = match match d {

@@ -33,7 +33,7 @@ static SELF_GVK: LazyLock<GroupVersionKind> = LazyLock::new(|| GroupVersionKind 
 ///
 /// An error is returned if any setup fails.
 #[instrument(skip_all)]
-pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<ControllerFuture> {
+pub fn controller(cancel: CancellationToken, ctx: Arc<State>) -> Result<ControllerFuture> {
     use gateway_networking_k8s_io::v1::{grpcroutes::GRPCRoute, httproutes::HTTPRoute};
 
     let client = ctx.client.clone();
@@ -97,13 +97,13 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<Context>) -> Result<Contro
 #[derive(Debug)]
 struct Reconciler {
     matcher: Arc<Matcher>,
-    ctx: Arc<Context>,
+    ctx: Arc<State>,
     namespace: String,
     api: Api<Matcher>,
 }
 
-impl From<(Arc<Matcher>, Arc<Context>)> for Reconciler {
-    fn from(value: (Arc<Matcher>, Arc<Context>)) -> Self {
+impl From<(Arc<Matcher>, Arc<State>)> for Reconciler {
+    fn from(value: (Arc<Matcher>, Arc<State>)) -> Self {
         let (matcher, ctx) = value;
         let namespace = matcher.namespace().unwrap(); // Matcher is namespace scoped
         let api: Api<Matcher> = Api::namespaced(ctx.client.clone(), &namespace);
@@ -366,7 +366,7 @@ impl Reconciler {
 
 /// Reconcile is the main entrypoint for the reconcile loop.
 #[instrument(skip(ctx, matcher), fields(name = matcher.name_any(), namespace = matcher.namespace().unwrap()))]
-async fn reconcile(matcher: Arc<Matcher>, ctx: Arc<Context>) -> Result<Action> {
+async fn reconcile(matcher: Arc<Matcher>, ctx: Arc<State>) -> Result<Action> {
     assert!(matcher.meta().name.is_some());
     info!("reconciling Matcher");
     let r = Reconciler::from((matcher.clone(), ctx.clone()));
@@ -384,6 +384,6 @@ async fn reconcile(matcher: Arc<Matcher>, ctx: Arc<Context>) -> Result<Action> {
 }
 
 #[instrument(skip_all)]
-fn handle_error(_obj: Arc<Matcher>, _err: &Error, _ctx: Arc<Context>) -> Action {
+fn handle_error(_obj: Arc<Matcher>, _err: &Error, _ctx: Arc<State>) -> Action {
     Action::await_change()
 }

@@ -1,7 +1,7 @@
 //! Module `v1alpha1` implements the v1alpha1 Clair CRD API.
 use k8s_openapi::{DeepMerge, api::core, apimachinery::pkg::apis::meta, merge_strategies};
 use kube::{CustomResource, KubeSchema};
-use schemars;
+use schemars::{self, JsonSchema};
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
@@ -51,7 +51,7 @@ pub struct ClairSpec {
     ///
     /// See the Clair documentation for how config drop-ins are handled.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub dropins: Vec<DropinSource>,
+    pub dropins: Vec<DropinSelector>,
 }
 
 impl ClairSpec {
@@ -59,19 +59,12 @@ impl ClairSpec {
     pub fn with_root<S: ToString>(&self, name: S) -> ConfigSource {
         let mut dropins = self.dropins.clone();
         if let Some(db) = &self.databases {
-            dropins.push(DropinSource {
-                secret_key_ref: Some(db.indexer.clone()),
-                config_map_key_ref: None,
-            });
-            dropins.push(DropinSource {
-                secret_key_ref: Some(db.matcher.clone()),
-                config_map_key_ref: None,
-            });
+            dropins.extend([
+                DropinSelector::secret(&db.indexer.name, &db.indexer.key),
+                DropinSelector::secret(&db.matcher.name, &db.matcher.key),
+            ]);
             if let Some(db) = &db.notifier {
-                dropins.push(DropinSource {
-                    secret_key_ref: Some(db.clone()),
-                    config_map_key_ref: None,
-                });
+                dropins.push(DropinSelector::secret(&db.name, &db.key));
             };
         };
         dropins.sort();
@@ -283,6 +276,38 @@ pub struct ClairStatus {
     */
 }
 
+impl DeepMerge for ClairStatus {
+    fn merge_from(&mut self, other: Self) {
+        match (self.conditions.as_mut(), other.conditions) {
+            (None, None) => (),
+            (Some(_), None) => (),
+            (None, Some(new)) => self.conditions = Some(new),
+            (Some(cur), Some(new)) => merge_strategies::list::map(
+                cur,
+                new,
+                &[|a, b| a.type_ == b.type_],
+                DeepMerge::merge_from,
+            ),
+        };
+        match (self.refs.as_mut(), other.refs) {
+            (None, None) => (),
+            (Some(_), None) => (),
+            (None, Some(new)) => self.refs = Some(new),
+            (Some(cur), Some(new)) => merge_strategies::list::map(
+                cur,
+                new,
+                &[|a, b| a.kind == b.kind],
+                DeepMerge::merge_from,
+            ),
+        };
+        self.indexer.merge_from(other.indexer);
+        self.matcher.merge_from(other.matcher);
+        self.notifier.merge_from(other.notifier);
+        self.config.merge_from(other.config);
+        self.image.merge_from(other.image);
+    }
+}
+
 /// ConfigSource specifies all the config files that will be arranged for Clair to load.
 ///
 /// All referenced configs need to be in the same dialect as specified on the parent ClairSpec to
@@ -296,7 +321,8 @@ pub struct ConfigSource {
     pub root: ConfigMapKeySelector,
     /// Dropins is a list of references to drop-in configs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub dropins: Vec<DropinSource>,
+    #[x_kube(merge_strategy = ListMerge::Map(vec!["type".into(),"key".into(),"name".into()]))]
+    pub dropins: Vec<DropinSelector>,
 }
 
 impl DeepMerge for ConfigSource {
@@ -306,29 +332,59 @@ impl DeepMerge for ConfigSource {
     }
 }
 
-/// DropinSource represents a source for the value of a Clair configuration dropin.
+/// DropinSelector represents a source for the value of a Clair configuration dropin.
 #[derive(
-    KubeSchema,
-    Clone,
-    Debug,
-    Default,
-    Deserialize,
-    Eq,
-    Ord,
-    PartialEq,
-    PartialOrd,
-    Serialize,
-    Validate,
+    KubeSchema, Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, Validate,
 )]
 #[serde(rename_all = "camelCase")]
-#[x_kube(validation = ("(has(self.configMapKeyRef) && !has(self.secretKeyRef)) || (!has(self.configMapKeyRef) && has(self.secretKeyRef))", r#"exactly one key ref must be provided"#))]
-pub struct DropinSource {
-    /// Selects a key of a ConfigMap.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub config_map_key_ref: Option<ConfigMapKeySelector>,
-    /// Selects a key of a Secret.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub secret_key_ref: Option<SecretKeySelector>,
+#[x_kube(validation = ("self.type == 'ConfigMap' || self.type == 'Secret'", r#""type" must be populated with a known type"#))]
+#[x_kube(validation = ("self.name != ''", r#""name" must be populated"#))]
+#[x_kube(validation = ("self.key != ''", r#""key" must be populated"#))]
+pub struct DropinSelector {
+    /// Type of the refererent.
+    #[serde(rename = "type")]
+    pub type_: DropinType,
+    /// The key to select.
+    pub key: String,
+    /// The name of the referent.
+    pub name: String,
+}
+
+impl DropinSelector {
+    /// Construct a ConfigMap selector.
+    pub fn config_map<N: ToString, K: ToString>(name: N, key: K) -> Self {
+        Self {
+            type_: DropinType::ConfigMap,
+            key: key.to_string(),
+            name: name.to_string(),
+        }
+    }
+
+    /// Construct a Secret selector.
+    pub fn secret<N: ToString, K: ToString>(name: N, key: K) -> Self {
+        Self {
+            type_: DropinType::Secret,
+            key: key.to_string(),
+            name: name.to_string(),
+        }
+    }
+
+    /// Report the type referred to by this DropinSelector.
+    pub fn kind(&self) -> &'static str {
+        match self.type_ {
+            DropinType::ConfigMap => "ConfigMap",
+            DropinType::Secret => "Secret",
+        }
+    }
+}
+
+/// DropinType is the type of a source for a Clair configuration dropin.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, JsonSchema)]
+pub enum DropinType {
+    /// Kubernetes "kind" is ConfigMap.
+    ConfigMap,
+    /// Kubernetes "kind" is Secret.
+    Secret,
 }
 
 /// SecretKeySelector selects a key from a Secret.
@@ -346,7 +402,8 @@ pub struct DropinSource {
     KubeSchema,
 )]
 #[serde(rename_all = "camelCase")]
-#[x_kube(validation = ("self.name != '' && self.key != ''", r#""key" and "name" must be populated"#))]
+#[x_kube(validation = ("self.name != ''", r#""name" must be populated"#))]
+#[x_kube(validation = ("self.key != ''", r#""key" must be populated"#))]
 pub struct SecretKeySelector {
     /// The key to select.
     pub key: String,
@@ -380,7 +437,8 @@ impl DeepMerge for SecretKeySelector {
     KubeSchema,
 )]
 #[serde(rename_all = "camelCase")]
-#[x_kube(validation = ("self.name != '' && self.key != ''", r#""key" and "name" must be populated"#))]
+#[x_kube(validation = ("self.name != ''", r#""name" must be populated"#))]
+#[x_kube(validation = ("self.key != ''", r#""key" must be populated"#))]
 pub struct ConfigMapKeySelector {
     /// The key to select.
     pub key: String,

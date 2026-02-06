@@ -7,12 +7,12 @@ use tokio::{task, time::Duration};
 use crate::prelude::*;
 use crate::*;
 
-fn error_policy(_obj: Arc<v1alpha1::Updater>, _e: &Error, _ctx: Arc<Context>) -> Action {
+fn error_policy(_obj: Arc<v1alpha1::Updater>, _e: &Error, _ctx: Arc<State>) -> Action {
     debug!("error!");
     Action::await_change()
 }
 
-async fn reconcile(_obj: Arc<v1alpha1::Updater>, _ctx: Arc<Context>) -> Result<Action> {
+async fn reconcile(_obj: Arc<v1alpha1::Updater>, _ctx: Arc<State>) -> Result<Action> {
     debug!("reconcile!");
     Ok(Action::requeue(Duration::from_secs(300)))
 }
@@ -20,7 +20,7 @@ async fn reconcile(_obj: Arc<v1alpha1::Updater>, _ctx: Arc<Context>) -> Result<A
 /// Controller is the Updater controller.
 ///
 /// # Broken
-pub fn controller(set: &mut task::JoinSet<Result<()>>, ctx: Arc<Context>) {
+pub fn controller(set: &mut task::JoinSet<Result<()>>, ctx: Arc<State>) {
     let cfg = watcher::Config::default();
     let client = ctx.client.clone();
     let updaters: Api<v1alpha1::Updater> = Api::default_namespaced(client.clone());

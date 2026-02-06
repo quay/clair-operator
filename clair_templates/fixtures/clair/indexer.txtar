@@ -13,15 +13,15 @@
   "status": {
     "config": {
       "root": {
+		"type": "ConfigMap",
         "name": "test",
         "key": "config.json"
       },
       "dropins": [
         {
-          "configMapKeyRef": {
-            "name": "test",
-            "key": "90-config.json-patch"
-          }
+          "type": "ConfigMap",
+          "name": "test",
+          "key": "90-config.json-patch"
         }
       ]
     }
@@ -58,10 +58,9 @@
       },
       "dropins": [
         {
-          "configMapKeyRef": {
-            "name": "test",
-            "key": "90-config.json-patch"
-          }
+          "type": "ConfigMap",
+          "name": "test",
+          "key": "90-config.json-patch"
         }
       ]
     }

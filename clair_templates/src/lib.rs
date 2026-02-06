@@ -92,6 +92,7 @@ pub static DEFAULT_CONFIG: LazyLock<String> = LazyLock::new(|| {
     json_string(&v).expect("programmer error: static data")
 });
 
+const CONFIG_ROOT_KEY: &str = "config.json";
 const CONFIG_ROOT_VOLUME_NAME: &str = "root-config";
 const CONFIG_DROPIN_VOLUME_NAME: &str = "dropin-config";
 const CONFIG_FILENAME: &str = "/etc/clair/config.json";
@@ -130,13 +131,13 @@ fn s<S: ToString>(v: S) -> Option<String> {
 
 /// Render_dropin returns a config json-patch as a string.
 ///
-/// If used for a [`Service`] that doesn't need a dropin, [`None`] is reported.
+/// If used for a resource that doesn't need a dropin, [`None`] is reported.
 pub fn render_dropin<O>(srv: &Service) -> Option<String>
 where
     O: Resource<DynamicType = ()>,
 {
     let name = srv.name_unchecked();
-    let ns = srv.namespace().unwrap();
+    let ns = srv.namespace().expect("Services are namespaced");
     let addr = format!("{name}.{ns}.svc.cluster.local");
 
     let v = match O::kind(&()).as_ref() {
@@ -178,25 +179,15 @@ fn make_volumes(cfgsrc: &ConfigSource) -> Vec<Volume> {
         .dropins
         .iter()
         .map(|d| {
-            let p = match (d.config_map_key_ref.as_ref(), d.secret_key_ref.as_ref()) {
-                (Some(cfgref), None) => Projection::ConfigMap(
-                    cfgref.name.clone(),
-                    KeyToPath {
-                        path: cfgref.key.clone(),
-                        key: cfgref.key.clone(),
-                        mode: None,
-                    },
-                ),
-                (None, Some(secref)) => Projection::Secret(
-                    secref.name.clone(),
-                    KeyToPath {
-                        path: secref.key.clone(),
-                        key: secref.key.clone(),
-                        mode: None,
-                    },
-                ),
-                (Some(_), Some(_)) => unreachable!(),
-                (None, None) => unreachable!(),
+            let name = d.name.clone();
+            let kp = KeyToPath {
+                path: d.key.clone(),
+                key: d.key.clone(),
+                mode: None,
+            };
+            let p = match d.type_ {
+                DropinType::ConfigMap => Projection::ConfigMap(name, kp),
+                DropinType::Secret => Projection::Secret(name, kp),
             };
 
             let mut v: VolumeProjection = Default::default();
@@ -446,6 +437,78 @@ impl Build for NotifierBuilder {
                 gateway: self.gateway,
                 config: self.cfgsrc.into(),
             },
+            ..Default::default()
+        }
+    }
+}
+
+/// ConfigMapBuilder builds a [`ConfigMap`] owned buy the [`Clair`] instance used to construct the
+/// builder.
+pub struct ConfigMapBuilder {
+    namespace: String,
+    name: String,
+    owner_ref: OwnerReference,
+    root_key: Option<String>,
+    root_value: Option<String>,
+}
+
+impl TryFrom<&Clair> for ConfigMapBuilder {
+    type Error = Error;
+
+    fn try_from(value: &Clair) -> Result<Self, Self::Error> {
+        let namespace = value.namespace().ok_or(Error::Namespace)?;
+        let name = value.name_unchecked();
+        let owner_ref = value
+            .controller_owner_ref(&())
+            .ok_or(Error::Other("unable to construct controller ref"))?;
+
+        Ok(Self {
+            namespace,
+            name,
+            owner_ref,
+            root_key: None,
+            root_value: None,
+        })
+    }
+}
+
+impl ConfigMapBuilder {
+    /// Set the key for the Clair configuration in the resulting [`ConfigMap`].
+    pub fn with_key<S: ToString>(self, key: S) -> Self {
+        Self {
+            root_key: key.to_string().into(),
+            ..self
+        }
+    }
+
+    /// Set the value for the Clair configuration in the resulting [`ConfigMap`].
+    pub fn with_config<S: ToString>(self, config: S) -> Self {
+        Self {
+            root_value: config.to_string().into(),
+            ..self
+        }
+    }
+}
+
+impl Build for ConfigMapBuilder {
+    type Output = ConfigMap;
+
+    fn build(self) -> Self::Output {
+        let labels = standard_labels(<ConfigMap>::kind(&()).to_ascii_lowercase());
+
+        ConfigMap {
+            metadata: ObjectMeta {
+                name: self.name.into(),
+                namespace: self.namespace.into(),
+                owner_references: vec![self.owner_ref].into(),
+                labels: labels.into(),
+                ..Default::default()
+            },
+            data: BTreeMap::from([(
+                self.root_key.unwrap_or_else(|| CONFIG_ROOT_KEY.to_string()),
+                self.root_value.unwrap_or_else(|| DEFAULT_CONFIG.clone()),
+            )])
+            .into(),
             ..Default::default()
         }
     }
@@ -1351,6 +1414,91 @@ impl From<JobKind> for ContainerKind {
     }
 }
 
+/// ConfigSourceBuilder is a builder for a [`ConfigSource`] based on the [`ConfigMap`] used to
+/// create it.
+pub struct ConfigSourceBuilder {
+    name: String,
+    key: String,
+    root_dropins: Vec<DropinSelector>,
+    ext_dropins: Option<Vec<DropinSelector>>,
+}
+
+impl TryFrom<&ConfigMap> for ConfigSourceBuilder {
+    type Error = Error;
+
+    fn try_from(value: &ConfigMap) -> Result<Self, Self::Error> {
+        let name = value.name_unchecked();
+        let root_dropins = value
+            .data
+            .as_ref()
+            .map(|kv| {
+                kv.keys()
+                    .map(|key| DropinSelector {
+                        type_: DropinType::ConfigMap,
+                        name: name.clone(),
+                        key: key.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(Self {
+            name,
+            key: CONFIG_ROOT_KEY.to_string(),
+            root_dropins,
+            ext_dropins: None,
+        })
+    }
+}
+
+impl ConfigSourceBuilder {
+    /// Set the key containing the root the Clair configuration in the original [`ConfigMap`].
+    pub fn with_key<S: ToString>(self, key: S) -> Self {
+        Self {
+            key: key.to_string(),
+            ..self
+        }
+    }
+
+    /// Add additional configuration dropins for the resulting [`ConfigSource`].
+    ///
+    /// Repeated calls are additive.
+    pub fn with_dropins<D: Iterator<Item = DropinSelector>>(self, dropins: D) -> Self {
+        let mut next = self.ext_dropins.unwrap_or_default();
+            next.extend(dropins);
+            next.sort();
+            next.dedup();
+        Self {
+            ext_dropins: if next.len() == 0{None} else {Some(next)},
+            ..self
+        }
+    }
+}
+
+impl Build for ConfigSourceBuilder {
+    type Output = ConfigSource;
+
+    fn build(self) -> Self::Output {
+        let root = DropinSelector::config_map(&self.name, &self.key);
+        let mut dropins: Vec<_> = self
+            .root_dropins
+            .into_iter()
+            .chain(self.ext_dropins.into_iter().flatten())
+            .filter(|d| d != &root)
+            .collect();
+        dropins.sort();
+        dropins.dedup();
+
+        use api::v1alpha1::ConfigMapKeySelector;
+        let root = ConfigMapKeySelector {
+            name: self.name,
+            key: self.key,
+        };
+
+        ConfigSource { root, dropins }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -1389,6 +1537,16 @@ mod tests {
             from_str(&f.content).expect("bad json")
         };
         (v, want)
+    }
+
+    #[test]
+    fn config_source() -> Result {
+        let (cm, want) = load_fixure::<ConfigMap>(module_path!(), "config_source");
+        let got = ConfigSourceBuilder::try_from(&cm)?.build();
+        let got = to_value(got)?;
+
+        assert_json_eq!(got, want);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1434,7 +1592,8 @@ mod tests {
         cr_testcase!(
             (indexer, IndexerBuilder),
             (matcher, MatcherBuilder),
-            (notifier, NotifierBuilder)
+            (notifier, NotifierBuilder),
+            (configmap, ConfigMapBuilder)
         );
     }
 

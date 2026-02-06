@@ -5,14 +5,14 @@ use tracing::trace;
 
 use controller::*;
 
-pub async fn test_context() -> Arc<Context> {
+pub async fn test_context() -> Arc<State> {
     let config = kube::Config::infer()
         .await
         .expect("unable to infer kubeconfig");
     let client = kube::client::ClientBuilder::try_from(config.clone())
         .expect("unable to create client builder")
         .build();
-    Arc::new(Context::new(client, DEFAULT_IMAGE.as_str()))
+    Arc::new(State::new(client, DEFAULT_IMAGE.as_str()))
 }
 
 pub async fn load_crds(client: &kube::Client) -> Result<()> {
