@@ -1465,11 +1465,11 @@ impl ConfigSourceBuilder {
     /// Repeated calls are additive.
     pub fn with_dropins<D: Iterator<Item = DropinSelector>>(self, dropins: D) -> Self {
         let mut next = self.ext_dropins.unwrap_or_default();
-            next.extend(dropins);
-            next.sort();
-            next.dedup();
+        next.extend(dropins);
+        next.sort();
+        next.dedup();
         Self {
-            ext_dropins: if next.len() == 0{None} else {Some(next)},
+            ext_dropins: if next.len() == 0 { None } else { Some(next) },
             ..self
         }
     }

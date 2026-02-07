@@ -67,7 +67,6 @@ features = ["schemars"]
 [workspace.dependencies.kube]
 version = "3.0"
 default-features = false
-features = ["admission", "client", "config", "derive", "gzip", "jsonpatch", "openssl-tls", "runtime", "ws"]
 
 [profile.dev]
 split-debuginfo = "unpacked"

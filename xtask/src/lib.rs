@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
     env,
+    ffi::OsStr,
     path::{Path, PathBuf},
     sync::LazyLock,
 };
@@ -254,4 +255,51 @@ impl KinDBuilder {
         *ok = true;
         Ok(KinD { name: name.into() })
     }
+}
+
+pub fn run_test_coverage<V, I>(sh: &Shell, args: I) -> Result<()>
+where
+    V: AsRef<OsStr>,
+    I: IntoIterator<Item = V>,
+{
+    let cargo: &Path = &CARGO;
+    let ws = WORKSPACE.to_path_buf();
+    let bin_dir = WORKSPACE.join("target/debug/deps");
+    let cov_dir = WORKSPACE.join("target/coverage");
+
+    let _ = sh.remove_path(&cov_dir);
+    sh.create_dir(&cov_dir)?;
+
+    cmd!(sh, "{cargo} test {args...}")
+        .envs([
+            ("CARGO_INCREMENTAL", "0"),
+            ("RUSTFLAGS", "-Cinstrument-coverage"),
+        ])
+        .env("LLVM_PROFILE_FILE", cov_dir.join("%p-%m.profraw"))
+        .run()?;
+
+    let args = [
+        "--output-types",
+        "html,lcov,markdown",
+        "--branch",
+        "--ignore-not-existing",
+        "--source-dir",
+        ".",
+        "--ignore",
+        "../*",
+        "--ignore",
+        "/*",
+        "--ignore",
+        "xtask/*",
+        "--ignore",
+        "*/src/tests/*",
+    ];
+    cmd!(sh,
+            "grcov {cov_dir} --binary-path {bin_dir} --prefix-dir {ws} --output-path {cov_dir} {args...}").run()?;
+
+    let report = cov_dir.join("markdown.md");
+    let md = sh.read_file(&report)?;
+    print!("$ cat {}\n{md}", rel(&report));
+
+    Ok(())
 }

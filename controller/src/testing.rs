@@ -4,11 +4,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use assert_json_diff::assert_json_include;
 use http::{Request, Response, StatusCode};
-use k8s_openapi::{
-    DeepMerge,
-    api::core::v1::ConfigMap,
-    api::events::v1::Event,
-};
+use k8s_openapi::{DeepMerge, api::core::v1::ConfigMap, api::events::v1::Event};
 use kube::{
     Resource, ResourceExt,
     client::{Body, Client},

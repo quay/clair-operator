@@ -7,9 +7,22 @@
 #![warn(rustdoc::missing_crate_level_docs)]
 #![warn(missing_docs)]
 
-use std::collections::BTreeMap;
+#[cfg(feature = "tokio")]
+use std::sync::Arc;
+use std::{
+    collections::BTreeMap,
+    ffi::{self, CStr},
+    fmt::{Debug, Display, Formatter, Result as FmtResult},
+    ptr,
+};
 
-use k8s_openapi::api::core;
+use json_patch::{Patch, PatchError, merge, patch};
+#[cfg(feature = "k8s")]
+use k8s_openapi::api::core::v1::{ConfigMap, Secret};
+use libc::free;
+use serde_json::{Error as JsonError, Value, from_slice, to_vec};
+#[cfg(feature = "tokio")]
+use tokio::task::{JoinError, spawn_blocking};
 use tracing::{debug, trace};
 
 mod sys;
@@ -23,9 +36,12 @@ pub enum Error {
     Validation(String),
 
     /// JSON serialiization or deserialization error.
-    JSON(serde_json::Error),
-    /// JSON Patch error
-    Patch(json_patch::PatchError),
+    JSON(JsonError),
+    /// JSON Patch error.
+    Patch(PatchError),
+    #[cfg(feature = "tokio")]
+    /// Spawn error.
+    Join(JoinError),
 
     /// Error for testing only.
     #[cfg(test)]
@@ -47,25 +63,37 @@ impl Error {
     }
 }
 
-impl From<serde_json::Error> for Error {
-    fn from(err: serde_json::Error) -> Self {
+impl From<JsonError> for Error {
+    fn from(err: JsonError) -> Self {
         Self::JSON(err)
     }
 }
-impl From<json_patch::PatchError> for Error {
-    fn from(err: json_patch::PatchError) -> Self {
+
+impl From<PatchError> for Error {
+    fn from(err: PatchError) -> Self {
         Self::Patch(err)
     }
 }
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+
+#[cfg(feature = "tokio")]
+impl From<JoinError> for Error {
+    fn from(err: JoinError) -> Self {
+        Self::Join(err)
+    }
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        use Error::*;
         match self {
-            Error::Invalid(msg) => write!(f, "invalid ConfigSource: {msg}"),
-            Error::Validation(msg) => write!(f, "validation failure: {msg}"),
-            Error::JSON(err) => write!(f, "JSON error: {err}"),
-            Error::Patch(err) => write!(f, "json patch error: {err}"),
+            Invalid(msg) => write!(f, "invalid ConfigSource: {msg}"),
+            Validation(msg) => write!(f, "validation failure: {msg}"),
+            JSON(err) => write!(f, "JSON error: {err}"),
+            Patch(err) => write!(f, "json patch error: {err}"),
+            #[cfg(feature = "tokio")]
+            Join(err) => write!(f, "tokio join error: {err}"),
             #[cfg(test)]
-            Error::Test(msg) => write!(f, "testing error: {msg}"),
+            Test(msg) => write!(f, "testing error: {msg}"),
         }
     }
 }
@@ -86,34 +114,60 @@ impl Parts {
     ///
     /// [`config.Validate`]: https://pkg.go.dev/github.com/quay/clair/config#Validate
     /// [`cmd.Load`]: https://pkg.go.dev/github.com/quay/clair/v4/cmd#Load
-    pub async fn validate(&self) -> Result<Validate> {
-        let doc = serde_json::from_slice(&self.root)?;
+    pub fn validate(&self) -> Result<Validate> {
+        let doc = self.render()?;
+        Ok(Validate {
+            indexer: validate_config(&doc, "indexer"),
+            matcher: validate_config(&doc, "matcher"),
+            notifier: validate_config(&doc, "notifier"),
+            updater: validate_config(&doc, "updater"),
+        })
+    }
+
+    #[cfg(feature = "tokio")]
+    /// Validate_async is an asynchronous version of [`validate`].
+    ///
+    /// It uses tokio's [`block_in_place`] to signal to the executor that the thread is about to do
+    /// FFI.
+    pub async fn validate_async(&self) -> Result<Validate> {
+        let doc = Arc::new(self.render()?);
+
+        let (indexer_doc, matcher_doc, notifier_doc, updater_doc) =
+            (doc.clone(), doc.clone(), doc.clone(), doc.clone());
+        let (indexer, matcher, notifier, updater) = tokio::try_join!(
+            spawn_blocking(move || validate_config(&indexer_doc, "indexer")),
+            spawn_blocking(move || validate_config(&matcher_doc, "matcher")),
+            spawn_blocking(move || validate_config(&notifier_doc, "notifier")),
+            spawn_blocking(move || validate_config(&updater_doc, "updater")),
+        )?;
+        Ok(Validate {
+            indexer,
+            matcher,
+            notifier,
+            updater,
+        })
+    }
+
+    fn render(&self) -> Result<Vec<u8>> {
+        let doc = from_slice(&self.root)?;
         let doc = self
             .dropins
             .iter()
-            .fold(doc, |mut doc, (name, (buf, patch))| {
-                if *patch {
-                    let p: json_patch::Patch =
-                        serde_json::from_slice(buf).expect("failed to load patch");
+            .fold(doc, |mut doc, (name, (buf, is_patch))| {
+                if *is_patch {
+                    let p: Patch = from_slice(buf).expect("failed to load patch");
                     trace!(name, "applying patch");
-                    json_patch::patch(&mut doc, &p).expect("failed to apply patch");
+                    patch(&mut doc, &p).expect("failed to apply patch");
                 } else {
-                    let m: serde_json::Value =
-                        serde_json::from_slice(buf).expect("failed to parse JSON");
+                    let m: Value = from_slice(buf).expect("failed to parse JSON");
                     trace!(name, "merging config");
-                    json_patch::merge(&mut doc, &m);
+                    merge(&mut doc, &m);
                 };
                 doc
             });
         trace!("config rendered");
-        let doc = serde_json::to_vec(&doc)?;
-        Ok(Validate {
-            indexer: validate_config(&doc, "indexer").await,
-            matcher: validate_config(&doc, "matcher").await,
-            notifier: validate_config(&doc, "notifier").await,
-
-            updater: validate_config(&doc, "updater").await,
-        })
+        let doc = to_vec(&doc)?;
+        Ok(doc)
     }
 }
 
@@ -133,8 +187,9 @@ pub struct Builder {
 }
 
 impl Builder {
+    #[cfg(feature = "k8s")]
     /// From_root constructs a Builder starting with the root config.
-    pub fn from_root<S: ToString>(v: &core::v1::ConfigMap, key: S) -> Result<Self> {
+    pub fn from_root<S: ToString>(v: &ConfigMap, key: S) -> Result<Self> {
         let key = key.to_string();
         let root = if let Some(map) = &v.data {
             map.get(&key).map(|s| s.clone().into_bytes())
@@ -179,8 +234,10 @@ pub trait K8sMap: Sealed {
     fn value(&self, key: String) -> Option<Vec<u8>>;
 }
 
-impl Sealed for core::v1::ConfigMap {}
-impl K8sMap for core::v1::ConfigMap {
+#[cfg(feature = "k8s")]
+impl Sealed for ConfigMap {}
+#[cfg(feature = "k8s")]
+impl K8sMap for ConfigMap {
     fn value(&self, key: String) -> Option<Vec<u8>> {
         if let Some(data) = &self.data
             && let Some(buf) = data.get(&key)
@@ -196,8 +253,10 @@ impl K8sMap for core::v1::ConfigMap {
     }
 }
 
-impl Sealed for core::v1::Secret {}
-impl K8sMap for core::v1::Secret {
+#[cfg(feature = "k8s")]
+impl Sealed for Secret {}
+#[cfg(feature = "k8s")]
+impl K8sMap for Secret {
     fn value(&self, key: String) -> Option<Vec<u8>> {
         if let Some(data) = &self.data
             && let Some(buf) = data.get(&key)
@@ -205,6 +264,20 @@ impl K8sMap for core::v1::Secret {
             return Some(buf.0.clone());
         };
         None
+    }
+}
+
+impl Sealed for BTreeMap<String, String> {}
+impl K8sMap for BTreeMap<String, String> {
+    fn value(&self, key: String) -> Option<Vec<u8>> {
+        self.get(&key).map(|v| v.clone().into_bytes())
+    }
+}
+
+impl Sealed for BTreeMap<String, Vec<u8>> {}
+impl K8sMap for BTreeMap<String, Vec<u8>> {
+    fn value(&self, key: String) -> Option<Vec<u8>> {
+        self.get(&key).map(|v| v.clone())
     }
 }
 
@@ -230,8 +303,8 @@ pub struct Warnings {
     out: String,
 }
 
-impl std::fmt::Display for Warnings {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for Warnings {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         writeln!(f, "warnings ({} mode):", self.mode)?;
         for w in self.out.lines() {
             writeln!(f, "\t{w}")?;
@@ -240,8 +313,8 @@ impl std::fmt::Display for Warnings {
     }
 }
 
-impl std::fmt::Debug for Warnings {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for Warnings {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         let mut maxlen = 256;
         let trail = if self.out.len() > maxlen {
             maxlen -= 3;
@@ -261,16 +334,12 @@ impl std::fmt::Debug for Warnings {
 
 /// Validate_config wraps a call to [config.Validate].
 ///
-/// The use of `block_in_place` here means we have a depenedency on tokio, but should make the ffi
-/// play nicer with the multi-threaded runtime (in theory).
+/// This function should be considered blocking, so use any runtime functions as needed.
 ///
 /// [config.Validate]: https://pkg.go.dev/github.com/quay/clair/config#Validate
-async fn validate_config<S: AsRef<str>>(buf: &[u8], mode: S) -> Result<Warnings> {
-    use libc::free;
-    use std::ffi::{self, CStr};
-    use tokio::task;
+fn validate_config<S: AsRef<str>>(buf: &[u8], mode: S) -> Result<Warnings> {
     // Allocate a spot to hold the returning string data.
-    let mut out: *mut ffi::c_char = std::ptr::null_mut();
+    let mut out: *mut ffi::c_char = ptr::null_mut();
     // Make the slice that go expects.
     let buf = sys::GoSlice {
         data: buf.as_ptr() as *mut ffi::c_void,
@@ -284,7 +353,7 @@ async fn validate_config<S: AsRef<str>>(buf: &[u8], mode: S) -> Result<Warnings>
         n: mode.len() as isize,
     };
     // This is a large-ish unsafe block, but the Validate, from_ptr, and free are all unsafe.
-    let res: Result<String, String> = task::block_in_place(|| unsafe {
+    let res: Result<String, String> = unsafe {
         let exit = sys::Validate(buf, &mut out, m);
         let res = match exit {
             0 => Ok(CStr::from_ptr(out)
@@ -298,7 +367,7 @@ async fn validate_config<S: AsRef<str>>(buf: &[u8], mode: S) -> Result<Warnings>
         };
         free(out as *mut ffi::c_void);
         res
-    });
+    };
     res.map_err(Error::validation)
         .map(|out| Warnings { mode, out })
 }
@@ -306,36 +375,34 @@ async fn validate_config<S: AsRef<str>>(buf: &[u8], mode: S) -> Result<Warnings>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio;
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn go_config_indexer() -> Result<()> {
+    #[test]
+    fn go_config_indexer() -> Result<()> {
         let buf: Vec<u8> = Vec::from("{}");
-        let ws = validate_config(&buf, "indexer").await?;
+        let ws = validate_config(&buf, "indexer")?;
         eprintln!("{ws}");
         Ok(())
     }
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn go_config_matcher() -> Result<()> {
+    #[test]
+    fn go_config_matcher() -> Result<()> {
         let buf: Vec<u8> = Vec::from(r#"{"matcher":{"indexer_addr":"indexer"}}"#);
-        let ws = validate_config(&buf, "matcher").await?;
+        let ws = validate_config(&buf, "matcher")?;
         eprintln!("{ws}");
         Ok(())
     }
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn go_config_notifier() -> Result<()> {
+    #[test]
+    fn go_config_notifier() -> Result<()> {
         let buf: Vec<u8> =
             Vec::from(r#"{"notifier":{"indexer_addr":"indexer","matcher_addr":"matcher"}}"#);
-        let ws = validate_config(&buf, "notifier").await?;
+        let ws = validate_config(&buf, "notifier")?;
         eprintln!("{ws}");
         Ok(())
     }
-
     // TODO(hank) This test will need to be updated when the config go module is updated.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn go_config_updater() -> Result<()> {
+    #[test]
+    fn go_config_updater() -> Result<()> {
         let buf: Vec<u8> = Vec::from("{}");
-        if validate_config(&buf, "updater").await.is_ok() {
+        if validate_config(&buf, "updater").is_ok() {
             Err(Error::test("expected error"))
         } else {
             Ok(())

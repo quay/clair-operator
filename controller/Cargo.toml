@@ -17,14 +17,13 @@ telemetry = ["opentelemetry-otlp"]
 
 [dependencies]
 api = { path = "../api" }
-clair_config = { path = "../clair_config" }
+clair_config = { path = "../clair_config", features = ["k8s", "tokio"] }
 clair_templates = { path = "../clair_templates" }
 gateway_networking_k8s_io = { path = "../gateway_networking_k8s_io" }
 
 clap.workspace = true
 futures.workspace = true
 json-patch.workspace = true
-kube.workspace = true
 metrics.workspace = true
 serde_json.workspace = true
 serde.workspace = true
@@ -53,6 +52,11 @@ features = ["tls-openssl"]
 [dependencies.k8s-openapi]
 workspace = true
 features = ["earliest"]
+
+[dependencies.kube]
+workspace = true
+default-features = false
+features = ["admission", "client", "config", "derive", "gzip", "jsonpatch", "openssl-tls", "runtime", "ws"]
 
 [dependencies.metrics-exporter-prometheus]
 version = "0.18"

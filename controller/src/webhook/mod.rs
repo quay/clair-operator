@@ -305,7 +305,8 @@ mod v1alpha1 {
             }
 
             let p: clair_config::Parts = b.into();
-            let v = match p.validate().await {
+            // TODO(hank) Check/profile if this needs to be the async version.
+            let v = match p.validate_async().await {
                 Ok(v) => v,
                 Err(_err) => {
                     // TODO(hank) log

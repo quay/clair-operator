@@ -92,6 +92,9 @@ fn main() {
             Command::new("ci")
                 .about("run CI setup, then tests")
                 .args(&[Arg::new("pass").trailing_var_arg(true).num_args(..)]),
+            Command::new("coverage")
+                .about("run tests with coverage enabled")
+                .args(&[Arg::new("pass").trailing_var_arg(true).num_args(..)]),
             Command::new("manifests")
                 .about("generate manifests for CRDs and operator")
                 .args(&[
@@ -130,6 +133,7 @@ fn main() {
         Some(("manifests", m)) => manifests::command(sh, m.into()),
         Some(("undeploy", m)) => undeploy(sh, m.into()),
         Some(("uninstall", _)) => uninstall(sh),
+        Some(("coverage", m)) => coverage(sh, m.into()),
         Some((unknown, _)) => Err(format!("unknown subcommand: {unknown}").into()),
         None => Err("no subcommand provided".into()),
     } {
@@ -365,6 +369,7 @@ struct BundleOpts {
     build: bool,
     push: bool,
 }
+
 impl From<&clap::ArgMatches> for BundleOpts {
     fn from(m: &clap::ArgMatches) -> Self {
         let mut out_dir = m.get_one::<String>("out_dir").map(PathBuf::from).unwrap();
@@ -437,6 +442,7 @@ struct DeployOpts {
     image: String,
     version: Option<String>,
 }
+
 impl DeployOpts {
     fn tag(&self, sh: &Shell) -> Result<String> {
         let mut buf = String::new();
@@ -445,12 +451,13 @@ impl DeployOpts {
         if let Some(v) = &self.version {
             buf.push_str(v);
         } else {
-            let v = generate_version(&sh)?;
+            let v = generate_version(sh)?;
             buf.push_str(&v);
         };
         Ok(buf)
     }
 }
+
 impl From<&clap::ArgMatches> for DeployOpts {
     fn from(m: &clap::ArgMatches) -> Self {
         Self {
@@ -533,6 +540,29 @@ impl From<&clap::ArgMatches> for CatalogOpts {
             bundle: m.get_one::<String>("bundle").unwrap().to_string(),
             out_dir: m.get_one::<String>("out_dir").map(PathBuf::from).unwrap(),
             version: m.get_one::<String>("version").cloned(),
+        }
+    }
+}
+
+fn coverage(sh: Shell, opts: CoverageOpts) -> Result<()> {
+    cmd!(sh, "which grcov").ignore_stdout().run()?;
+    run_test_coverage(&sh, &opts.pass)?;
+
+    Ok(())
+}
+
+struct CoverageOpts {
+    pass: Vec<String>,
+}
+
+impl From<&clap::ArgMatches> for CoverageOpts {
+    fn from(m: &clap::ArgMatches) -> Self {
+        CoverageOpts {
+            pass: m
+                .get_many::<String>("pass")
+                .unwrap_or_default()
+                .map(ToString::to_string)
+                .collect(),
         }
     }
 }

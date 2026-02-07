@@ -8,11 +8,19 @@ publish.workspace = true
 
 [dependencies]
 k8s-openapi.workspace = true
-kube.workspace = true
 schemars.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 
+[dependencies.kube]
+workspace = true
+default-features = false
+features = ["derive"]
+
 [dependencies.validator]
 version = "0.20"
 features = ["derive"]
+
+[dev-dependencies.k8s-openapi]
+workspace = true
+features = ["v1_35"]
