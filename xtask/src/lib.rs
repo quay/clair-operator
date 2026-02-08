@@ -2,16 +2,18 @@ use std::{
     borrow::Cow,
     env,
     ffi::OsStr,
+    ops::Not,
     path::{Path, PathBuf},
     sync::LazyLock,
 };
 
+use scopeguard::guard;
 use serde::Deserialize;
-use serde_json;
 use xshell::{Shell, cmd};
 
 pub mod check;
 pub mod find;
+pub mod generate;
 pub mod manifests;
 pub mod olm;
 
@@ -19,6 +21,19 @@ pub type DynError = Box<dyn std::error::Error>;
 pub type Result<T> = std::result::Result<T, DynError>;
 
 pub static CARGO: LazyLock<PathBuf> = LazyLock::new(|| env::var_os("CARGO").unwrap().into());
+pub static GITHUB_ACTIONS: LazyLock<bool> =
+    LazyLock::new(|| env::var_os("GITHUB_ACTIONS").is_some_and(|v| v == "true"));
+
+macro_rules! log_group {
+    ($msg:expr) => {
+        let _group = GITHUB_ACTIONS.then(|| {
+            println!("::group::{}", $msg);
+            ::scopeguard::guard((), |_| {
+                println!("::endgroup::");
+            })
+        });
+    };
+}
 
 // Paths:
 pub static WORKSPACE: LazyLock<PathBuf> = LazyLock::new(|| {
@@ -60,6 +75,9 @@ impl CargoMetadata {
     fn operator_sdk(&self) -> String {
         self.metadata.ci.operator_sdk.clone()
     }
+    fn operator_api(&self) -> String {
+        self.metadata.ci.operator_api.clone()
+    }
     fn opm(&self) -> String {
         self.metadata.ci.opm.clone()
     }
@@ -68,6 +86,9 @@ impl CargoMetadata {
     }
     fn gateway_api(&self) -> String {
         self.metadata.ci.gateway_api.clone()
+    }
+    fn kopium(&self) -> String {
+        self.metadata.ci.kopium.clone()
     }
 }
 
@@ -86,12 +107,16 @@ struct CiVersions {
     kustomize: String,
     #[serde(rename = "operator-sdk-version")]
     operator_sdk: String,
+    #[serde(rename = "operator-api-version")]
+    operator_api: String,
     #[serde(rename = "opm-version")]
     opm: String,
     #[serde(rename = "istio-version")]
     istio: String,
     #[serde(rename = "gateway-api-version")]
     gateway_api: String,
+    #[serde(rename = "kopium-version")]
+    kopium: String,
 }
 
 pub static KUBE_VERSION: LazyLock<String> =
@@ -102,8 +127,12 @@ pub static KUSTOMIZE_VERSION: LazyLock<String> =
     LazyLock::new(|| env::var("KUSTOMIZE_VERSION").unwrap_or_else(|_| METADATA.kustomize()));
 pub static OPERATOR_SDK_VERSION: LazyLock<String> =
     LazyLock::new(|| env::var("OPERATOR_SDK_VERSION").unwrap_or_else(|_| METADATA.operator_sdk()));
+pub static OPERATOR_API_VERSION: LazyLock<String> =
+    LazyLock::new(|| env::var("OPERATOR_API_VERSION").unwrap_or_else(|_| METADATA.operator_api()));
 pub static OPM_VERSION: LazyLock<String> =
     LazyLock::new(|| env::var("OPM_VERSION").unwrap_or_else(|_| METADATA.opm()));
+pub static KOPIUM_VERSION: LazyLock<String> =
+    LazyLock::new(|| env::var("KOPIUM_VERSION").unwrap_or_else(|_| METADATA.kopium()));
 pub static ISTIO_VERSION: LazyLock<String> =
     LazyLock::new(|| env::var("ISTIO_VERSION").unwrap_or_else(|_| METADATA.istio()));
 pub static GATEWAY_API_VERSION: LazyLock<String> =
@@ -195,8 +224,6 @@ impl KinDBuilder {
     ///
     /// [known issues]: https://kind.sigs.k8s.io/docs/user/known-issues/
     pub fn build(self, sh: &Shell) -> Result<KinD> {
-        use scopeguard::guard;
-
         check::kubectl(sh)?;
         check::kind(sh)?;
         if self.istio {
@@ -205,12 +232,16 @@ impl KinDBuilder {
 
         let name = "ci";
         let (k8s_ver, _patch) = KUBE_VERSION.rsplit_once('.').unwrap();
-        eprintln!("# using k8s version: {k8s_ver}");
+        println!(
+            "{}using k8s version: {k8s_ver}",
+            if *GITHUB_ACTIONS { "::notice::" } else { "# " }
+        );
         let config = WORKSPACE
             .join("etc/tests/")
             .join(format!("kind-{k8s_ver}.yaml"));
         sh.change_dir(WORKSPACE.as_path());
 
+        let quiet = GITHUB_ACTIONS.not().then(|| "--quiet");
         // Put the guard here so that it gets torn down if the cluster gets into a half-constructed
         // state.
         let mut ok = guard(false, |ok| {
@@ -218,33 +249,34 @@ impl KinDBuilder {
                 let _ = cmd!(sh, "kind --quiet delete cluster --name {name}").run();
             }
         });
-        cmd!(sh, "kind --quiet --config {config} create cluster").run()?;
-        eprintln!("# waiting for pods to ready");
-        cmd!(
-            sh,
-            "kubectl wait pods --for=condition=Ready --timeout=300s --all --all-namespaces"
-        )
-        .run()?;
+
+        {
+            log_group!("create cluster");
+            cmd!(sh, "kind {quiet...} --config {config} create cluster").run()?;
+            cmd!(
+                sh,
+                "kubectl wait pods --for=condition=Ready --timeout=300s --all --all-namespaces"
+            )
+            .run()?;
+        }
 
         // Load any CRDs requested:
         if self.gateway {
-            eprintln!("# installing Gateway APIs");
+            log_group!("installing Gateway APIs");
             let manifest = GATEWAY_API_MANIFEST_URL.as_str();
             cmd!(sh, "kubectl apply -f {manifest}").run()?;
         }
 
         // Install any services requested:
         if [self.ingress_nginx, self.istio].iter().any(|&v| v) {
+            log_group!("installing extra services");
             if self.ingress_nginx {
-                eprintln!("# installing ingress-nginx");
                 let ingress_manifest = INGRESS_NGINX_MANIFEST_URL.as_str();
                 cmd!(sh, "kubectl apply -f {ingress_manifest}").run()?;
             }
             if self.istio {
-                eprintln!("# installing istio");
                 cmd!(sh, "istioctl install --set profile=minimal -y").run()?;
             }
-            eprintln!("# installed services, waiting for pods to ready");
             cmd!(
                 sh,
                 "kubectl wait pods --for=condition=Ready --timeout=300s --all --all-namespaces"
@@ -299,7 +331,14 @@ where
 
     let report = cov_dir.join("markdown.md");
     let md = sh.read_file(&report)?;
-    print!("$ cat {}\n{md}", rel(&report));
+    let path = GITHUB_ACTIONS
+        .then(|| sh.var_os("GITHUB_STEP_SUMMARY"))
+        .flatten();
+    if let Some(path) = path {
+        sh.write_file(path, md)?;
+    } else {
+        print!("$ cat {}\n{md}", rel(&report));
+    }
 
     Ok(())
 }

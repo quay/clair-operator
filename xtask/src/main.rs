@@ -6,13 +6,13 @@ use std::{
     process,
 };
 
+use clap::{Arg, ArgAction, Command, ValueHint, crate_authors, crate_name, crate_version};
 use signal_hook::{consts::SIGINT, low_level::pipe};
 use xshell::{Shell, cmd};
 
 use xtask::*;
 
 fn main() {
-    use clap::{Arg, ArgAction, Command, ValueHint, crate_authors, crate_name, crate_version};
     let deploy_args = [
         Arg::new("image")
             .long("image")
@@ -27,34 +27,51 @@ fn main() {
             .long_help("Bundle tag version. If unset, one will be guessed based on git tags.")
             .default_value(crate_version!()),
     ];
+    let out_dir = Arg::new("out_dir")
+        .long("out-dir")
+        .value_name("DIR")
+        .value_hint(ValueHint::DirPath);
+    let tag_version = Arg::new("version")
+        .long("version")
+        .value_name("vX.Y.Z")
+        .help("bundle tag version")
+        .long_help("Bundle tag version. If unset, one will be guessed based on cargo metadata.")
+        .default_value(crate_version!());
+    let dry_run = Arg::new("dry_run")
+        .short('n')
+        .long("dry-run")
+        .help("dry run")
+        .action(ArgAction::SetTrue);
+
     let cmd = Command::new(crate_name!())
         .author(crate_authors!())
         .version(crate_version!())
         .about("Build + task support for clair-operator")
         .subcommand_required(true)
         .subcommands(&[
+            Command::new("ci")
+                .display_order(1)
+                .about("run CI setup, then tests")
+                .args(&[Arg::new("pass").trailing_var_arg(true).num_args(..)]),
+            Command::new("coverage")
+                .display_order(1)
+                .about("run tests with coverage enabled")
+                .args(&[Arg::new("pass").trailing_var_arg(true).num_args(..)]),
             Command::new("bundle")
+                .display_order(2)
                 .about("generate OLM bundle")
                 .args(&[
-                    Arg::new("out_dir")
-                        .long("out_dir")
-                        .value_name("DIR")
+                    out_dir.clone()
                         .help("bundle output directory")
                         .long_help("Bundle output directory.")
-                        .default_value("target/bundle")
-                        .value_hint(ValueHint::DirPath),
+                        .default_value("target/bundle"),
                     Arg::new("image")
                         .long("image")
                         .value_name("REPO")
                         .help("container image repository")
                         .long_help("Container image repository to use during build, if building an image.")
                         .default_value(BUNDLE_IMAGE),
-                    Arg::new("version")
-                        .long("version")
-                        .value_name("vX.Y.Z")
-                        .help("bundle tag version")
-                        .long_help("Bundle tag version. If unset, one will be guessed based on git tags.")
-                        .default_value(crate_version!()),
+                    tag_version.clone(),
                     Arg::new("build")
                         .long("build")
                         .help("build a bundle container")
@@ -68,6 +85,7 @@ fn main() {
                         .action(ArgAction::SetTrue),
                 ]),
             Command::new("catalog")
+                .display_order(2)
                 .about("generate OLM catalog")
                 .args(&[
                     Arg::new("bundle")
@@ -76,40 +94,43 @@ fn main() {
                         .help("bundle container image reference")
                         .long_help("Bundle container image reference to use during build.")
                         .default_value(BUNDLE_IMAGE),
-                    Arg::new("version")
-                        .long("version")
-                        .value_name("vX.Y.Z")
-                        .help("bundle tag version")
-                        .long_help("Bundle tag version. If not provided, one will be guessed based on git tags."),
-                    Arg::new("out_dir")
-                        .long("out-dir")
-                        .value_name("DIR")
+                    tag_version.clone(),
+                    out_dir.clone()
                         .help("catalog output directory")
                         .long_help("Catalog output directory.")
-                        .default_value("target/catalog")
-                        .value_hint(ValueHint::DirPath),
+                        .default_value("target/catalog"),
                 ]),
-            Command::new("ci")
-                .about("run CI setup, then tests")
-                .args(&[Arg::new("pass").trailing_var_arg(true).num_args(..)]),
-            Command::new("coverage")
-                .about("run tests with coverage enabled")
-                .args(&[Arg::new("pass").trailing_var_arg(true).num_args(..)]),
             Command::new("manifests")
+                .display_order(2)
                 .about("generate manifests for CRDs and operator")
                 .args(&[
-                    Arg::new("out_dir")
-                        .long("out-dir")
-                        .value_name("DIR")
-                        .help("output directory")
-                        .default_value(CONFIG_DIR.as_os_str())
-                        .value_hint(ValueHint::DirPath),
+                    out_dir.clone()
+                        .help("manifest output directory")
+                        .long_help("Manifest output directory.")
+                        .default_value(CONFIG_DIR.as_os_str()),
                 ]),
-            Command::new("install").about("install CRDs into the current kubernetes cluster"),
-            Command::new("uninstall").about("uninstall CRDs from the current kubernetes cluster"),
-            Command::new("deploy").about("install controller into the current kubernetes cluster").args(&deploy_args),
-            Command::new("undeploy").about("uninstall controller from the current kubernetes cluster").args(&deploy_args),
+            Command::new("generate")
+                .display_order(2)
+                .about("generate rust bindings for thrird-party CRDs")
+                .subcommand_required(true)
+                .subcommands(&[
+                    Command::new("gateway-api").about("generate Gateway API bindings").args(&[dry_run.clone()]),
+                    Command::new("olm").about("generate OLM bindings").args(&[dry_run.clone()]),
+                ]),
+            Command::new("install")
+                .display_order(3)
+                .about("install CRDs into the current kubernetes cluster"),
+            Command::new("uninstall")
+                .display_order(3)
+                .about("uninstall CRDs from the current kubernetes cluster"),
+            Command::new("deploy")
+                .display_order(3)
+                .about("install controller into the current kubernetes cluster").args(&deploy_args),
+            Command::new("undeploy")
+                .display_order(3)
+                .about("uninstall controller from the current kubernetes cluster").args(&deploy_args),
             Command::new("demo")
+                .display_order(4)
                 .about("spin up a kind instance with CRDs loaded and controller running")
                 .args(&[Arg::new("no_controller")
                     .long("no-run")
@@ -134,6 +155,12 @@ fn main() {
         Some(("undeploy", m)) => undeploy(sh, m.into()),
         Some(("uninstall", _)) => uninstall(sh),
         Some(("coverage", m)) => coverage(sh, m.into()),
+        Some(("generate", m)) => match m.subcommand() {
+            Some(("gateway-api", m)) => generate::gateway_api(sh, m.into()),
+            Some(("olm", m)) => generate::olm(sh, m.into()),
+            Some((unknown, _)) => Err(format!("unknown subcommand: {unknown}").into()),
+            None => Err("no subcommand provided".into()),
+        },
         Some((unknown, _)) => Err(format!("unknown subcommand: {unknown}").into()),
         None => Err("no subcommand provided".into()),
     } {

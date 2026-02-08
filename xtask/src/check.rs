@@ -157,3 +157,35 @@ pub fn istioctl(sh: &Shell) -> Result<()> {
     }
     Ok(())
 }
+
+pub fn kopium(sh: &Shell) -> Result<()> {
+    let version: &str = &KOPIUM_VERSION;
+    let arch = self::env::consts::ARCH;
+    let os = match OS {
+        "linux" => "unknown-linux-gnu",
+        other => other,
+    };
+    if cmd!(sh, "which kopium")
+        .quiet()
+        .ignore_stdout()
+        .ignore_stderr()
+        .run()
+        .is_err()
+    {
+        let dir = BIN_DIR.as_path();
+        sh.create_dir(dir)?;
+        let _tmp = sh.create_temp_dir()?;
+        let tmp = _tmp.path();
+        cmd!(
+            sh,
+            "curl -fsSLo {tmp}/tgz https://github.com/kube-rs/kopium/releases/download/{version}/kopium-{arch}-{os}.tar.xz"
+        )
+        .run()?;
+        cmd!(
+            sh,
+            "tar -xJ -C {dir} -f {tmp}/tgz --strip-components=1 */kopium"
+        )
+        .run()?;
+    }
+    Ok(())
+}
