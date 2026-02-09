@@ -40,47 +40,38 @@ spec:
                   dropins:
                     description: Dropins is a list of references to drop-in configs.
                     items:
-                      description: DropinSource represents a source for the value of a Clair configuration dropin.
+                      description: DropinSelector represents a source for the value of a Clair configuration dropin.
                       properties:
-                        configMapKeyRef:
-                          description: Selects a key of a ConfigMap.
-                          nullable: true
-                          properties:
-                            key:
-                              description: The key to select.
-                              type: string
-                            name:
-                              description: The name of the referent.
-                              type: string
-                          required:
-                          - key
-                          - name
-                          type: object
-                          x-kubernetes-validations:
-                          - message: '"key" and "name" must be populated'
-                            rule: self.name != '' && self.key != ''
-                        secretKeyRef:
-                          description: Selects a key of a Secret.
-                          nullable: true
-                          properties:
-                            key:
-                              description: The key to select.
-                              type: string
-                            name:
-                              description: The name of the referent.
-                              type: string
-                          required:
-                          - key
-                          - name
-                          type: object
-                          x-kubernetes-validations:
-                          - message: '"key" and "name" must be populated'
-                            rule: self.name != '' && self.key != ''
+                        key:
+                          description: The key to select.
+                          type: string
+                        name:
+                          description: The name of the referent.
+                          type: string
+                        type:
+                          description: Type of the refererent.
+                          enum:
+                          - ConfigMap
+                          - Secret
+                          type: string
+                      required:
+                      - key
+                      - name
+                      - type
                       type: object
                       x-kubernetes-validations:
-                      - message: exactly one key ref must be provided
-                        rule: (has(self.configMapKeyRef) && !has(self.secretKeyRef)) || (!has(self.configMapKeyRef) && has(self.secretKeyRef))
+                      - message: '"type" must be populated with a known type'
+                        rule: self.type == 'ConfigMap' || self.type == 'Secret'
+                      - message: '"name" must be populated'
+                        rule: self.name != ''
+                      - message: '"key" must be populated'
+                        rule: self.key != ''
                     type: array
+                    x-kubernetes-list-map-keys:
+                    - type
+                    - key
+                    - name
+                    x-kubernetes-list-type: map
                   root:
                     description: Root is a reference to the main config.
                     properties:
@@ -95,12 +86,13 @@ spec:
                     - name
                     type: object
                     x-kubernetes-validations:
-                    - message: '"key" and "name" must be populated'
-                      rule: self.name != '' && self.key != ''
+                    - message: '"name" must be populated'
+                      rule: self.name != ''
+                    - message: '"key" must be populated'
+                      rule: self.key != ''
                 required:
                 - root
                 type: object
-                x-kubernetes-validations: []
               image:
                 description: Image is the image that should be used in the managed deployment.
                 nullable: true
@@ -117,7 +109,6 @@ spec:
                 nullable: true
                 type: boolean
             type: object
-            x-kubernetes-validations: []
           status:
             description: UpdaterStatus describes the observed state of a Updater instance.
             nullable: true
@@ -155,6 +146,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               config:
                 description: Config is configuration sources for the Clair instance.
                 nullable: true
@@ -162,47 +156,38 @@ spec:
                   dropins:
                     description: Dropins is a list of references to drop-in configs.
                     items:
-                      description: DropinSource represents a source for the value of a Clair configuration dropin.
+                      description: DropinSelector represents a source for the value of a Clair configuration dropin.
                       properties:
-                        configMapKeyRef:
-                          description: Selects a key of a ConfigMap.
-                          nullable: true
-                          properties:
-                            key:
-                              description: The key to select.
-                              type: string
-                            name:
-                              description: The name of the referent.
-                              type: string
-                          required:
-                          - key
-                          - name
-                          type: object
-                          x-kubernetes-validations:
-                          - message: '"key" and "name" must be populated'
-                            rule: self.name != '' && self.key != ''
-                        secretKeyRef:
-                          description: Selects a key of a Secret.
-                          nullable: true
-                          properties:
-                            key:
-                              description: The key to select.
-                              type: string
-                            name:
-                              description: The name of the referent.
-                              type: string
-                          required:
-                          - key
-                          - name
-                          type: object
-                          x-kubernetes-validations:
-                          - message: '"key" and "name" must be populated'
-                            rule: self.name != '' && self.key != ''
+                        key:
+                          description: The key to select.
+                          type: string
+                        name:
+                          description: The name of the referent.
+                          type: string
+                        type:
+                          description: Type of the refererent.
+                          enum:
+                          - ConfigMap
+                          - Secret
+                          type: string
+                      required:
+                      - key
+                      - name
+                      - type
                       type: object
                       x-kubernetes-validations:
-                      - message: exactly one key ref must be provided
-                        rule: (has(self.configMapKeyRef) && !has(self.secretKeyRef)) || (!has(self.configMapKeyRef) && has(self.secretKeyRef))
+                      - message: '"type" must be populated with a known type'
+                        rule: self.type == 'ConfigMap' || self.type == 'Secret'
+                      - message: '"name" must be populated'
+                        rule: self.name != ''
+                      - message: '"key" must be populated'
+                        rule: self.key != ''
                     type: array
+                    x-kubernetes-list-map-keys:
+                    - type
+                    - key
+                    - name
+                    x-kubernetes-list-type: map
                   root:
                     description: Root is a reference to the main config.
                     properties:
@@ -217,12 +202,13 @@ spec:
                     - name
                     type: object
                     x-kubernetes-validations:
-                    - message: '"key" and "name" must be populated'
-                      rule: self.name != '' && self.key != ''
+                    - message: '"name" must be populated'
+                      rule: self.name != ''
+                    - message: '"key" must be populated'
+                      rule: self.key != ''
                 required:
                 - root
                 type: object
-                x-kubernetes-validations: []
               cronJob:
                 description: CronJob the operator has configured for this Updater.
                 nullable: true
@@ -259,8 +245,10 @@ spec:
                   - name
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - kind
+                x-kubernetes-list-type: map
             type: object
-            x-kubernetes-validations: []
         required:
         - spec
         title: Updater

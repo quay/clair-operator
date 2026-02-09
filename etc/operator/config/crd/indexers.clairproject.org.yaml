@@ -28,47 +28,38 @@ spec:
                   dropins:
                     description: Dropins is a list of references to drop-in configs.
                     items:
-                      description: DropinSource represents a source for the value of a Clair configuration dropin.
+                      description: DropinSelector represents a source for the value of a Clair configuration dropin.
                       properties:
-                        configMapKeyRef:
-                          description: Selects a key of a ConfigMap.
-                          nullable: true
-                          properties:
-                            key:
-                              description: The key to select.
-                              type: string
-                            name:
-                              description: The name of the referent.
-                              type: string
-                          required:
-                          - key
-                          - name
-                          type: object
-                          x-kubernetes-validations:
-                          - message: '"key" and "name" must be populated'
-                            rule: self.name != '' && self.key != ''
-                        secretKeyRef:
-                          description: Selects a key of a Secret.
-                          nullable: true
-                          properties:
-                            key:
-                              description: The key to select.
-                              type: string
-                            name:
-                              description: The name of the referent.
-                              type: string
-                          required:
-                          - key
-                          - name
-                          type: object
-                          x-kubernetes-validations:
-                          - message: '"key" and "name" must be populated'
-                            rule: self.name != '' && self.key != ''
+                        key:
+                          description: The key to select.
+                          type: string
+                        name:
+                          description: The name of the referent.
+                          type: string
+                        type:
+                          description: Type of the refererent.
+                          enum:
+                          - ConfigMap
+                          - Secret
+                          type: string
+                      required:
+                      - key
+                      - name
+                      - type
                       type: object
                       x-kubernetes-validations:
-                      - message: exactly one key ref must be provided
-                        rule: (has(self.configMapKeyRef) && !has(self.secretKeyRef)) || (!has(self.configMapKeyRef) && has(self.secretKeyRef))
+                      - message: '"type" must be populated with a known type'
+                        rule: self.type == 'ConfigMap' || self.type == 'Secret'
+                      - message: '"name" must be populated'
+                        rule: self.name != ''
+                      - message: '"key" must be populated'
+                        rule: self.key != ''
                     type: array
+                    x-kubernetes-list-map-keys:
+                    - type
+                    - key
+                    - name
+                    x-kubernetes-list-type: map
                   root:
                     description: Root is a reference to the main config.
                     properties:
@@ -83,12 +74,13 @@ spec:
                     - name
                     type: object
                     x-kubernetes-validations:
-                    - message: '"key" and "name" must be populated'
-                      rule: self.name != '' && self.key != ''
+                    - message: '"name" must be populated'
+                      rule: self.name != ''
+                    - message: '"key" must be populated'
+                      rule: self.key != ''
                 required:
                 - root
                 type: object
-                x-kubernetes-validations: []
               gateway:
                 description: Gateway is the object to attach Gateway API routes to.
                 nullable: true
@@ -97,9 +89,12 @@ spec:
                     description: |-
                       Group is the group of the referent.
 
-                      When unspecified, "gateway.networking.k8s.io" is inferred. To set the core API group (such as for a "Service" kind referent), Group must be explicitly set to "" (empty string).
+                      When unspecified, "gateway.networking.k8s.io" is inferred. To set the core API group (such
+                      as for a "Service" kind referent), Group must be explicitly set to "" (empty string).
 
-                      Support: Core MaxLength: 253 Pattern: ^$\|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                      Support: Core
+                      MaxLength: 253
+                      Pattern: ^$\|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                     maxLength: 253
                     nullable: true
                     pattern: ^$\|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
@@ -110,11 +105,14 @@ spec:
 
                       There are two kinds of parent resources with "Core" support:
 
-                      - Gateway (Gateway conformance profile) - Service (Mesh conformance profile, ClusterIP Services only)
+                      - Gateway (Gateway conformance profile)
+                      - Service (Mesh conformance profile, ClusterIP Services only)
 
                       Support for other resources is Implementation-Specific.
 
-                      MaxLength: 63 MinLength: 1 Pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                      MaxLength: 63
+                      MinLength: 1
+                      Pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
                     maxLength: 253
                     minLength: 1
                     nullable: true
@@ -124,7 +122,9 @@ spec:
                     description: |-
                       Name is the name of the referent.
 
-                      Support: Core MaxLength: 253 MinLength: 1
+                      Support: Core
+                      MaxLength: 253
+                      MinLength: 1
                     maxLength: 253
                     minLength: 1
                     type: string
@@ -134,11 +134,23 @@ spec:
 
                       When unspecified, this refers to the local namespace of the Route.
 
-                      Note that there are specific rules for ParentRefs which cross namespace boundaries. Cross-namespace references are only valid if they are explicitly allowed by something in the namespace they are referring to. For example: Gateway has the AllowedRoutes field, and ReferenceGrant provides a generic way to enable any other kind of cross-namespace reference.
+                      Note that there are specific rules for ParentRefs which cross namespace boundaries.
+                      Cross-namespace references are only valid if they are explicitly allowed by something in
+                      the namespace they are referring to. For example: Gateway has the AllowedRoutes field, and
+                      ReferenceGrant provides a generic way to enable any other kind of cross-namespace
+                      reference.
 
-                      ParentRefs from a Route to a Service in the same namespace are "producer" routes, which apply default routing rules to inbound connections from any namespace to the Service. ParentRefs from a Route to a Service in a different namespace are "consumer" routes, and these routing rules are only applied to outbound connections originating from the same namespace as the Route, for which the intended destination of the connections are a Service targeted as a ParentRef of the Route.
+                      ParentRefs from a Route to a Service in the same namespace are "producer" routes, which
+                      apply default routing rules to inbound connections from any namespace to the Service.
+                      ParentRefs from a Route to a Service in a different namespace are "consumer" routes, and
+                      these routing rules are only applied to outbound connections originating from the same
+                      namespace as the Route, for which the intended destination of the connections are a Service
+                      targeted as a ParentRef of the Route.
 
-                      Support: Core MaxLength: 63 MinLength: 1 Pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      Support: Core
+                      MaxLength: 63
+                      MinLength: 1
+                      Pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                     maxLength: 63
                     minLength: 1
                     nullable: true
@@ -150,11 +162,21 @@ spec:
 
                       In the following resources, SectionName is interpreted as the following:
 
-                      - Gateway: Listener name. When both Port (experimental) and SectionName are specified, the name and port of the selected listener must match both specified values. - Service: Port name. When both Port (experimental) and SectionName are specified, the name and port of the selected listener must match both specified values.
+                      - Gateway: Listener name. When both Port (experimental) and SectionName are specified, the
+                        name and port of the selected listener must match both specified values.
+                      - Service: Port name. When both Port (experimental) and SectionName are specified, the name
+                        and port of the selected listener must match both specified values.
 
-                      Implementations MAY choose to support attaching Routes to other resources. If that is the case, they MUST clearly document how SectionName is interpreted.
+                      Implementations MAY choose to support attaching Routes to other resources. If that is the
+                      case, they MUST clearly document how SectionName is interpreted.
 
-                      When unspecified (empty string), this will reference the entire resource. For the purpose of status, an attachment is considered successful if at least one section in the parent resource accepts it. For example, Gateway listeners can restrict which Routes can attach to them by Route kind, namespace, or hostname. If 1 of 2 Gateway listeners accept attachment from the referencing Route, the Route MUST be considered successfully attached. If no Gateway listeners accept attachment from this Route, the Route MUST be considered detached from the Gateway.
+                      When unspecified (empty string), this will reference the entire resource. For the purpose
+                      of status, an attachment is considered successful if at least one section in the parent
+                      resource accepts it. For example, Gateway listeners can restrict which Routes can attach to
+                      them by Route kind, namespace, or hostname. If 1 of 2 Gateway listeners accept attachment
+                      from the referencing Route, the Route MUST be considered successfully attached. If no
+                      Gateway listeners accept attachment from this Route, the Route MUST be considered detached
+                      from the Gateway.
 
                       Support: Core
                     nullable: true
@@ -162,7 +184,6 @@ spec:
                 required:
                 - name
                 type: object
-                x-kubernetes-validations: []
               image:
                 description: Image is the image that should be used in the managed deployment.
                 nullable: true
@@ -170,7 +191,6 @@ spec:
             required:
             - config
             type: object
-            x-kubernetes-validations: []
           status:
             description: WorkerStatus describes the observed state of a worker instance.
             nullable: true
@@ -186,30 +206,19 @@ spec:
                       type: string
                     message:
                       description: message is a human readable message indicating details about the transition. This may be an empty string.
-                      maxLength: 32768
                       type: string
                     observedGeneration:
                       description: observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance.
                       format: int64
-                      minimum: 0.0
                       type: integer
                     reason:
                       description: reason contains a programmatic identifier indicating the reason for the condition's last transition. Producers of specific condition types may define expected values and meanings for this field, and whether the values are considered a guaranteed API. The value should be a CamelCase string. This field may not be empty.
-                      maxLength: 1024
-                      minLength: 1
-                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
                       type: string
                     status:
                       description: status of the condition, one of True, False, Unknown.
-                      enum:
-                      - 'True'
-                      - 'False'
-                      - Unknown
                       type: string
                     type:
                       description: type of condition in CamelCase or in foo.example.com/CamelCase.
-                      maxLength: 316
-                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
                       type: string
                   required:
                   - lastTransitionTime
@@ -218,12 +227,15 @@ spec:
                   - status
                   - type
                   type: object
+                nullable: true
                 type: array
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
               dropin:
-                description: Dropin is a generated JSON dropin configuration that a Clair instance may use to construct its configuration.
+                description: |-
+                  Dropin is a generated JSON dropin configuration that a Clair instance may use to construct
+                  its configuration.
                 nullable: true
                 type: string
               refs:
@@ -244,12 +256,12 @@ spec:
                   - kind
                   - name
                   type: object
+                nullable: true
                 type: array
                 x-kubernetes-list-map-keys:
                 - kind
                 x-kubernetes-list-type: map
             type: object
-            x-kubernetes-validations: []
         required:
         - spec
         title: Indexer
