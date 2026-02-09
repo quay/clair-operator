@@ -15,6 +15,7 @@ doc_lazy_continuation = "allow"
 k8s-openapi.workspace = true
 kube.workspace = true
 schemars.workspace = true
+serde_json.workspace = true
 serde.workspace = true
 
 automod = "1.0"
