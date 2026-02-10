@@ -28,11 +28,11 @@ simple_txtar = "1.1"
 
 [dev-dependencies.k8s-openapi]
 workspace = true
-features = ["v1_35"]
+features = ["earliest"]
 
 [features]
 default = ["latest"]
-__check = ["k8s-openapi/v1_35"]
+__check = ["k8s-openapi/earliest"]
 
 latest = ["v1_5"]
 earliest = ["v1_4"]

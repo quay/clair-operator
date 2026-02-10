@@ -101,7 +101,9 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "serde_yaml",
  "validator",
+ "xshell",
 ]
 
 [[package]]

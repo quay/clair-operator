@@ -21,6 +21,10 @@ features = ["derive"]
 version = "0.20"
 features = ["derive"]
 
+[dev-dependencies]
+serde_yaml.workspace = true
+xshell.workspace = true
+
 [dev-dependencies.k8s-openapi]
 workspace = true
-features = ["v1_35"]
+features = ["earliest"]
