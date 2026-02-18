@@ -642,9 +642,28 @@ impl JobBuilder {
         Self::new(clair, JobKind::AdminPre)
     }
 
+    /// Admin_pre_name reports the name for the Job that would be produced by this builder.
+    pub fn admin_pre_name(clair: &Clair) -> Result<String, Error> {
+        Self::name(clair, JobKind::AdminPre)
+    }
+
     /// Admin_post creates a builder to run a `clairctl admin post` command.
     pub fn admin_post(clair: &Clair) -> Result<Self, Error> {
         Self::new(clair, JobKind::AdminPost)
+    }
+
+    /// Admin_post_name reports the name for the Job that would be produced by this builder.
+    pub fn admin_post_name(clair: &Clair) -> Result<String, Error> {
+        Self::name(clair, JobKind::AdminPost)
+    }
+
+    fn name(clair: &Clair, kind: JobKind) -> Result<String, Error> {
+        let image = clair.spec.image.as_ref().ok_or(Error::MissingImage)?;
+        let version = image
+            .rsplit_once(':')
+            .ok_or(Error::Other("image ref missing tag"))?
+            .1;
+        Ok(format!("{}-{kind}-{version}", clair.name_unchecked()))
     }
 
     fn new(clair: &Clair, kind: JobKind) -> Result<Self, Error> {

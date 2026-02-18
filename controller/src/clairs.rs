@@ -2,8 +2,7 @@
 
 use std::sync::{Arc, LazyLock};
 
-use api::v1alpha1::ClairStatus;
-use k8s_openapi::{api::core::v1::ConfigMap, merge_strategies};
+use k8s_openapi::api::{batch::v1::Job, core::v1::ConfigMap};
 use kube::{
     Resource, ResourceExt,
     api::{Api, ListParams, Patch},
@@ -22,11 +21,8 @@ use tokio::{
 use tokio_stream::wrappers::SignalStream;
 use tracing::*;
 
-use crate::{
-    Context, clair_condition, cmp_condition, merge_condition, prelude::*,
-    util::check_owned_resource,
-};
-use api::v1alpha1::{Clair, DropinSelector, Indexer, Matcher, Notifier};
+use crate::{Context, image_version, prelude::*, util::check_owned_resource};
+use api::v1alpha1::{Clair, ClairStatus, DropinSelector, Indexer, Matcher, Notifier};
 use clair_templates::{
     Build, ConfigMapBuilder, ConfigSourceBuilder, IndexerBuilder, JobBuilder, MatcherBuilder,
     NotifierBuilder,
@@ -98,13 +94,17 @@ fn error_policy(obj: Arc<Clair>, err: &Error, _ctx: Arc<Context>) -> Action {
     Action::requeue(Duration::from_secs(5))
 }
 
-#[instrument(skip(ctx, clair),fields(
-    trace_id,
-    kind = Clair::kind(&()).as_ref(),
-    namespace = clair.namespace().unwrap(),
-    name = clair.name_any(),
-    generation = clair.metadata.generation,
-    resource_version = clair.metadata.resource_version
+#[instrument(
+    target = "",
+    name = "Clairs",
+    skip(ctx, clair),
+    fields(
+        trace_id,
+        kind = Clair::kind(&()).as_ref(),
+        namespace = clair.namespace().unwrap(),
+        name = clair.name_any(),
+        generation = clair.metadata.generation,
+        resource_version = clair.metadata.resource_version
 ))]
 async fn reconcile(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
     let trace_id = telemetry::get_trace_id();
@@ -114,7 +114,7 @@ async fn reconcile(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
     let ns = clair.namespace().unwrap();
     let api: Api<Clair> = Api::namespaced(ctx.client.clone(), &ns);
 
-    info!(r#"reconciling Clair "{}" in {}"#, clair.name_any(), ns);
+    info!("reconciling");
     finalizer(&api, CLAIR_FINALIZER, clair, |event| async {
         match event {
             Finalizer::Apply(clair) => reconcile_one(clair, ctx.clone()).await,
@@ -125,8 +125,79 @@ async fn reconcile(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
     .map_err(|e| Error::Finalizer(Box::new(e)))
 }
 
-#[instrument(skip(ctx, clair))]
+mod reason {
+    use std::fmt::{Display, Formatter, Result};
+
+    pub(super) enum Event {
+        MissingRequiredField,
+        DeleteRequested,
+    }
+
+    impl Display for Event {
+        fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+            use Event::*;
+            f.write_str(match self {
+                MissingRequiredField => stringify!(MissingRequiredField),
+                DeleteRequested => stringify!(DeleteRequested),
+            })
+        }
+    }
+    impl From<Event> for String {
+        fn from(r: Event) -> Self {
+            r.to_string()
+        }
+    }
+
+    pub(super) enum AdminPre {
+        NewClair,
+        ImageUpdated,
+        JobFailed,
+        JobSucceeded,
+        JobNotComplete,
+        JobMissing,
+    }
+
+    impl Display for AdminPre {
+        fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+            use AdminPre::*;
+            f.write_str(match self {
+                NewClair => "NewClair",
+                ImageUpdated => "ImageUpdated",
+                JobFailed => "JobFailed",
+                JobSucceeded => "JobSucceeded",
+                JobNotComplete => "JobNotComplete",
+                JobMissing => "JobMissing",
+            })
+        }
+    }
+    impl From<AdminPre> for String {
+        fn from(r: AdminPre) -> Self {
+            r.to_string()
+        }
+    }
+
+    pub(super) enum Configuration {
+        Reconciled,
+    }
+
+    impl Display for Configuration {
+        fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+            use Configuration::*;
+            f.write_str(match self {
+                Reconciled => "ConfigurationReconciled",
+            })
+        }
+    }
+    impl From<Configuration> for String {
+        fn from(r: Configuration) -> Self {
+            r.to_string()
+        }
+    }
+}
+
+#[instrument(name = "reconcile", skip(ctx, clair), ret)]
 async fn reconcile_one(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
+    use reason::Event as Reason;
     let oref = clair.object_ref(&());
 
     let mut missing = false;
@@ -136,12 +207,13 @@ async fn reconcile_one(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
     ] {
         if !present {
             missing = true;
-            info!(field, "missing required field, skipping reconciliation");
+            let reason = Reason::MissingRequiredField;
+            info!(field, %reason, "skipping reconciliation");
             ctx.recorder
                 .publish(
                     &Event {
                         type_: EventType::Warning,
-                        reason: "MissingRequiredField".into(),
+                        reason: reason.into(),
                         note: format!("Clair `{}` missing `{field}`", clair.name_any()).into(),
                         action: "Reconcile".into(),
                         secondary: None,
@@ -156,25 +228,38 @@ async fn reconcile_one(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
         return Ok(Action::await_change());
     }
 
-    reconcile_configuration(&clair, &ctx).await?;
+    configuration(&clair, &ctx).await?;
 
     if clair.status.as_ref().is_none_or(|s| s.config.is_none()) {
         return Ok(Action::requeue(Duration::from_millis(250)));
     }
-    //reconcile_admin_pre(&clair, &ctx).await?;
-    check_owned_resource::<_, Indexer, IndexerBuilder>(&clair, &ctx).await?;
-    check_owned_resource::<_, Matcher, MatcherBuilder>(&clair, &ctx).await?;
+    admin_pre(&clair, &ctx).await?;
+    promote_image(&clair, &ctx).await?;
+    indexer(&clair, &ctx).await?;
+    matcher(&clair, &ctx).await?;
     if clair.spec.notifier.unwrap_or_default() {
-        check_owned_resource::<_, Notifier, NotifierBuilder>(&clair, &ctx).await?;
+        notifier(&clair, &ctx).await?;
     }
-    //reconcile_admin_post(&clair, &ctx).await?;
+    admin_post(&clair, &ctx).await?;
 
     Ok(DEFAULT_REQUEUE.clone())
 }
 
 #[instrument(skip(ctx, clair), ret)]
-async fn reconcile_configuration(clair: &Clair, ctx: &Context) -> Result<()> {
-    let cm = check_owned_resource::<_, ConfigMap, ConfigMapBuilder>(&clair, &ctx).await?;
+async fn configuration(clair: &Clair, ctx: &Context) -> Result<()> {
+    use reason::Configuration as Reason;
+
+    let ns = clair.namespace().expect("Clair is namespaced");
+    let name = clair.metadata.name.as_ref().expect("Clair has a name");
+    let cm = check_owned_resource::<_, ConfigMap, ConfigMapBuilder>(clair, ctx).await?;
+    // TODO(hank): There's got to be a more elegant way to do this via `futures`.
+    let cm = if let Some(cm) = cm {
+        cm
+    } else {
+        Api::<ConfigMap>::namespaced(ctx.client.clone(), &ns)
+            .get(name)
+            .await?
+    };
     let cfgsrc = ConfigSourceBuilder::try_from(&cm)?
         .with_dropins(clair.spec.databases.as_ref().into_iter().flat_map(|db| {
             trace!("have databases");
@@ -192,24 +277,21 @@ async fn reconcile_configuration(clair: &Clair, ctx: &Context) -> Result<()> {
     let status_update = Patch::Apply(json!({
         "apiVersion": Clair::api_version(&()),
         "kind": Clair::kind(&()),
-        "status": ClairStatus {
-            config: cfgsrc.into(),
-            conditions: vec![
+        "status": {
+            "config": cfgsrc,
+            "conditions": [
                  Condition {
                     message: "ConfigSource object in desired state".into(),
                     observed_generation: clair.metadata.generation,
                     last_transition_time: meta::v1::Time(Timestamp::now()),
-                    reason: "ConfigSourceReconciled".into(),
+                    reason: Reason::Reconciled.into(),
                     status: "True".into(),
-                    type_: clair_condition("ConfigReady").into(),
+                    type_: ConditionType::ConfigReady.into(),
                 }
-            ].into(),
-            ..Default::default()
+            ],
         }
     }));
 
-    let ns = clair.namespace().expect("Clair is namespaced");
-    let name = clair.metadata.name.as_ref().expect("Clair has a name");
     let clairs = Api::<Clair>::namespaced(ctx.client.clone(), &ns);
     clairs
         .patch_status(name, &PATCH_PARAMS, &status_update)
@@ -218,123 +300,209 @@ async fn reconcile_configuration(clair: &Clair, ctx: &Context) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
-/// The admin_pre step is responsible for arranging for the admin pre-upgrade jobs to run and
-/// for "promoting" the version.
+#[instrument(skip(ctx, clair), ret)]
+async fn indexer(clair: &Clair, ctx: &Context) -> Result<()> {
+    check_owned_resource::<_, Indexer, IndexerBuilder>(clair, ctx)
+        .await
+        .and(Ok(()))
+}
+
+#[instrument(skip(ctx, clair), ret)]
+async fn matcher(clair: &Clair, ctx: &Context) -> Result<()> {
+    check_owned_resource::<_, Matcher, MatcherBuilder>(clair, ctx)
+        .await
+        .and(Ok(()))
+}
+
+#[instrument(skip(ctx, clair), ret)]
+async fn notifier(clair: &Clair, ctx: &Context) -> Result<()> {
+    check_owned_resource::<_, Notifier, NotifierBuilder>(clair, ctx)
+        .await
+        .and(Ok(()))
+}
+
+/// The admin_pre step is responsible for arranging for the admin pre-upgrade job to run and
+/// tracking its state.
 #[instrument(skip(clair, ctx), ret)]
-async fn reconcile_admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
-    use batch::v1::Job;
+async fn admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
+    use reason::AdminPre as Reason;
 
     let ns = clair.namespace().expect("Clair is namespaced");
     let name = clair.name_any();
-    let mut update = vec![];
-    let mut promote = false;
-    let cnds = clair
-        .status
-        .as_ref()
-        .and_then(|s| s.conditions.clone())
-        .unwrap_or_default();
     let clairs = Api::<Clair>::namespaced(ctx.client.clone(), &ns);
     let jobs = Api::<Job>::namespaced(ctx.client.clone(), &ns);
 
-    // If there are no conditions, record the Job as done and continue.
-    //
-    // If there are conditions, check in order:
-    // - If the PreJob condition is not current to the spec:
-    //   - Check on the current image:
-    //     - If changed, start a the new job and set the condtion to False.
-    // - If the PreJob condition is current to the spec:
-    //   - If false, check on the job and update if need be.
-    //   - If true, swap the new image into the status.
+    let job_type = ConditionType::AdminPreJobDone;
+    let pre_job_cnd = clair.find_condition(job_type);
+    let spec_image = clair.spec.image.as_ref();
+    let status_image = clair.status.as_ref().and_then(|s| s.image.as_ref());
 
-    let job_type = clair_condition("AdminPreJobDone");
-    if let Some(cnd) = cnds.iter().find(|&c| c.type_ == job_type) {
-        debug!("checking Condition");
-        if cnd.observed_generation != clair.metadata.generation {
-            debug!(
-                observed = cnd.observed_generation,
-                current = clair.metadata.generation,
-                "generation differs"
-            );
-            if clair.spec.image.as_ref() == clair.status.as_ref().and_then(|s| s.image.as_ref()) {
-                debug!("\"spec.image\" not changed");
-                update.push(Condition {
-                    message: "spec.image not changed".into(),
-                    observed_generation: clair.metadata.generation,
-                    last_transition_time: meta::v1::Time(Timestamp::now()),
-                    reason: "NoImageUpdate".into(),
-                    status: "True".into(),
-                    type_: job_type,
-                });
-            } else {
-                debug!("starting \"admin pre\" job");
-                update.push(Condition {
-                    message: "spec.image changed, launching \"admin pre\" job".into(),
-                    observed_generation: clair.metadata.generation,
-                    last_transition_time: meta::v1::Time(Timestamp::now()),
-                    reason: "ImageUpdated".into(),
-                    status: "False".into(),
-                    type_: job_type,
-                });
-                info!(TODO = true, "launch job");
-
-                let j = JobBuilder::admin_pre(clair)?.build();
-                jobs.create(&CREATE_PARAMS, &j)
-                    .instrument(debug_span!("create"))
-                    .await?;
-            }
-        } else {
-            debug!("checking ");
-            match cnd.status.as_str() {
-                "False" => {
-                    info!(TODO = true, "check job");
-                }
-                "True" => {
-                    if clair.spec.image.as_ref()
-                        != clair.status.as_ref().and_then(|s| s.image.as_ref())
-                    {
-                        debug!("promoting image");
-                        promote = true;
-                    }
-                }
-                "Unknown" => {
-                    error!(condition = job_type, "job in unknown state???");
-                    return Ok(());
-                }
-                _ => unreachable!(),
-            }
-        }
-    } else {
-        debug!("fresh instance, skipping \"admin pre\" job");
-        promote = true;
-        update.push(Condition {
-            message: "pre jobs are not needed on a fresh system".into(),
-            observed_generation: clair.metadata.generation,
-            last_transition_time: meta::v1::Time(Timestamp::now()),
-            reason: "NewClair".into(),
-            status: "True".into(),
-            type_: job_type,
-        });
+    if spec_image.and_then(|img| image_version(img)).is_none() {
+        // TODO(hank): Event
+        info!(r#"container image ref is not versioned, skipping "admin" jobs"#);
+        return Ok(());
     }
 
-    if !update.is_empty() {
-        let next = clairs
-            .get_status(&name)
-            .instrument(debug_span!("get_status"))
-            .await
-            .map(|mut next| {
-                next.meta_mut().managed_fields = None;
-                let status = next.status.get_or_insert_default();
-                if promote {
-                    status.image = clair.spec.image.clone();
+    debug!(
+        have_condition = pre_job_cnd.is_some(),
+        spec_image, status_image, r#"checking if "admin pre" job should be created"#
+    );
+    let create = pre_job_cnd.is_some_and(|cnd| {
+        spec_image != status_image && clair.metadata.generation != cnd.observed_generation
+    });
+    let job = if create {
+        JobBuilder::admin_pre(clair)?.build().into()
+    } else {
+        None
+    };
+
+    let cnd = match (pre_job_cnd, job) {
+        (None, Some(_)) => unreachable!(),
+        (None, None) => {
+            // Create "empty" condition":
+            let reason = Reason::NewClair;
+            info!(%reason, r#"skipping "admin pre" job"#);
+            Condition {
+                message: "pre jobs are not needed on a fresh system".into(),
+                observed_generation: clair.metadata.generation,
+                last_transition_time: meta::v1::Time(Timestamp::now()),
+                status: "True".into(),
+                type_: job_type.into(),
+                reason: reason.into(),
+            }
+        }
+        (Some(cnd), Some(ref job)) => {
+            // Create the Job and report the update condition.
+            let reason = Reason::ImageUpdated;
+            info!(%reason, r#"creating "admin pre" job"#);
+            jobs.create(&CREATE_PARAMS, job)
+                .instrument(debug_span!("create"))
+                .await?;
+            Condition {
+                message: "spec changed, launching \"admin pre\" job".into(),
+                observed_generation: clair.metadata.generation,
+                last_transition_time: meta::v1::Time(Timestamp::now()),
+                status: "False".into(),
+                reason: reason.into(),
+                ..cnd.clone()
+            }
+        }
+        // Haven't marked the Job as completed:
+        (Some(cnd), None) if cnd.status != "True" => {
+            let name = JobBuilder::admin_pre_name(clair)?;
+            info!(name, r#"checking "admin pre" job"#);
+            match jobs.get_opt(&name).await? {
+                Some(job) => {
+                    let status = job.status.unwrap_or_default();
+                    // Assume there's precisely 1 run.
+                    debug_assert!(
+                        status.active.is_none_or(|ct| ct <= 1),
+                        "status.active has count > 1: {:?}",
+                        status.active
+                    );
+                    match status.active {
+                        Some(0) => match (status.succeeded, status.failed) {
+                            (_, Some(1)) => {
+                                // TODO(hank) Emit an event so someone takes a gander.
+                                Condition {
+                                    message: "job failed, please investigate".into(),
+                                    observed_generation: clair.metadata.generation,
+                                    last_transition_time: meta::v1::Time(Timestamp::now()),
+                                    reason: Reason::JobFailed.into(),
+                                    status: "False".into(),
+                                    ..cnd.clone()
+                                }
+                            }
+                            (Some(1), _) => Condition {
+                                message: "job completed successfully".into(),
+                                observed_generation: clair.metadata.generation,
+                                last_transition_time: meta::v1::Time(Timestamp::now()),
+                                reason: Reason::JobSucceeded.into(),
+                                status: "True".into(),
+                                ..cnd.clone()
+                            },
+                            _ => unreachable!(),
+                        },
+                        Some(_) | None => Condition {
+                            message: "job not complete".into(),
+                            observed_generation: clair.metadata.generation,
+                            last_transition_time: meta::v1::Time(Timestamp::now()),
+                            reason: Reason::JobNotComplete.into(),
+                            status: "False".into(),
+                            ..cnd.clone()
+                        },
+                    }
                 }
-                let cnds = status.conditions.get_or_insert_default();
-                merge_strategies::list::map(cnds, update, &[cmp_condition], merge_condition);
-                next
-            })?;
-        trace!("patching status");
+                None => Condition {
+                    message: format!(r#"unable to fetch job "{name}""#),
+                    observed_generation: clair.metadata.generation,
+                    last_transition_time: meta::v1::Time(Timestamp::now()),
+                    reason: Reason::JobMissing.into(),
+                    status: "Unknown".into(),
+                    ..cnd.clone()
+                },
+            }
+        }
+        // The Job is completed, no need to touch the status.
+        (Some(_), None) => return Ok(()),
+    };
+
+    let update = Patch::Apply(json!({
+        "apiVersion": Clair::api_version(&()),
+        "kind": Clair::kind(&()),
+        "status": {
+            "conditions": [cnd],
+        },
+    }));
+    trace!("patching status");
+    clairs
+        .patch_status(&name, &PATCH_PARAMS, &update)
+        .instrument(debug_span!("patch_status"))
+        .await?;
+
+    Ok(())
+}
+
+#[instrument(skip(clair, ctx), ret)]
+async fn promote_image(clair: &Clair, ctx: &Context) -> Result<()> {
+    let job_type = ConditionType::AdminPreJobDone;
+    let pre_job_cnd = clair.find_condition(job_type);
+    let spec_image = clair.spec.image.as_ref();
+    let status_image = clair.status.as_ref().and_then(|s| s.image.as_ref());
+    let image_same = spec_image == status_image;
+
+    let promote = match (pre_job_cnd, image_same) {
+        (None, _) => true, // If there's no condition, assume there's no previous image to update from.
+        (Some(_), true) => false, // Nothing to do.
+        (Some(cnd), false) if clair.metadata.generation != cnd.observed_generation => false, // Here, the generation on the condition is not current, so do nothing.
+        (Some(cnd), false) => cnd.status == "True", // This is the "currentmost" situation. Just report if the status is "True"
+    };
+    debug!(
+        have_condition = pre_job_cnd.is_some(),
+        spec_image, status_image, promote, "checking if image should be promoted"
+    );
+
+    if promote {
+        let ns = clair
+            .meta()
+            .namespace
+            .as_ref()
+            .expect("Clair is namespaced");
+        let name = clair.meta().name.as_ref().expect("Clair has a name");
+        let clairs = Api::<Clair>::namespaced(ctx.client.clone(), ns);
+        let next_status = ClairStatus {
+            image: spec_image.cloned(),
+            ..Default::default()
+        };
+        let update = Patch::Apply(json!({
+            "apiVersion": Clair::api_version(&()),
+            "kind": Clair::kind(&()),
+            "status": next_status,
+        }));
+
+        debug!("patching status");
         clairs
-            .patch_status(&name, &PATCH_PARAMS, &Patch::Apply(&next))
+            .patch_status(name, &PATCH_PARAMS, &update)
             .instrument(debug_span!("patch_status"))
             .await?;
     }
@@ -342,22 +510,45 @@ async fn reconcile_admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
-#[instrument(skip(_clair, _ctx), ret)]
-async fn reconcile_admin_post(_clair: Clair, _ctx: &Context) -> Result<()> {
+#[instrument(skip(clair, _ctx), ret)]
+async fn admin_post(clair: &Clair, _ctx: &Context) -> Result<()> {
     info!(TODO = true, "write admin post job");
+
+    let _ns = clair.namespace().expect("Clair is namespaced");
+
+    let post_job_type = ConditionType::AdminPostJobDone;
+    let post_job_cnd = clair
+        .status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .and_then(|cs| cs.iter().find(|&c| post_job_type == c.type_));
+
+    match post_job_cnd {
+        Some(c) if c.status == "True" => (), // Continue
+        Some(c) => {
+            info!(type = %post_job_type, status = c.status, "condition not met");
+            return Ok(());
+        }
+        None => {
+            debug!(type = %post_job_type, "no condition");
+            return Ok(());
+        }
+    };
+
     Ok(())
 }
 
-#[instrument(skip(ctx, clair))]
+#[instrument(name = "cleanup", skip(ctx, clair))]
 async fn cleanup_one(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
+    use reason::Event as Reason;
+
     let oref = clair.object_ref(&());
     // No real cleanup, so we just publish an event.
     ctx.recorder
         .publish(
             &Event {
                 type_: EventType::Normal,
-                reason: "DeleteRequested".into(),
+                reason: Reason::DeleteRequested.into(),
                 note: Some(format!("Delete `{}`", clair.name_any())),
                 action: "Deleting".into(),
                 secondary: None,
@@ -408,9 +599,6 @@ mod tests {
         let (testctx, fakeserver) = Context::clair_tests();
         let c = clair::ready();
         let mocksrv = fakeserver.run(ClairScenario::Ready(c.clone()));
-        reconcile(Arc::new(c.clone()), testctx.clone())
-            .await
-            .expect("reconciler");
         let c = clair::with_status(
             c,
             ClairStatus {

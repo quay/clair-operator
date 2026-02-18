@@ -4,6 +4,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use assert_json_diff::assert_json_include;
 use http::{Request, Response, StatusCode};
+use json_patch::merge;
 use k8s_openapi::{DeepMerge, api::core::v1::ConfigMap, api::events::v1::Event};
 use kube::{
     Resource, ResourceExt,
@@ -52,7 +53,7 @@ pub mod clair {
 
     pub fn ready() -> Clair {
         let spec = ClairSpec {
-            image: Some(crate::DEFAULT_IMAGE.to_string()),
+            image: Some("example.com/clair:1.2.3".to_string()),
             databases: Some(Databases {
                 indexer: SecretKeySelector {
                     name: "test".into(),
@@ -94,6 +95,7 @@ pub struct ClairServerVerifier {
 }
 
 /// Scenarios we want to test for
+#[allow(clippy::large_enum_variant)]
 pub enum ClairScenario {
     /// ...
     FinalizerCreation(Clair),
@@ -231,33 +233,32 @@ impl ClairServerVerifier {
     }
 
     async fn handle_ready(mut self, mut c: Clair) -> Result<Self> {
+        self.state.insert(
+            "/v1/namespaces/default/configmaps/test".into(),
+            json!({
+                "version": "v1",
+                "kind": "ConfigMap",
+                "metadata": {
+                    "name": "test",
+                    "namespace": "default",
+                },
+                "data": {
+                    "config.json": "{}",
+                },
+            }),
+        );
         self = // Initial ConfigMap check + creation:
             self
             .handle_check_resource::<ConfigMap>(&c)
             .await?
-            .handle_create_resource::<ConfigMap>(&c)
-            .await?
-            .handle_status_patch(&mut c)
-            .await?
-            .handle_event(
-                c.clone(),
-                Event {
-                    type_: Some("Normal".into()),
-                    action: Some("CreatedConfigMap".into()),
-                    reason: Some("Clair requires ConfigMap \"test\"".into()),
-                    ..Default::default()
-                },
-            )
-            .await?
-            // Update config source:
-            .handle_status_patch(&mut c)
-            .await?
-            // requeue happens 
-            // Subsequent ConfigMap check + reconcile:
-            .handle_check_resource::<ConfigMap>(&c)
-            .await?
             .handle_update_resource::<ConfigMap, _>(&c, "test")
             .await?
+            .handle_status_patch(&mut c)
+            .await?
+            // AdminPreJob check:
+            .handle_status_patch(&mut c)
+            .await?
+            // Image promotion:
             .handle_status_patch(&mut c)
             .await?
             // Indexer check + creation:
@@ -319,6 +320,7 @@ impl ClairServerVerifier {
         assert!(uri.ends_with(&key), "unexpected path");
 
         let response = if let Some(v) = self.state.get(&key) {
+            eprintln!("found: {key}");
             Response::builder()
                 .body(Body::from(serde_json::to_vec(v).unwrap()))
                 .unwrap()
@@ -413,7 +415,7 @@ impl ClairServerVerifier {
         let obj = self
             .state
             .entry(key)
-            .and_modify(|v| merge(v, obj.clone()))
+            .and_modify(|v| merge(v, &obj))
             .or_insert_with(|| obj);
         let response = Response::builder()
             .body(Body::from(serde_json::to_vec(obj).unwrap()))
@@ -425,7 +427,7 @@ impl ClairServerVerifier {
 
     async fn handle_status_patch(mut self, c: &mut Clair) -> Result<Self> {
         let (request, send) = self.next_request().await.expect("service not called");
-        eprintln!("{}\t{}", request.method(), request.uri().to_string());
+        eprintln!("{}\t{}", request.method(), request.uri());
         assert_eq!(request.method(), http::Method::PATCH, "unexpected method");
         assert_eq!(
             request.uri().to_string(),
@@ -457,25 +459,6 @@ impl ClairServerVerifier {
 
         Ok(self)
     }
-}
-
-// Not-to-spec merge function cribbed from stackoverflow.
-fn merge(a: &mut Value, b: Value) {
-    if let Value::Object(a) = a {
-        if let Value::Object(b) = b {
-            for (k, v) in b {
-                if v.is_null() {
-                    a.remove(&k);
-                } else {
-                    merge(a.entry(k).or_insert(Value::Null), v);
-                }
-            }
-
-            return;
-        }
-    }
-
-    *a = b;
 }
 
 fn not_found<R: Resource<DynamicType = ()>, S: ToString>(name: S) -> Response<Body> {

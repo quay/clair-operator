@@ -51,7 +51,7 @@ pub(crate) mod prelude {
     pub use api::v1alpha1;
 
     pub use super::{CONTROLLER_NAME, CREATE_PARAMS, DEFAULT_REQUEUE, PATCH_PARAMS};
-    pub use super::{ControllerFuture, Error, Result, State};
+    pub use super::{ConditionType, ControllerFuture, Error, Result, State, StatusConditions};
     pub use crate::telemetry;
 }
 
@@ -284,6 +284,128 @@ pub fn clair_condition<S: AsRef<str>>(s: S) -> String {
     condition(api::GROUP, s)
 }
 
+/// ...
+#[derive(Clone, Copy, PartialEq)]
+pub enum ConditionType {
+    /// ...
+    ConfigReady,
+    /// ...
+    ConfigMapCreated,
+    /// ...
+    SecretCreated,
+    /// ...
+    IndexerCreated,
+    /// ...
+    MatcherCreated,
+    /// ...
+    NotifierCreated,
+    /// ...
+    HorizontalPodAutoscalerCreated,
+    /// ...
+    ServiceCreated,
+    /// ...
+    DeploymentCreated,
+    /// ...
+    AdminPreJobDone,
+    /// ...
+    AdminPostJobDone,
+}
+
+impl std::fmt::Display for ConditionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use ConditionType::*;
+        use api::GROUP;
+
+        write!(
+            f,
+            "{GROUP}/{}",
+            match self {
+                AdminPostJobDone => stringify!(AdminPostJobDone),
+                AdminPreJobDone => stringify!(AdminPreJobDone),
+                ConfigMapCreated => stringify!(ConfigMapCreated),
+                ConfigReady => stringify!(ConfigReady),
+                DeploymentCreated => stringify!(DeploymentCreated),
+                HorizontalPodAutoscalerCreated => stringify!(HorizontalPodAutoscalerCreated),
+                IndexerCreated => stringify!(IndexerCreated),
+                MatcherCreated => stringify!(MatcherCreated),
+                NotifierCreated => stringify!(NotifierCreated),
+                SecretCreated => stringify!(SecretCreated),
+                ServiceCreated => stringify!(ServiceCreated),
+            }
+        )
+    }
+}
+
+impl From<ConditionType> for String {
+    fn from(ty: ConditionType) -> Self {
+        ty.to_string()
+    }
+}
+
+impl PartialEq<String> for ConditionType {
+    fn eq(&self, other: &String) -> bool {
+        self.to_string().eq(other)
+    }
+}
+
+/// ...
+pub trait ConditionTypeFor {
+    /// ...
+    const CONDITION_TYPE: ConditionType;
+}
+
+macro_rules! impl_conditiontypefor{
+    ($($kind:ident),+) => {
+        use ::with_builtin_macros::with_builtin;
+        use k8s_openapi::api::core::v1::*;
+        use k8s_openapi::api::apps::v1::Deployment;
+        use k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler;
+        use api::v1alpha1::*;
+        $(
+        with_builtin!(let $disc = concat_idents!($kind, Created) in {
+            impl ConditionTypeFor for $kind {
+                const CONDITION_TYPE: ConditionType = ConditionType::$disc;
+            }
+        });
+        )+
+    }
+}
+
+impl_conditiontypefor!(
+    ConfigMap,
+    Deployment,
+    Secret,
+    Service,
+    Indexer,
+    Matcher,
+    Notifier,
+    HorizontalPodAutoscaler
+);
+
+/// ...
+pub trait StatusConditions {
+    /// ...
+    fn get_conditions(&self) -> Option<&Vec<Condition>>;
+
+    /// ...
+    fn find_condition(&self, ty: ConditionType) -> Option<&Condition> {
+        self.get_conditions()
+            .and_then(|cs| cs.iter().find(|&c| ty == c.type_))
+    }
+}
+
+impl StatusConditions for Clair {
+    fn get_conditions(&self) -> Option<&Vec<Condition>> {
+        self.status.as_ref().and_then(|s| s.conditions.as_ref())
+    }
+}
+
+impl StatusConditions for Indexer {
+    fn get_conditions(&self) -> Option<&Vec<Condition>> {
+        self.status.as_ref().and_then(|s| s.conditions.as_ref())
+    }
+}
+
 /// Clair_label returns the provided argument as a name in the clair-controller's space, sutable
 /// for use as an annotation or label.
 pub fn clair_label<S: AsRef<str>>(s: S) -> String {
@@ -299,7 +421,7 @@ pub fn k8s_label<S: AsRef<str>>(s: S) -> String {
 /// The semver regexp:
 static SEMVER_REGEXP: LazyLock<Regex> = LazyLock::new(|| {
     const RE: &str = r#"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"#;
-    Regex::new(RE).expect("programmer error: bad static regexp")
+    Regex::new(RE).expect("static regexp")
 });
 
 /// Image_version returns the version for an image, if present.

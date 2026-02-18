@@ -14,7 +14,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
 use tracing::{Instrument, debug, debug_span, instrument, trace};
 
-use crate::{CREATE_PARAMS, Context, PATCH_PARAMS, Result, clair_condition};
+use crate::{CREATE_PARAMS, ConditionTypeFor, Context, PATCH_PARAMS, Result, StatusConditions};
 use clair_templates::{Build, Error as TemplateError};
 
 /// Check_owned_resource builds an owned resource (of type `R`) for T using the templater `B`.
@@ -24,20 +24,31 @@ use clair_templates::{Build, Error as TemplateError};
     resource = R::kind(&()).as_ref(),
     builder = type_name::<B>(),
 ))]
-pub async fn check_owned_resource<T, R, B>(obj: &T, ctx: &Context) -> Result<R>
+pub async fn check_owned_resource<T, R, B>(obj: &T, ctx: &Context) -> Result<Option<R>>
 where
     T: Resource<DynamicType = (), Scope = NamespaceResourceScope>
         + Serialize
         + DeserializeOwned
+        + StatusConditions
         + Clone
         + Debug,
     R: Resource<DynamicType = (), Scope = NamespaceResourceScope>
         + Serialize
         + DeserializeOwned
+        + ConditionTypeFor
         + Clone
         + Debug,
     B: Build<Output = R> + for<'i> TryFrom<&'i T, Error = TemplateError>,
 {
+    let ty = R::CONDITION_TYPE;
+    if obj
+        .find_condition(ty)
+        .is_some_and(|c| c.status == "True" && c.observed_generation == obj.meta().generation)
+    {
+        trace!("short-circuit");
+        return Ok(None);
+    }
+
     let kind = R::kind(&()).to_string();
     let ns = obj.namespace().expect("resource is namespaced");
     let api = Api::<R>::namespaced(ctx.client.clone(), &ns);
@@ -48,21 +59,21 @@ where
         .instrument(debug_span!("get_opt", kind))
         .await?;
 
-    let mut cnd = Condition {
-        type_: clair_condition(format!("{}Created", kind)),
-        observed_generation: obj.meta().generation,
-        last_transition_time: now(),
-        status: "True".into(),
-        message: "".into(),
-        reason: "".into(),
-    };
-    let mut ev = Event {
-        type_: EventType::Normal,
-        reason: format!("{} requires {} \"{}\"", T::kind(&()), kind, s.name_any()),
-        action: "".into(),
-        note: None,
-        secondary: None,
-    };
+    let mut cnd = obj
+        .find_condition(ty)
+        .cloned()
+        .unwrap_or_else(|| Condition {
+            type_: R::CONDITION_TYPE.into(),
+            observed_generation: obj.meta().generation,
+            last_transition_time: now(),
+            status: "False".into(),
+            message: "".into(),
+            reason: "".into(),
+        });
+    let mut ev = normal_event(
+        format!("{} requires {kind} \"{}\"", T::kind(&()), s.name_any()),
+        "",
+    );
 
     let (obj, changes) = match cur {
         Some(ref cur) => {
@@ -113,10 +124,22 @@ where
         ctx.recorder.publish(&ev, &obj.object_ref(&())).await?;
     }
 
-    Ok(obj)
+    Ok(Some(obj))
 }
 
 #[inline]
 fn now() -> Time {
     Time(Timestamp::now())
+}
+
+fn normal_event<R: ToString, A: ToString>(reason: R, action: A) -> Event {
+    let reason = reason.to_string();
+    let action = action.to_string();
+    Event {
+        type_: EventType::Normal,
+        note: None,
+        secondary: None,
+        reason,
+        action,
+    }
 }

@@ -40,6 +40,7 @@ regex = "1"
 thiserror = "2"
 tokio-native-tls = "0.3"
 tokio-util = "0.7"
+with_builtin_macros = "0.1"
 
 [dependencies.axum]
 version = "0.8"
