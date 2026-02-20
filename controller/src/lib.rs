@@ -15,6 +15,7 @@ use futures::Future;
 use k8s_openapi::apimachinery::pkg::apis::meta::{self, v1::Condition};
 use kube::{api::GroupVersionKind, runtime::events};
 use regex::Regex;
+use strum::{EnumString, IntoStaticStr};
 use tokio::sync::RwLock;
 #[allow(unused_imports)]
 use tracing::{error, info, instrument, trace, warn};
@@ -285,7 +286,7 @@ pub fn clair_condition<S: AsRef<str>>(s: S) -> String {
 }
 
 /// ...
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, IntoStaticStr, EnumString)]
 pub enum ConditionType {
     /// ...
     ConfigReady,
@@ -313,32 +314,9 @@ pub enum ConditionType {
 
 impl std::fmt::Display for ConditionType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use ConditionType::*;
         use api::GROUP;
-
-        write!(
-            f,
-            "{GROUP}/{}",
-            match self {
-                AdminPostJobDone => stringify!(AdminPostJobDone),
-                AdminPreJobDone => stringify!(AdminPreJobDone),
-                ConfigMapCreated => stringify!(ConfigMapCreated),
-                ConfigReady => stringify!(ConfigReady),
-                DeploymentCreated => stringify!(DeploymentCreated),
-                HorizontalPodAutoscalerCreated => stringify!(HorizontalPodAutoscalerCreated),
-                IndexerCreated => stringify!(IndexerCreated),
-                MatcherCreated => stringify!(MatcherCreated),
-                NotifierCreated => stringify!(NotifierCreated),
-                SecretCreated => stringify!(SecretCreated),
-                ServiceCreated => stringify!(ServiceCreated),
-            }
-        )
-    }
-}
-
-impl From<ConditionType> for String {
-    fn from(ty: ConditionType) -> Self {
-        ty.to_string()
+        let t: &'static str = self.into();
+        write!(f, "{GROUP}/{t}")
     }
 }
 

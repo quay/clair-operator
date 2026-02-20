@@ -125,30 +125,17 @@ async fn reconcile(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
     .map_err(|e| Error::Finalizer(Box::new(e)))
 }
 
-mod reason {
-    use std::fmt::{Display, Formatter, Result};
+pub(crate) mod reason {
+    use strum::{Display, EnumString, IntoStaticStr};
 
-    pub(super) enum Event {
+    #[derive(Debug, Display, IntoStaticStr, EnumString)]
+    pub enum Event {
         MissingRequiredField,
         DeleteRequested,
     }
 
-    impl Display for Event {
-        fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-            use Event::*;
-            f.write_str(match self {
-                MissingRequiredField => stringify!(MissingRequiredField),
-                DeleteRequested => stringify!(DeleteRequested),
-            })
-        }
-    }
-    impl From<Event> for String {
-        fn from(r: Event) -> Self {
-            r.to_string()
-        }
-    }
-
-    pub(super) enum AdminPre {
+    #[derive(Debug, Display, IntoStaticStr, EnumString)]
+    pub enum AdminPre {
         NewClair,
         ImageUpdated,
         JobFailed,
@@ -157,42 +144,23 @@ mod reason {
         JobMissing,
     }
 
-    impl Display for AdminPre {
-        fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-            use AdminPre::*;
-            f.write_str(match self {
-                NewClair => "NewClair",
-                ImageUpdated => "ImageUpdated",
-                JobFailed => "JobFailed",
-                JobSucceeded => "JobSucceeded",
-                JobNotComplete => "JobNotComplete",
-                JobMissing => "JobMissing",
-            })
-        }
-    }
-    impl From<AdminPre> for String {
-        fn from(r: AdminPre) -> Self {
-            r.to_string()
-        }
-    }
-
-    pub(super) enum Configuration {
+    #[derive(Debug, Display, IntoStaticStr, EnumString)]
+    pub enum Configuration {
         Reconciled,
     }
 
-    impl Display for Configuration {
-        fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-            use Configuration::*;
-            f.write_str(match self {
-                Reconciled => "ConfigurationReconciled",
-            })
-        }
+    macro_rules! eq_impl{
+        ($($ty:ty),+) => {
+            $(
+            impl PartialEq<String> for $ty {
+                fn eq(&self, other: &String) -> bool {
+                    self.to_string().eq(other)
+                }
+            }
+            )+
+        };
     }
-    impl From<Configuration> for String {
-        fn from(r: Configuration) -> Self {
-            r.to_string()
-        }
-    }
+    eq_impl!(Event, AdminPre, Configuration);
 }
 
 #[instrument(name = "reconcile", skip(ctx, clair), ret)]
@@ -213,7 +181,7 @@ async fn reconcile_one(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
                 .publish(
                     &Event {
                         type_: EventType::Warning,
-                        reason: reason.into(),
+                        reason: reason.to_string(),
                         note: format!("Clair `{}` missing `{field}`", clair.name_any()).into(),
                         action: "Reconcile".into(),
                         secondary: None,
@@ -231,7 +199,7 @@ async fn reconcile_one(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
     configuration(&clair, &ctx).await?;
 
     if clair.status.as_ref().is_none_or(|s| s.config.is_none()) {
-        return Ok(Action::requeue(Duration::from_millis(250)));
+        return Ok(Action::requeue(Duration::from_millis(250))); // ???
     }
     admin_pre(&clair, &ctx).await?;
     promote_image(&clair, &ctx).await?;
@@ -252,7 +220,6 @@ async fn configuration(clair: &Clair, ctx: &Context) -> Result<()> {
     let ns = clair.namespace().expect("Clair is namespaced");
     let name = clair.metadata.name.as_ref().expect("Clair has a name");
     let cm = check_owned_resource::<_, ConfigMap, ConfigMapBuilder>(clair, ctx).await?;
-    // TODO(hank): There's got to be a more elegant way to do this via `futures`.
     let cm = if let Some(cm) = cm {
         cm
     } else {
@@ -284,9 +251,9 @@ async fn configuration(clair: &Clair, ctx: &Context) -> Result<()> {
                     message: "ConfigSource object in desired state".into(),
                     observed_generation: clair.metadata.generation,
                     last_transition_time: meta::v1::Time(Timestamp::now()),
-                    reason: Reason::Reconciled.into(),
+                    reason: Reason::Reconciled.to_string(),
                     status: "True".into(),
-                    type_: ConditionType::ConfigReady.into(),
+                    type_: ConditionType::ConfigReady.to_string(),
                 }
             ],
         }
@@ -367,8 +334,8 @@ async fn admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
                 observed_generation: clair.metadata.generation,
                 last_transition_time: meta::v1::Time(Timestamp::now()),
                 status: "True".into(),
-                type_: job_type.into(),
-                reason: reason.into(),
+                type_: job_type.to_string(),
+                reason: reason.to_string(),
             }
         }
         (Some(cnd), Some(ref job)) => {
@@ -383,7 +350,7 @@ async fn admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
                 observed_generation: clair.metadata.generation,
                 last_transition_time: meta::v1::Time(Timestamp::now()),
                 status: "False".into(),
-                reason: reason.into(),
+                reason: reason.to_string(),
                 ..cnd.clone()
             }
         }
@@ -408,7 +375,7 @@ async fn admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
                                     message: "job failed, please investigate".into(),
                                     observed_generation: clair.metadata.generation,
                                     last_transition_time: meta::v1::Time(Timestamp::now()),
-                                    reason: Reason::JobFailed.into(),
+                                    reason: Reason::JobFailed.to_string(),
                                     status: "False".into(),
                                     ..cnd.clone()
                                 }
@@ -417,7 +384,7 @@ async fn admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
                                 message: "job completed successfully".into(),
                                 observed_generation: clair.metadata.generation,
                                 last_transition_time: meta::v1::Time(Timestamp::now()),
-                                reason: Reason::JobSucceeded.into(),
+                                reason: Reason::JobSucceeded.to_string(),
                                 status: "True".into(),
                                 ..cnd.clone()
                             },
@@ -427,7 +394,7 @@ async fn admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
                             message: "job not complete".into(),
                             observed_generation: clair.metadata.generation,
                             last_transition_time: meta::v1::Time(Timestamp::now()),
-                            reason: Reason::JobNotComplete.into(),
+                            reason: Reason::JobNotComplete.to_string(),
                             status: "False".into(),
                             ..cnd.clone()
                         },
@@ -437,7 +404,7 @@ async fn admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
                     message: format!(r#"unable to fetch job "{name}""#),
                     observed_generation: clair.metadata.generation,
                     last_transition_time: meta::v1::Time(Timestamp::now()),
-                    reason: Reason::JobMissing.into(),
+                    reason: Reason::JobMissing.to_string(),
                     status: "Unknown".into(),
                     ..cnd.clone()
                 },
@@ -548,7 +515,7 @@ async fn cleanup_one(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
         .publish(
             &Event {
                 type_: EventType::Normal,
-                reason: Reason::DeleteRequested.into(),
+                reason: Reason::DeleteRequested.to_string(),
                 note: Some(format!("Delete `{}`", clair.name_any())),
                 action: "Deleting".into(),
                 secondary: None,
@@ -562,17 +529,15 @@ async fn cleanup_one(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
 
 #[cfg(test)]
 mod tests {
-    use k8s_openapi::api::events::v1::Event;
-
     use super::*;
     use crate::testing::*;
-    use api::v1alpha1::{ConfigMapKeySelector, ConfigSource};
 
     #[self::test(tokio::test(flavor = "multi_thread", worker_threads = 1))]
-    async fn clairs_without_finalizer_gets_a_finalizer() {
+    async fn finalizer() {
         let (testctx, fakeserver) = Context::clair_tests();
-        let c = clair::test(None);
-        let mocksrv = fakeserver.run(ClairScenario::FinalizerCreation(c.clone()));
+        let tc = ClairScenario::FinalizerCreation;
+        let c = tc.object();
+        let mocksrv = fakeserver.run(ClairScenario::FinalizerCreation);
         reconcile(Arc::new(c), testctx).await.expect("reconciler");
         timeout_after_1s(mocksrv).await;
     }
@@ -580,25 +545,20 @@ mod tests {
     #[self::test(tokio::test(flavor = "multi_thread", worker_threads = 1))]
     async fn finalized_clairs_causes_event() {
         let (testctx, fakeserver) = Context::clair_tests();
-        let c = clair::finalized(clair::test(None));
-        let mocksrv = fakeserver.run(ClairScenario::Event(
-            c.clone(),
-            Event {
-                type_: Some("Warning".into()),
-                reason: Some("MissingRequiredField".to_string()),
-                action: Some("Reconcile".into()),
-                ..Default::default()
-            },
-        ));
+        let tc = ClairScenario::Finalize;
+        let c = tc.object();
+        let mocksrv = fakeserver.run(tc);
         reconcile(Arc::new(c), testctx).await.expect("reconciler");
         timeout_after_1s(mocksrv).await;
     }
 
     #[self::test(tokio::test(flavor = "multi_thread", worker_threads = 1))]
-    async fn ready_clairs() {
+    async fn ready() {
         let (testctx, fakeserver) = Context::clair_tests();
-        let c = clair::ready();
-        let mocksrv = fakeserver.run(ClairScenario::Ready(c.clone()));
+        let tc = ClairScenario::Ready;
+        let c = tc.object();
+        let mocksrv = fakeserver.run(tc);
+        /*
         let c = clair::with_status(
             c,
             ClairStatus {
@@ -613,9 +573,63 @@ mod tests {
                 ..Default::default()
             },
         );
+        */
         reconcile(Arc::new(c), testctx.clone())
             .await
             .expect("reconciler");
         timeout_after_1s(mocksrv).await;
+    }
+    #[cfg(test)]
+    mod configuration {
+        use std::str::FromStr;
+
+        use crate::{clairs, testing::*, *};
+
+        macro_rules! testcase {
+            ($s:ident) => {
+                #[self::test(tokio::test(flavor = "multi_thread", worker_threads = 1))]
+                async fn $s() {
+                    let tc = ConfigurationScenario::from_str(stringify!($s)).unwrap();
+                    let tc = ClairScenario::Configuration(tc);
+                    let (testctx, fakeserver) = Context::clair_tests();
+                    let c = tc.object();
+                    let mocksrv = fakeserver.run(tc);
+                    clairs::configuration(&c, &testctx)
+                        .await
+                        .expect("reconciler");
+                    timeout_after_1s(mocksrv).await;
+                }
+            };
+        }
+
+        testcase!(create);
+    }
+
+    #[cfg(test)]
+    mod admin_pre {
+        use std::str::FromStr;
+
+        use crate::{clairs, testing::*, *};
+
+        macro_rules! testcase {
+            ($s:ident) => {
+                #[self::test(tokio::test(flavor = "multi_thread", worker_threads = 1))]
+                async fn $s() {
+                    let tc = AdminPreScenario::from_str(stringify!($s)).unwrap();
+                    let tc = ClairScenario::AdminPre(tc);
+                    let (testctx, fakeserver) = Context::clair_tests();
+                    let c = tc.object();
+                    let mocksrv = fakeserver.run(tc);
+                    clairs::admin_pre(&c, &testctx).await.expect("reconciler");
+                    timeout_after_1s(mocksrv).await;
+                }
+            };
+        }
+
+        testcase!(new);
+        testcase!(unversioned);
+        testcase!(spec_changed);
+        testcase!(spec_unchanged_check);
+        testcase!(spec_unchanged_done);
     }
 }

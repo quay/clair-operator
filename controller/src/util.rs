@@ -63,7 +63,7 @@ where
         .find_condition(ty)
         .cloned()
         .unwrap_or_else(|| Condition {
-            type_: R::CONDITION_TYPE.into(),
+            type_: R::CONDITION_TYPE.to_string(),
             observed_generation: obj.meta().generation,
             last_transition_time: now(),
             status: "False".into(),

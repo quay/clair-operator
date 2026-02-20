@@ -3,15 +3,21 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use assert_json_diff::assert_json_include;
+use futures::future::TryFutureExt;
 use http::{Request, Response, StatusCode};
 use json_patch::merge;
-use k8s_openapi::{DeepMerge, api::core::v1::ConfigMap, api::events::v1::Event};
+use k8s_openapi::{
+    DeepMerge,
+    api::{batch::v1::Job, core::v1::ConfigMap, events::v1::Event},
+    jiff::Timestamp,
+};
 use kube::{
     Resource, ResourceExt,
     client::{Body, Client},
     runtime::events::Recorder,
 };
-use serde_json::{Value, json};
+use serde_json::{Value, from_value, json};
+use strum::{EnumIter, EnumString, IntoEnumIterator};
 use tower_test::mock::SendResponse;
 
 use super::*;
@@ -33,52 +39,6 @@ impl Context {
     }
 }
 
-pub mod clair {
-    use crate::clairs::*;
-    use api::v1alpha1::{Clair, ClairSpec, ClairStatus, Databases, SecretKeySelector};
-    use kube::{Resource, ResourceExt};
-
-    /// Return an empty Clair instance.
-    pub fn test(spec: Option<ClairSpec>) -> Clair {
-        let mut c = Clair::new("test", spec.unwrap_or_default());
-        c.meta_mut().namespace = Some("default".into());
-
-        c
-    }
-
-    pub fn finalized(mut c: Clair) -> Clair {
-        c.finalizers_mut().push(CLAIR_FINALIZER.into());
-        c
-    }
-
-    pub fn ready() -> Clair {
-        let spec = ClairSpec {
-            image: Some("example.com/clair:1.2.3".to_string()),
-            databases: Some(Databases {
-                indexer: SecretKeySelector {
-                    name: "test".into(),
-                    key: "database".into(),
-                },
-                matcher: SecretKeySelector {
-                    name: "test".into(),
-                    key: "database".into(),
-                },
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let mut c = finalized(test(spec.into()));
-        c.metadata.uid = "42".to_string().into();
-
-        c
-    }
-
-    pub fn with_status(mut c: Clair, status: ClairStatus) -> Clair {
-        c.status = Some(status);
-        c
-    }
-}
-
 pub async fn timeout_after_1s(handle: tokio::task::JoinHandle<()>) {
     tokio::time::timeout(std::time::Duration::from_secs(1), handle)
         .await
@@ -95,16 +55,219 @@ pub struct ClairServerVerifier {
 }
 
 /// Scenarios we want to test for
-#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
 pub enum ClairScenario {
     /// ...
-    FinalizerCreation(Clair),
+    FinalizerCreation,
     /// ...
-    Event(Clair, Event),
-    ///// We expect exactly one `patch_status` call to the `Clair` resource
-    //StatusPatch(Clair),
+    Finalize,
     /// ...
-    Ready(Clair),
+    Ready,
+    /// ...
+    AdminPre(AdminPreScenario),
+    /// ...
+    Configuration(ConfigurationScenario),
+}
+
+impl ClairScenario {
+    pub fn admin_pre() -> Vec<ClairScenario> {
+        AdminPreScenario::iter().map(Self::AdminPre).collect()
+    }
+
+    pub fn object(&self) -> Clair {
+        match self {
+            Self::FinalizerCreation => from_value(json!({
+                "version": Clair::api_version(&()),
+                "kind": Clair::kind(&()),
+                "metadata": {
+                    "namespace": "default",
+                    "name": "test",
+                    "uid": "42",
+                    "generation": 1,
+                },
+                "spec": {
+                    "image": "example.com/clair:1.2.3",
+                    "databases": {
+                        "indexer": {
+                            "name": "test",
+                            "key": "database",
+                        },
+                        "matcher": {
+                            "name": "test",
+                            "key": "database",
+                        },
+                    },
+                },
+                "status": { },
+            }))
+            .expect("static JSON"),
+            Self::Finalize => from_value(json!({
+                "version": Clair::api_version(&()),
+                "kind": Clair::kind(&()),
+                "metadata": {
+                    "namespace": "default",
+                    "name": "test",
+                    "uid": "42",
+                    "finalizers": [ crate::clairs::CLAIR_FINALIZER ],
+                    "generation": 1,
+                },
+                "spec": { },
+                "status": { },
+            }))
+            .expect("static JSON"),
+            Self::Ready => from_value(json!({
+                "version": Clair::api_version(&()),
+                "kind": Clair::kind(&()),
+                "metadata": {
+                    "namespace": "default",
+                    "name": "test",
+                    "uid": "42",
+                    "finalizers": [ crate::clairs::CLAIR_FINALIZER ],
+                    "generation": 1,
+                },
+                "spec": {
+                    "image": "example.com/clair:1.2.3",
+                    "databases": {
+                        "indexer": {
+                            "name": "test",
+                            "key": "database",
+                        },
+                        "matcher": {
+                            "name": "test",
+                            "key": "database",
+                        },
+                    },
+                },
+                "status": {
+                    "config": {
+                        "root": {
+                            "name": "test",
+                            "key": "config.json",
+                        },
+                    },
+                },
+            }))
+            .expect("static JSON"),
+            Self::Configuration(scenario) => {
+                use ConfigurationScenario::*;
+                let c: Clair = from_value(json!({
+                    "version": Clair::api_version(&()),
+                    "kind": Clair::kind(&()),
+                    "metadata": {
+                        "namespace": "default",
+                        "name": "test",
+                        "uid": "42",
+                        "finalizers": [ crate::clairs::CLAIR_FINALIZER ],
+                        "generation": 2,
+                    },
+                    "spec": {
+                        "image": "example.com/clair:1.2.3",
+                        "databases": {
+                            "indexer": {
+                                "name": "test",
+                                "key": "database",
+                            },
+                            "matcher": {
+                                "name": "test",
+                                "key": "database",
+                            },
+                        },
+                    },
+                    "status": { },
+                }))
+                .expect("static JSON");
+                match scenario {
+                    Create => (),
+                };
+                c
+            }
+            Self::AdminPre(scenario) => {
+                use AdminPreScenario::*;
+                let mut c: Clair = from_value(json!({
+                    "version": Clair::api_version(&()),
+                    "kind": Clair::kind(&()),
+                    "metadata": {
+                        "namespace": "default",
+                        "name": "test",
+                        "uid": "42",
+                        "finalizers": [ crate::clairs::CLAIR_FINALIZER ],
+                        "generation": 2,
+                    },
+                    "spec": {
+                        "image": "example.com/clair:1.2.3",
+                        "databases": {
+                            "indexer": {
+                                "name": "test",
+                                "key": "database",
+                            },
+                            "matcher": {
+                                "name": "test",
+                                "key": "database",
+                            },
+                        },
+                    },
+                    "status": {
+                        "config": {
+                            "root": {
+                                "name": "test",
+                                "key": "config.json",
+                            },
+                        },
+                    },
+                }))
+                .expect("static JSON");
+                match scenario {
+                    New => (),
+                    Unversioned => {
+                        c.spec.image = Some("example.com/clair:noversion".into());
+                    }
+                    SpecChanged => {
+                        let status = c.status.as_mut().expect("status exists");
+                        status.image = Some("example.com/clair:1.0.0".into());
+                        status.conditions = vec![Condition {
+                            last_transition_time: meta::v1::Time(Timestamp::now()),
+                            message: "".into(),
+                            observed_generation: 1.into(),
+                            reason: "Testing".into(),
+                            status: "True".into(),
+                            type_: ConditionType::AdminPreJobDone.to_string(),
+                        }]
+                        .into();
+                    }
+                    SpecUnchangedCheck | SpecUnchangedDone => {
+                        let status = c.status.as_mut().expect("status exists");
+                        status.image = Some("example.com/clair:1.0.0".into());
+                        status.conditions = vec![Condition {
+                            last_transition_time: meta::v1::Time(Timestamp::now()),
+                            message: "".into(),
+                            observed_generation: 2.into(),
+                            reason: "ImageUpdated".into(),
+                            status: "False".into(),
+                            type_: ConditionType::AdminPreJobDone.to_string(),
+                        }]
+                        .into();
+                    }
+                };
+                c
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, EnumIter, EnumString)]
+#[strum(serialize_all = "snake_case")]
+pub enum ConfigurationScenario {
+    Create,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, EnumIter, EnumString)]
+#[strum(serialize_all = "snake_case")]
+pub enum AdminPreScenario {
+    Unversioned,
+    New,
+    SpecChanged,
+    SpecUnchangedCheck,
+    SpecUnchangedDone,
 }
 
 impl ClairServerVerifier {
@@ -132,41 +295,99 @@ impl ClairServerVerifier {
     /// You should await the `JoinHandle` (with a timeout) from this function to ensure that the
     /// scenario runs to completion (i.e. all expected calls were responded to),
     /// using the timeout to catch missing api calls to Kubernetes.
-    pub fn run(self, scenario: ClairScenario) -> tokio::task::JoinHandle<()> {
+    pub fn run(mut self, scenario: ClairScenario) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             use ClairScenario::*;
             // moving self => one scenario per test
             match scenario {
-                FinalizerCreation(c) => self.handle_finalizer_creation(c).await,
-                Event(c, ev) => {
-                    self.handle_event(c.clone(), ev.clone())
-                        .await
-                        .unwrap()
-                        .handle_event(c, ev)
-                        .await
+                FinalizerCreation => {
+                    let c = scenario.object();
+                    self.handle_finalizer_creation(c).await
                 }
-                Ready(c) => self.handle_ready(c).await,
-                //Scenario::EventPublishThenStatusPatch(reason, doc) => {
-                //    self.handle_event_create(reason)
-                //        .await
-                //        .unwrap()
-                //        .handle_status_patch(doc)
-                //        .await
-                //}
-                //Scenario::RadioSilence => Ok(self),
-                //Scenario::Cleanup(reason, doc) => {
-                //    self.handle_event_create(reason)
-                //        .await
-                //        .unwrap()
-                //        .handle_finalizer_removal(doc)
-                //        .await
-                //}
+                Finalize => {
+                    let c = scenario.object();
+                    self.handle_finalize(c).await
+                }
+                Ready => {
+                    let c = scenario.object();
+                    self.handle_ready(c).await
+                }
+                Configuration(which) => {
+                    use ConfigurationScenario::*;
+                    let c = scenario.object();
+                    match which {
+                        Create => self.configuration_create(c).await,
+                    }
+                }
+                AdminPre(which) => {
+                    use AdminPreScenario::*;
+                    let c = scenario.object();
+                    let meta = c.meta();
+                    let ns = meta.namespace.as_ref().unwrap();
+                    let name = meta.name.as_ref().unwrap();
+                    self.state.insert(
+                        format!("/v1/namespaces/{ns}/configmaps/{name}"),
+                        json!({
+                            "version": "v1",
+                            "kind": "ConfigMap",
+                            "metadata": {
+                                "name": name,
+                                "namespace": ns,
+                            },
+                            "data": {
+                                "config.json": "{}",
+                            },
+                        }),
+                    );
+                    match which {
+                        Unversioned => Ok(self), // do nothing, this should make no requests.
+                        New => self.admin_pre_new(c).await,
+                        SpecChanged => self.admin_pre_spec_changed(c).await,
+                        SpecUnchangedCheck => {
+                            self.state.insert(
+                                format!("/batch/v1/namespaces/{ns}/jobs/{name}-admin-pre-1.2.3"),
+                                json!({
+                                    "version": "batch/v1",
+                                    "kind": "Job",
+                                    "metadata": {
+                                        "name": name,
+                                        "namespace": ns,
+                                    },
+                                    "spec": { },
+                                    "status": {
+                                        "active": 1,
+                                    },
+                                }),
+                            );
+                            self.admin_pre_spec_unchanged_check(c).await
+                        }
+                        SpecUnchangedDone => {
+                            self.state.insert(
+                                format!("/batch/v1/namespaces/{ns}/jobs/{name}-admin-pre-1.2.3"),
+                                json!({
+                                    "version": "batch/v1",
+                                    "kind": "Job",
+                                    "metadata": {
+                                        "name": name,
+                                        "namespace": ns,
+                                    },
+                                    "spec": { },
+                                    "status": {
+                                        "active": 0,
+                                        "succeeded": 1,
+                                    },
+                                }),
+                            );
+                            self.admin_pre_spec_unchanged_done(c).await
+                        }
+                    }
+                }
             }
             .expect("scenario completed without errors");
         })
     }
 
-    async fn handle_finalizer_creation(mut self, c: Clair) -> Result<Self> {
+    async fn handle_finalizer_creation(mut self, mut c: Clair) -> Result<Self> {
         let (request, send) = self.next_request().await.expect("service not called");
         // We expect a json patch to the specified document adding our finalizer
         assert_eq!(request.method(), http::Method::PATCH);
@@ -186,17 +407,14 @@ impl ClairServerVerifier {
             serde_json::from_slice(&req_body).expect("valid document from runtime");
         assert_json_include!(actual: runtime_patch, expected: expected_patch);
 
-        let c = clair::finalized(c);
+        c.metadata.finalizers = vec![clairs::CLAIR_FINALIZER.into()].into();
         let response = serde_json::to_vec(&c).unwrap(); // respond as the apiserver would have
         send.send_response(Response::builder().body(Body::from(response)).unwrap());
 
         Ok(self)
     }
 
-    /// Tests that the next request is an Event matching "ev".
-    ///
-    /// Echoes back the sent event.
-    async fn handle_event(mut self, c: Clair, ev: Event) -> Result<Self> {
+    async fn event(mut self, c: Clair, ev: Event) -> Result<(Self, Clair)> {
         let (request, send) = self.next_request().await.expect("service not called");
         let uri = request.uri().to_string();
         eprintln!("{}\t{}", request.method(), &uri);
@@ -229,95 +447,31 @@ impl ClairServerVerifier {
         let response = serde_json::to_vec(&event).unwrap();
         send.send_response(Response::builder().body(Body::from(response)).unwrap());
 
-        Ok(self)
-    }
-
-    async fn handle_ready(mut self, mut c: Clair) -> Result<Self> {
-        self.state.insert(
-            "/v1/namespaces/default/configmaps/test".into(),
-            json!({
-                "version": "v1",
-                "kind": "ConfigMap",
-                "metadata": {
-                    "name": "test",
-                    "namespace": "default",
-                },
-                "data": {
-                    "config.json": "{}",
-                },
-            }),
-        );
-        self = // Initial ConfigMap check + creation:
-            self
-            .handle_check_resource::<ConfigMap>(&c)
-            .await?
-            .handle_update_resource::<ConfigMap, _>(&c, "test")
-            .await?
-            .handle_status_patch(&mut c)
-            .await?
-            // AdminPreJob check:
-            .handle_status_patch(&mut c)
-            .await?
-            // Image promotion:
-            .handle_status_patch(&mut c)
-            .await?
-            // Indexer check + creation:
-            .handle_check_resource::<Indexer>(&c)
-            .await?
-            .handle_create_resource::<Indexer>(&c)
-            .await?
-            .handle_status_patch(&mut c)
-            .await?
-            .handle_event(
-                c.clone(),
-                Event {
-                    type_: Some("Normal".into()),
-                    action: Some("CreatedIndexer".into()),
-                    reason: Some("Clair requires Indexer \"test\"".into()),
-                    ..Default::default()
-                },
-            )
-            .await?
-            // Matcher check + creation:
-            .handle_check_resource::<Matcher>(&c)
-            .await?
-            .handle_create_resource::<Matcher>(&c)
-            .await?
-            .handle_status_patch(&mut c)
-            .await?
-            .handle_event(
-                c.clone(),
-                Event {
-                    type_: Some("Normal".into()),
-                    action: Some("CreatedMatcher".into()),
-                    reason: Some("Clair requires Matcher \"test\"".into()),
-                    ..Default::default()
-                },
-            )
-            .await?;
-
-        Ok(self)
+        Ok((self, c))
     }
 
     /// Handles a GET for a resource of type `R`.
-    async fn handle_check_resource<R: Resource<DynamicType = ()>>(
-        mut self,
-        c: &Clair,
-    ) -> Result<Self> {
-        let name = c.name_any();
+    async fn check_resource<R, S>(mut self, c: Clair, name: Option<S>) -> Result<(Self, Clair)>
+    where
+        R: Resource<DynamicType = ()>,
+        S: AsRef<str>,
+    {
+        let name = name
+            .map(|v| v.as_ref().to_string())
+            .unwrap_or_else(|| c.name_any());
         let (request, send) = self.next_request().await.expect("service not called");
         let uri = request.uri().to_string();
         eprintln!("{}\t{}", request.method(), &uri);
         assert_eq!(request.method(), http::Method::GET, "unexpected method");
         // Need these asserts because core types use `/api/` and everything else uses `/apis/`.
-        assert!(uri.starts_with("/api"), "unexpected path");
+        assert!(uri.starts_with("/api"), "unexpected path: {uri}");
         let key = format!(
             "/{}/namespaces/default/{}/{}",
             R::api_version(&()),
             R::plural(&()),
             &name,
         );
-        assert!(uri.ends_with(&key), "unexpected path");
+        assert!(uri.ends_with(&key), "unexpected path: {key}");
 
         let response = if let Some(v) = self.state.get(&key) {
             eprintln!("found: {key}");
@@ -329,11 +483,10 @@ impl ClairServerVerifier {
         };
         send.send_response(response);
 
-        Ok(self)
+        Ok((self, c))
     }
 
-    /// Handles a POST for a resource of type `R`.
-    async fn handle_create_resource<R>(mut self, _c: &Clair) -> Result<Self>
+    async fn create_resource<R>(mut self, c: Clair) -> Result<(Self, Clair)>
     where
         R: Resource<DynamicType = ()>,
     {
@@ -372,16 +525,18 @@ impl ClairServerVerifier {
         self.state.insert(key, obj);
         send.send_response(Response::builder().body(Body::from(req_body)).unwrap());
 
-        Ok(self)
+        Ok((self, c))
     }
 
     /// Handles a PATCH for a resource of type `R`.
-    async fn handle_update_resource<R, S>(mut self, _c: &Clair, name: S) -> Result<Self>
+    async fn update_resource<R, S>(mut self, c: Clair, name: Option<S>) -> Result<(Self, Clair)>
     where
         R: Resource<DynamicType = ()>,
         S: AsRef<str>,
     {
-        let name = name.as_ref();
+        let name = name
+            .map(|v| v.as_ref().to_string())
+            .unwrap_or_else(|| c.name_any());
         let (request, send) = self.next_request().await.expect("service not called");
         let uri = request.uri().to_string();
         eprintln!("{}\t{}", request.method(), &uri);
@@ -422,10 +577,10 @@ impl ClairServerVerifier {
             .unwrap();
         send.send_response(response);
 
-        Ok(self)
+        Ok((self, c))
     }
 
-    async fn handle_status_patch(mut self, c: &mut Clair) -> Result<Self> {
+    async fn status_patch(mut self, mut c: Clair) -> Result<(Self, Clair)> {
         let (request, send) = self.next_request().await.expect("service not called");
         eprintln!("{}\t{}", request.method(), request.uri());
         assert_eq!(request.method(), http::Method::PATCH, "unexpected method");
@@ -453,11 +608,220 @@ impl ClairServerVerifier {
         );
         */
         c.status.merge_from(status.into());
-        let response = serde_json::to_vec(c).unwrap();
+        let response = serde_json::to_vec(&c).unwrap();
         // pass through document "patch accepted"
         send.send_response(Response::builder().body(Body::from(response)).unwrap());
 
-        Ok(self)
+        Ok((self, c))
+    }
+
+    async fn configuration_create(self, c: Clair) -> Result<Self> {
+        let (srv, _c) = self
+            .check_resource::<ConfigMap, &str>(c, None)
+            .and_then(|(srv, c)| srv.create_resource::<ConfigMap>(c))
+            .and_then(|(srv, c)| srv.status_patch(c))
+            .and_then(|(srv, c)| {
+                srv.event(
+                    c,
+                    Event {
+                        type_: Some("Normal".into()),
+                        reason: Some("Clair requires ConfigMap \"test\"".into()),
+                        action: Some("CreatedConfigMap".into()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .and_then(|(srv, c)| srv.status_patch(c))
+            .await?;
+
+        Ok(srv)
+    }
+
+    async fn admin_pre_new(self, c: Clair) -> Result<Self> {
+        let (srv, c) = self.status_patch(c).await?;
+        let status = c.status.as_ref().expect("have status");
+        let conditions = status.conditions.as_ref().expect("have conditions");
+        assert_eq!(conditions.len(), 1, "unexpected number of conditions");
+        Ok(srv)
+    }
+
+    async fn admin_pre_spec_changed(self, c: Clair) -> Result<Self> {
+        use crate::clairs::reason::AdminPre as Reason;
+
+        let (srv, c) = self
+            .create_resource::<Job>(c)
+            .and_then(|(srv, c)| srv.status_patch(c))
+            .await?;
+
+        let status = c.status.as_ref().expect("status exists");
+        let conditions = status.conditions.as_ref().expect("conditions exist");
+        assert_eq!(conditions.len(), 1, "unexpected number of conditions");
+
+        let cnd = &conditions[0];
+        println!("{cnd:?}");
+        assert_eq!(
+            ConditionType::AdminPreJobDone,
+            cnd.type_,
+            "unexpected Condition type"
+        );
+        assert_eq!(cnd.status, "False", "unexpected Condition status");
+        assert_eq!(
+            Reason::ImageUpdated,
+            cnd.reason,
+            "unexpected Condition reason"
+        );
+
+        Ok(srv)
+    }
+
+    async fn admin_pre_spec_unchanged_check(self, c: Clair) -> Result<Self> {
+        use crate::clairs::reason::AdminPre as Reason;
+
+        let (srv, c) = self
+            .check_resource::<Job, _>(c, Some("test-admin-pre-1.2.3"))
+            .and_then(|(srv, c)| srv.status_patch(c))
+            .await?;
+
+        let status = c.status.as_ref().expect("status exists");
+        let conditions = status.conditions.as_ref().expect("conditions exist");
+        assert_eq!(conditions.len(), 1, "unexpected number of conditions");
+
+        let cnd = &conditions[0];
+        println!("{cnd:?}");
+        assert_eq!(
+            ConditionType::AdminPreJobDone,
+            cnd.type_,
+            "unexpected Condition type"
+        );
+        assert_eq!(cnd.status, "False", "unexpected Condition status");
+        assert_eq!(
+            Reason::JobNotComplete,
+            cnd.reason,
+            "unexpected Condition reason"
+        );
+
+        Ok(srv)
+    }
+
+    async fn admin_pre_spec_unchanged_done(self, c: Clair) -> Result<Self> {
+        use crate::clairs::reason::AdminPre as Reason;
+
+        let (srv, c) = self
+            .check_resource::<Job, _>(c, Some("test-admin-pre-1.2.3"))
+            .and_then(|(srv, c)| srv.status_patch(c))
+            .await?;
+
+        let status = c.status.as_ref().expect("status exists");
+        let conditions = status.conditions.as_ref().expect("conditions exist");
+        assert_eq!(conditions.len(), 1, "unexpected number of conditions");
+
+        let cnd = &conditions[0];
+        println!("{cnd:?}");
+        assert_eq!(
+            ConditionType::AdminPreJobDone,
+            cnd.type_,
+            "unexpected Condition type"
+        );
+        assert_eq!(cnd.status, "True", "unexpected Condition status");
+        assert_eq!(
+            Reason::JobSucceeded,
+            cnd.reason,
+            "unexpected Condition reason"
+        );
+
+        Ok(srv)
+    }
+
+    async fn handle_ready(mut self, c: Clair) -> Result<Self> {
+        self.state.insert(
+            "/v1/namespaces/default/configmaps/test".into(),
+            json!({
+                "version": "v1",
+                "kind": "ConfigMap",
+                "metadata": {
+                    "name": "test",
+                    "namespace": "default",
+                },
+                "data": {
+                    "config.json": "{}",
+                },
+            }),
+        );
+
+        // ConfigMap
+        let (srv, c) = self
+            .check_resource::<ConfigMap, &str>(c, None)
+            .and_then(|(srv, c)| srv.update_resource::<ConfigMap, &str>(c, None))
+            .and_then(|(srv, c)| srv.status_patch(c))
+            .await?;
+        // AdminPre
+        let (srv, c) = srv.status_patch(c).await?;
+        // Image promotion
+        let (srv, c) = srv.status_patch(c).await?;
+        // Indexer
+        let (srv, c) = srv
+            .check_resource::<Indexer, &str>(c, None)
+            .and_then(|(srv, c)| srv.create_resource::<Indexer>(c))
+            .and_then(|(srv, c)| srv.status_patch(c))
+            .and_then(|(srv, c)| {
+                srv.event(
+                    c,
+                    Event {
+                        type_: Some("Normal".into()),
+                        action: Some("CreatedIndexer".into()),
+                        reason: Some("Clair requires Indexer \"test\"".into()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .await?;
+        // Matcher
+        let (srv, _c) = srv
+            .check_resource::<Matcher, &str>(c, None)
+            .and_then(|(srv, c)| srv.create_resource::<Matcher>(c))
+            .and_then(|(srv, c)| srv.status_patch(c))
+            .and_then(|(srv, c)| {
+                srv.event(
+                    c,
+                    Event {
+                        type_: Some("Normal".into()),
+                        action: Some("CreatedMatcher".into()),
+                        reason: Some("Clair requires Matcher \"test\"".into()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .await?;
+
+        Ok(srv)
+    }
+
+    async fn handle_finalize(self, c: Clair) -> Result<Self> {
+        let (srv, _c) = self
+            .event(
+                c,
+                Event {
+                    type_: Some("Warning".into()),
+                    reason: Some("MissingRequiredField".to_string()),
+                    action: Some("Reconcile".into()),
+                    ..Default::default()
+                },
+            )
+            .and_then(|(srv, mut c)| {
+                c.spec.image = Some("example.com/clair:test".into());
+                srv.event(
+                    c,
+                    Event {
+                        type_: Some("Warning".into()),
+                        reason: Some("MissingRequiredField".to_string()),
+                        action: Some("Reconcile".into()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .await?;
+
+        Ok(srv)
     }
 }
 
