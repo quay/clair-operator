@@ -78,7 +78,7 @@ version = "0.31"
 features = ["rt-tokio"]
 
 [dependencies.strum]
-version = "0.27"
+version = "0.28"
 features = ["derive"]
 
 [dependencies.tower-http]
