@@ -12,8 +12,11 @@ use std::{
 };
 
 use futures::Future;
-use k8s_openapi::apimachinery::pkg::apis::meta::{self, v1::Condition};
-use kube::{api::GroupVersionKind, runtime::events};
+use k8s_openapi::{
+    apimachinery::pkg::apis::meta::{self, v1::Condition},
+    jiff::Timestamp,
+};
+use kube::{Resource, api::GroupVersionKind, runtime::events};
 use regex::Regex;
 use strum::{EnumString, IntoStaticStr};
 use tokio::sync::RwLock;
@@ -250,20 +253,6 @@ static REPORTER: LazyLock<events::Reporter> = LazyLock::new(|| events::Reporter 
     ),
 });
 
-/// Condition is like [keyify], but does not force lower-case.
-fn condition<S: ToString, K: AsRef<str>>(space: S, key: K) -> String {
-    let mut out = space.to_string();
-    out.push('/');
-    key.as_ref()
-        .chars()
-        .map(|c| match c {
-            '_' | ' ' | '\t' | '\n' => '-',
-            _ => c,
-        })
-        .for_each(|c| out.push(c));
-    out
-}
-
 /// Keyify sanitizes the key for use in k8s metadata.
 fn keyify<S: ToString, K: AsRef<str>>(space: S, key: K) -> String {
     let key = key.as_ref();
@@ -277,12 +266,6 @@ fn keyify<S: ToString, K: AsRef<str>>(space: S, key: K) -> String {
         })
         .for_each(|c| out.push(c));
     out
-}
-
-/// Clair_condition returns the provided argument as a name in the clair-controller's space,
-/// sutable for use as a condition type.
-pub fn clair_condition<S: AsRef<str>>(s: S) -> String {
-    condition(api::GROUP, s)
 }
 
 /// ...
@@ -310,6 +293,8 @@ pub enum ConditionType {
     AdminPreJobDone,
     /// ...
     AdminPostJobDone,
+    /// ...
+    SpecOk,
 }
 
 impl std::fmt::Display for ConditionType {
@@ -361,9 +346,38 @@ impl_conditiontypefor!(
 );
 
 /// ...
-pub trait StatusConditions {
+pub trait StatusConditions: Resource {
     /// ...
     fn get_conditions(&self) -> Option<&Vec<Condition>>;
+
+    /// ...
+    fn new_condition<R, M>(
+        &self,
+        type_: ConditionType,
+        status: ConditionStatus,
+        reason: R,
+        message: M,
+    ) -> Condition
+    where
+        R: ToString,
+        M: ToString,
+    {
+        let observed_generation = self.meta().generation;
+        let type_ = type_.to_string();
+        let status: &'static str = status.into();
+        let status = String::from(status);
+        let reason = reason.to_string();
+        let message = message.to_string();
+
+        Condition {
+            last_transition_time: meta::v1::Time(Timestamp::now()),
+            observed_generation,
+            type_,
+            status,
+            reason,
+            message,
+        }
+    }
 
     /// ...
     fn find_condition(&self, ty: ConditionType) -> Option<&Condition> {
@@ -382,6 +396,24 @@ impl StatusConditions for Indexer {
     fn get_conditions(&self) -> Option<&Vec<Condition>> {
         self.status.as_ref().and_then(|s| s.conditions.as_ref())
     }
+}
+
+impl StatusConditions for Matcher {
+    fn get_conditions(&self) -> Option<&Vec<Condition>> {
+        self.status.as_ref().and_then(|s| s.conditions.as_ref())
+    }
+}
+
+/// ...
+#[derive(Clone, Copy, Debug, Default, PartialEq, IntoStaticStr, EnumString)]
+pub enum ConditionStatus {
+    /// ...
+    #[default]
+    Unknown,
+    /// ...
+    True,
+    /// ...
+    False,
 }
 
 /// Clair_label returns the provided argument as a name in the clair-controller's space, sutable

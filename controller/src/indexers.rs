@@ -25,7 +25,7 @@ use tokio::{
 use tokio_stream::wrappers::SignalStream;
 use tracing::*;
 
-use crate::{Context, clair_condition, prelude::*, util::check_owned_resource};
+use crate::{Context, prelude::*, util::check_owned_resource};
 use clair_templates::{Build, ServiceBuilder, render_dropin};
 use v1alpha1::Indexer;
 
@@ -202,7 +202,7 @@ async fn check_spec(indexer: &Indexer, ctx: &Context) -> Result<Option<Action>> 
     let mut cnd = Condition {
         last_transition_time: meta::v1::Time(Timestamp::now()),
         observed_generation: indexer.metadata.generation,
-        type_: clair_condition("SpecOK"),
+        type_: ConditionType::SpecOk.to_string(),
         message: "".into(),
         reason: "SpecIncomplete".into(),
         status: "False".into(),

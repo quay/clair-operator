@@ -15,7 +15,7 @@ use tokio::{
 };
 use tokio_stream::wrappers::SignalStream;
 
-use crate::{clair_condition, cmp_condition, merge_condition, prelude::*};
+use crate::{cmp_condition, merge_condition, prelude::*};
 use clair_templates::{
     Build, DeploymentBuilder, HTTPRouteBuilder, HorizontalPodAutoscalerBuilder, ServiceBuilder,
     render_dropin,
@@ -214,7 +214,7 @@ impl Reconciler {
             last_transition_time: meta::v1::Time(Timestamp::now()),
             reason: "DeploymentCreated".into(),
             status: "True".into(),
-            type_: clair_condition("DeploymentCreated"),
+            type_: "DeploymentCreated".into(),
         };
         self.set_condition(cnd).await?;
 
@@ -252,7 +252,7 @@ impl Reconciler {
             last_transition_time: meta::v1::Time(Timestamp::now()),
             reason: "ServiceCreated".into(),
             status: "True".into(),
-            type_: clair_condition("ServiceCreated"),
+            type_: "ServiceCreated".into(),
         };
         self.set_condition(cnd).await?;
 
@@ -290,7 +290,7 @@ impl Reconciler {
             last_transition_time: meta::v1::Time(Timestamp::now()),
             reason: "HorizontalPodAutoscalerCreated".into(),
             status: "True".into(),
-            type_: clair_condition("HorizontalPodAutoscalerCreated"),
+            type_: "HorizontalPodAutoscalerCreated".into(),
         };
         self.set_condition(cnd).await?;
 
@@ -328,7 +328,7 @@ impl Reconciler {
             last_transition_time: meta::v1::Time(Timestamp::now()),
             reason: "HTTPRouteCreated".into(),
             status: "True".into(),
-            type_: clair_condition("HTTPRouteCreated"),
+            type_: "HTTPRouteCreated".into(),
         };
         self.set_condition(cnd).await?;
 
@@ -340,7 +340,7 @@ impl Reconciler {
         let mut cnd = Condition {
             last_transition_time: meta::v1::Time(Timestamp::now()),
             observed_generation: self.matcher.metadata.generation,
-            type_: clair_condition("SpecOK"),
+            type_: ConditionType::SpecOk.to_string(),
             message: "".into(),
             reason: "SpecIncomplete".into(),
             status: "False".into(),

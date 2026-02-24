@@ -21,7 +21,7 @@ use tokio::{
 use tokio_stream::wrappers::SignalStream;
 use tracing::*;
 
-use crate::{Context, image_version, prelude::*, util::check_owned_resource};
+use crate::{ConditionStatus::*, Context, image_version, prelude::*, util::check_owned_resource};
 use api::v1alpha1::{Clair, ClairStatus, DropinSelector, Indexer, Matcher, Notifier};
 use clair_templates::{
     Build, ConfigMapBuilder, ConfigSourceBuilder, IndexerBuilder, JobBuilder, MatcherBuilder,
@@ -247,14 +247,7 @@ async fn configuration(clair: &Clair, ctx: &Context) -> Result<()> {
         "status": {
             "config": cfgsrc,
             "conditions": [
-                 Condition {
-                    message: "ConfigSource object in desired state".into(),
-                    observed_generation: clair.metadata.generation,
-                    last_transition_time: meta::v1::Time(Timestamp::now()),
-                    reason: Reason::Reconciled.to_string(),
-                    status: "True".into(),
-                    type_: ConditionType::ConfigReady.to_string(),
-                }
+                clair.new_condition(ConditionType::ConfigReady, True, Reason::Reconciled, "ConfigSource object in desired state"),
             ],
         }
     }));
@@ -329,30 +322,26 @@ async fn admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
             // Create "empty" condition":
             let reason = Reason::NewClair;
             info!(%reason, r#"skipping "admin pre" job"#);
-            Condition {
-                message: "pre jobs are not needed on a fresh system".into(),
-                observed_generation: clair.metadata.generation,
-                last_transition_time: meta::v1::Time(Timestamp::now()),
-                status: "True".into(),
-                type_: job_type.to_string(),
-                reason: reason.to_string(),
-            }
+            clair.new_condition(
+                job_type,
+                True,
+                reason,
+                "pre jobs are not needed on a fresh system",
+            )
         }
-        (Some(cnd), Some(ref job)) => {
+        (Some(_), Some(ref job)) => {
             // Create the Job and report the update condition.
             let reason = Reason::ImageUpdated;
             info!(%reason, r#"creating "admin pre" job"#);
             jobs.create(&CREATE_PARAMS, job)
                 .instrument(debug_span!("create"))
                 .await?;
-            Condition {
-                message: "spec changed, launching \"admin pre\" job".into(),
-                observed_generation: clair.metadata.generation,
-                last_transition_time: meta::v1::Time(Timestamp::now()),
-                status: "False".into(),
-                reason: reason.to_string(),
-                ..cnd.clone()
-            }
+            clair.new_condition(
+                job_type,
+                False,
+                reason,
+                r#"spec changed, launching "admin pre" job"#,
+            )
         }
         // Haven't marked the Job as completed:
         (Some(cnd), None) if cnd.status != "True" => {
@@ -371,43 +360,35 @@ async fn admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
                         Some(0) => match (status.succeeded, status.failed) {
                             (_, Some(1)) => {
                                 // TODO(hank) Emit an event so someone takes a gander.
-                                Condition {
-                                    message: "job failed, please investigate".into(),
-                                    observed_generation: clair.metadata.generation,
-                                    last_transition_time: meta::v1::Time(Timestamp::now()),
-                                    reason: Reason::JobFailed.to_string(),
-                                    status: "False".into(),
-                                    ..cnd.clone()
-                                }
+                                clair.new_condition(
+                                    job_type,
+                                    False,
+                                    Reason::JobFailed,
+                                    "job failed, please investigate",
+                                )
                             }
-                            (Some(1), _) => Condition {
-                                message: "job completed successfully".into(),
-                                observed_generation: clair.metadata.generation,
-                                last_transition_time: meta::v1::Time(Timestamp::now()),
-                                reason: Reason::JobSucceeded.to_string(),
-                                status: "True".into(),
-                                ..cnd.clone()
-                            },
+                            (Some(1), _) => clair.new_condition(
+                                job_type,
+                                True,
+                                Reason::JobSucceeded,
+                                "job completed successfully",
+                            ),
                             _ => unreachable!(),
                         },
-                        Some(_) | None => Condition {
-                            message: "job not complete".into(),
-                            observed_generation: clair.metadata.generation,
-                            last_transition_time: meta::v1::Time(Timestamp::now()),
-                            reason: Reason::JobNotComplete.to_string(),
-                            status: "False".into(),
-                            ..cnd.clone()
-                        },
+                        Some(_) | None => clair.new_condition(
+                            job_type,
+                            False,
+                            Reason::JobNotComplete,
+                            "job not complete",
+                        ),
                     }
                 }
-                None => Condition {
-                    message: format!(r#"unable to fetch job "{name}""#),
-                    observed_generation: clair.metadata.generation,
-                    last_transition_time: meta::v1::Time(Timestamp::now()),
-                    reason: Reason::JobMissing.to_string(),
-                    status: "Unknown".into(),
-                    ..cnd.clone()
-                },
+                None => clair.new_condition(
+                    job_type,
+                    Unknown,
+                    Reason::JobMissing,
+                    format!(r#"unable to fetch job "{name}""#),
+                ),
             }
         }
         // The Job is completed, no need to touch the status.
@@ -603,6 +584,7 @@ mod tests {
         }
 
         testcase!(create);
+        testcase!(created);
     }
 
     #[cfg(test)]
@@ -631,5 +613,60 @@ mod tests {
         testcase!(spec_changed);
         testcase!(spec_unchanged_check);
         testcase!(spec_unchanged_done);
+    }
+
+    #[cfg(test)]
+    mod promote_image {
+        use std::str::FromStr;
+
+        use crate::{clairs, testing::*, *};
+
+        macro_rules! testcase {
+            ($s:ident) => {
+                #[self::test(tokio::test(flavor = "multi_thread", worker_threads = 1))]
+                async fn $s() {
+                    let tc = PromoteImageScenario::from_str(stringify!($s)).unwrap();
+                    let tc = ClairScenario::PromoteImage(tc);
+                    let (testctx, fakeserver) = Context::clair_tests();
+                    let c = tc.object();
+                    let mocksrv = fakeserver.run(tc);
+                    clairs::promote_image(&c, &testctx)
+                        .await
+                        .expect("reconciler");
+                    timeout_after_1s(mocksrv).await;
+                }
+            };
+        }
+
+        testcase!(no_condition);
+        testcase!(same_image);
+        testcase!(old_condition);
+        testcase!(not_ready);
+        testcase!(ready);
+    }
+
+    #[cfg(test)]
+    mod indexer {
+        use std::str::FromStr;
+
+        use crate::{clairs, testing::*, *};
+
+        macro_rules! testcase {
+            ($s:ident) => {
+                #[self::test(tokio::test(flavor = "multi_thread", worker_threads = 1))]
+                async fn $s() {
+                    let tc = IndexerScenario::from_str(stringify!($s)).unwrap();
+                    let tc = ClairScenario::Indexer(tc);
+                    let (testctx, fakeserver) = Context::clair_tests();
+                    let c = tc.object();
+                    let mocksrv = fakeserver.run(tc);
+                    clairs::indexer(&c, &testctx).await.expect("reconciler");
+                    timeout_after_1s(mocksrv).await;
+                }
+            };
+        }
+
+        testcase!(create);
+        testcase!(update);
     }
 }
