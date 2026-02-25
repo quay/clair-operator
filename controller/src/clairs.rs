@@ -2,6 +2,10 @@
 
 use std::sync::{Arc, LazyLock};
 
+use futures::{
+    future::FutureExt,
+    stream::{self, StreamExt},
+};
 use k8s_openapi::api::{batch::v1::Job, core::v1::ConfigMap};
 use kube::{
     Resource, ResourceExt,
@@ -21,7 +25,13 @@ use tokio::{
 use tokio_stream::wrappers::SignalStream;
 use tracing::*;
 
-use crate::{ConditionStatus::*, Context, image_version, prelude::*, util::check_owned_resource};
+use crate::{
+    Context,
+    condition::{Status::*, new as new_condition},
+    image_version,
+    prelude::*,
+    util::check_owned_resource,
+};
 use api::v1alpha1::{Clair, ClairStatus, DropinSelector, Indexer, Matcher, Notifier};
 use clair_templates::{
     Build, ConfigMapBuilder, ConfigSourceBuilder, IndexerBuilder, JobBuilder, MatcherBuilder,
@@ -247,7 +257,7 @@ async fn configuration(clair: &Clair, ctx: &Context) -> Result<()> {
         "status": {
             "config": cfgsrc,
             "conditions": [
-                clair.new_condition(ConditionType::ConfigReady, True, Reason::Reconciled, "ConfigSource object in desired state"),
+                new_condition(clair, Type::ConfigReady, True, Reason::Reconciled, "ConfigSource object in desired state"),
             ],
         }
     }));
@@ -292,7 +302,7 @@ async fn admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
     let clairs = Api::<Clair>::namespaced(ctx.client.clone(), &ns);
     let jobs = Api::<Job>::namespaced(ctx.client.clone(), &ns);
 
-    let job_type = ConditionType::AdminPreJobDone;
+    let job_type = Type::AdminPreJobDone;
     let pre_job_cnd = clair.find_condition(job_type);
     let spec_image = clair.spec.image.as_ref();
     let status_image = clair.status.as_ref().and_then(|s| s.image.as_ref());
@@ -322,7 +332,8 @@ async fn admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
             // Create "empty" condition":
             let reason = Reason::NewClair;
             info!(%reason, r#"skipping "admin pre" job"#);
-            clair.new_condition(
+            new_condition(
+                clair,
                 job_type,
                 True,
                 reason,
@@ -336,7 +347,8 @@ async fn admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
             jobs.create(&CREATE_PARAMS, job)
                 .instrument(debug_span!("create"))
                 .await?;
-            clair.new_condition(
+            new_condition(
+                clair,
                 job_type,
                 False,
                 reason,
@@ -360,14 +372,16 @@ async fn admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
                         Some(0) => match (status.succeeded, status.failed) {
                             (_, Some(1)) => {
                                 // TODO(hank) Emit an event so someone takes a gander.
-                                clair.new_condition(
+                                new_condition(
+                                    clair,
                                     job_type,
                                     False,
                                     Reason::JobFailed,
                                     "job failed, please investigate",
                                 )
                             }
-                            (Some(1), _) => clair.new_condition(
+                            (Some(1), _) => new_condition(
+                                clair,
                                 job_type,
                                 True,
                                 Reason::JobSucceeded,
@@ -375,7 +389,8 @@ async fn admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
                             ),
                             _ => unreachable!(),
                         },
-                        Some(_) | None => clair.new_condition(
+                        Some(_) | None => new_condition(
+                            clair,
                             job_type,
                             False,
                             Reason::JobNotComplete,
@@ -383,7 +398,8 @@ async fn admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
                         ),
                     }
                 }
-                None => clair.new_condition(
+                None => new_condition(
+                    clair,
                     job_type,
                     Unknown,
                     Reason::JobMissing,
@@ -413,7 +429,7 @@ async fn admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
 
 #[instrument(skip(clair, ctx), ret)]
 async fn promote_image(clair: &Clair, ctx: &Context) -> Result<()> {
-    let job_type = ConditionType::AdminPreJobDone;
+    let job_type = Type::AdminPreJobDone;
     let pre_job_cnd = clair.find_condition(job_type);
     let spec_image = clair.spec.image.as_ref();
     let status_image = clair.status.as_ref().and_then(|s| s.image.as_ref());
@@ -458,18 +474,79 @@ async fn promote_image(clair: &Clair, ctx: &Context) -> Result<()> {
     Ok(())
 }
 
-#[instrument(skip(clair, _ctx), ret)]
-async fn admin_post(clair: &Clair, _ctx: &Context) -> Result<()> {
+#[instrument(skip(clair, ctx), ret)]
+async fn admin_post(clair: &Clair, ctx: &Context) -> Result<()> {
+    use apps::v1::Deployment;
     info!(TODO = true, "write admin post job");
 
-    let _ns = clair.namespace().expect("Clair is namespaced");
-
-    let post_job_type = ConditionType::AdminPostJobDone;
-    let post_job_cnd = clair
-        .status
+    let ns = clair
+        .metadata
+        .namespace
         .as_ref()
-        .and_then(|s| s.conditions.as_ref())
-        .and_then(|cs| cs.iter().find(|&c| post_job_type == c.type_));
+        .expect("Clair is namespaced");
+    let name = clair.metadata.name.as_ref().expect("Clair has a name");
+    let spec = &clair.spec;
+
+    // Check that the conditions on this object are in the correct state:
+    let ok = [
+        Some(Type::AdminPostJobDone),
+        Some(Type::IndexerCreated),
+        Some(Type::MatcherCreated),
+        spec.notifier
+            .and_then(|enable| enable.then_some(Type::NotifierCreated)),
+    ]
+    .into_iter()
+    .flatten()
+    .all(|typ| {
+        clair
+            .find_condition(typ)
+            .inspect(|&cnd| debug!("type" = %cnd.type_, %cnd.status, "condition"))
+            .is_some_and(|cnd| Status::True == cnd.status)
+    });
+    if !ok {
+        // TODO(hank): Event/Condition
+        return Ok(());
+    }
+
+    // Check that the dependant Deployments are in the correct state:
+    let ok = stream::iter(
+        [
+            Some(Indexer::kind(&())),
+            Some(Matcher::kind(&())),
+            spec.notifier
+                .and_then(|enable| enable.then(|| Notifier::kind(&()))),
+        ]
+        .into_iter()
+        .filter_map(|k| k.map(|kind| format!("{name}-{kind}"))),
+    )
+    .then(|name| async move {
+        Api::<Deployment>::namespaced(ctx.client.clone(), ns)
+            .get_status(&name)
+            .instrument(debug_span!("get_status"))
+            .await
+    })
+    .try_all(|d: Deployment| async move {
+        let name = d.metadata.name.as_ref().expect("Deployment has a name");
+        d.status
+            .as_ref()
+            .and_then(|status| status.conditions.as_ref())
+            .and_then(|cnds| {
+                cnds.iter()
+                    .inspect(|&cnd| debug!(name, "type" = %cnd.type_, %cnd.status, "condition"))
+                    .find(|&cnd| cnd.type_ == "Ready" && cnd.status == "True")
+            })
+            .is_some()
+    })
+    .await?;
+    if !ok {
+        // TODO(hank): Event/Condition
+        return Ok(());
+    }
+
+    // Now, do basically the same thing as the PreJob:
+
+    let post_job_type = Type::AdminPostJobDone;
+    let post_job_cnd = clair.find_condition(post_job_type);
 
     match post_job_cnd {
         Some(c) if c.status == "True" => (), // Continue

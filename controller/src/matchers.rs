@@ -340,7 +340,7 @@ impl Reconciler {
         let mut cnd = Condition {
             last_transition_time: meta::v1::Time(Timestamp::now()),
             observed_generation: self.matcher.metadata.generation,
-            type_: ConditionType::SpecOk.to_string(),
+            type_: Type::SpecOk.to_string(),
             message: "".into(),
             reason: "SpecIncomplete".into(),
             status: "False".into(),

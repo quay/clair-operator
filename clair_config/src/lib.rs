@@ -277,7 +277,7 @@ impl K8sMap for BTreeMap<String, String> {
 impl Sealed for BTreeMap<String, Vec<u8>> {}
 impl K8sMap for BTreeMap<String, Vec<u8>> {
     fn value(&self, key: String) -> Option<Vec<u8>> {
-        self.get(&key).map(|v| v.clone())
+        self.get(&key).cloned()
     }
 }
 

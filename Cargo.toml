@@ -69,6 +69,10 @@ features = ["schemars"]
 version = "3.0"
 default-features = false
 
+[workspace.dependencies.strum]
+version = "0.28"
+features = ["derive"]
+
 [profile.dev]
 split-debuginfo = "unpacked"
 [profile.dev.package."*"]

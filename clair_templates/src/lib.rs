@@ -1488,7 +1488,7 @@ impl ConfigSourceBuilder {
         next.sort();
         next.dedup();
         Self {
-            ext_dropins: if next.len() == 0 { None } else { Some(next) },
+            ext_dropins: (!next.is_empty()).then_some(next),
             ..self
         }
     }

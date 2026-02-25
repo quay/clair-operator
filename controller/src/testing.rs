@@ -20,6 +20,7 @@ use strum::EnumString;
 use tower_test::mock::SendResponse;
 
 use super::*;
+use crate::condition::{Conditions, new as new_condition};
 use api::v1alpha1::{Clair, ClairStatus, Indexer, Matcher};
 
 pub use test_log::test;
@@ -74,8 +75,8 @@ pub enum ClairScenario {
 
 impl ClairScenario {
     pub fn object(&self) -> Clair {
-        use ConditionStatus::*;
-        use ConditionType::*;
+        use condition::Status::*;
+        use condition::Type::*;
 
         match self {
             Self::FinalizerCreation => from_value(json!({
@@ -225,14 +226,14 @@ impl ClairScenario {
                         c.spec.image = Some("example.com/clair:noversion".into());
                     }
                     SpecChanged => {
-                        let mut cnd = c.new_condition(AdminPreJobDone, True, "Testing", "");
+                        let mut cnd = new_condition(&c, AdminPreJobDone, True, "Testing", "");
                         cnd.observed_generation = Some(1);
                         let status = c.status.as_mut().expect("status exists");
                         status.image = Some("example.com/clair:1.0.0".into());
                         status.conditions = vec![cnd].into();
                     }
                     SpecUnchangedCheck | SpecUnchangedDone => {
-                        let cnd = c.new_condition(AdminPreJobDone, False, "ImageUpdated", "");
+                        let cnd = new_condition(&c, AdminPreJobDone, False, "ImageUpdated", "");
                         let status = c.status.as_mut().expect("status exists");
                         status.image = Some("example.com/clair:1.0.0".into());
                         status.conditions = vec![cnd].into();
@@ -280,24 +281,21 @@ impl ClairScenario {
                 match scenario {
                     NoCondition => (),
                     OldCondition => {
-                        let mut cnd = c.new_condition(AdminPreJobDone, True, "Test", "");
+                        let mut cnd = new_condition(&c, AdminPreJobDone, True, "Test", "");
                         cnd.observed_generation = Some(1);
-                        let status = c.status.as_mut().expect("Clair has status");
-                        status.conditions = vec![cnd].into();
+                        c.get_conditions_mut().expect("Clair has status").push(cnd);
                     }
                     SameImage => {
                         let status = c.status.as_mut().expect("Clair has status");
                         status.image = c.spec.image.clone();
                     }
                     NotReady => {
-                        let cnd = c.new_condition(AdminPreJobDone, False, "Test", "");
-                        let status = c.status.as_mut().expect("Clair has status");
-                        status.conditions = vec![cnd].into();
+                        let cnd = new_condition(&c, AdminPreJobDone, False, "Test", "");
+                        c.get_conditions_mut().expect("Clair has status").push(cnd);
                     }
                     Ready => {
-                        let cnd = c.new_condition(AdminPreJobDone, True, "Test", "");
-                        let status = c.status.as_mut().expect("Clair has status");
-                        status.conditions = vec![cnd].into();
+                        let cnd = new_condition(&c, AdminPreJobDone, True, "Test", "");
+                        c.get_conditions_mut().expect("Clair has status").push(cnd);
                     }
                 };
 
@@ -345,11 +343,10 @@ impl ClairScenario {
                 match scenario {
                     Create => (),
                     Update => {
-                        let mut cnd = c.new_condition(IndexerCreated, True, "Test", "");
+                        let mut cnd = new_condition(&c, IndexerCreated, True, "Test", "");
                         cnd.observed_generation = Some(1);
-                        let status = c.status.as_mut().expect("Clair has status");
-                        status.conditions = vec![cnd].into();
-                    },
+                        c.get_conditions_mut().expect("Clair has status").push(cnd);
+                    }
                 };
 
                 c
@@ -558,16 +555,14 @@ impl ClairServerVerifier {
     }
 
     fn job_name(c: &Clair) -> String {
+        use condition::Type;
         let name = c.metadata.name.as_ref().expect("Clair should have name");
 
-        let cnd = [
-            ConditionType::AdminPreJobDone,
-            ConditionType::AdminPostJobDone,
-        ]
-        .into_iter()
-        .flat_map(|ty| c.find_condition(ty))
-        .next()
-        .expect("should have Condition");
+        let cnd = [Type::AdminPreJobDone, Type::AdminPostJobDone]
+            .into_iter()
+            .flat_map(|ty| c.find_condition(ty))
+            .next()
+            .expect("should have Condition");
         let job = match cnd.type_.as_str() {
             "clairproject.org/AdminPreJobDone" => "admin-pre",
             "clairproject.org/AdminPostJobDone" => "admin-post",
@@ -870,7 +865,7 @@ impl ClairServerVerifier {
         let cnd = &conditions[0];
         println!("{cnd:?}");
         assert_eq!(
-            ConditionType::ConfigReady,
+            condition::Type::ConfigReady,
             cnd.type_,
             "unexpected Condition type"
         );
@@ -918,7 +913,7 @@ impl ClairServerVerifier {
         let cnd = &conditions[0];
         println!("{cnd:?}");
         assert_eq!(
-            ConditionType::ConfigReady,
+            condition::Type::ConfigReady,
             cnd.type_,
             "unexpected Condition type"
         );
@@ -955,7 +950,7 @@ impl ClairServerVerifier {
         let cnd = &conditions[0];
         println!("{cnd:?}");
         assert_eq!(
-            ConditionType::AdminPreJobDone,
+            condition::Type::AdminPreJobDone,
             cnd.type_,
             "unexpected Condition type"
         );
@@ -1002,7 +997,7 @@ impl ClairServerVerifier {
         let cnd = &conditions[0];
         println!("{cnd:?}");
         assert_eq!(
-            ConditionType::AdminPreJobDone,
+            condition::Type::AdminPreJobDone,
             cnd.type_,
             "unexpected Condition type"
         );
@@ -1050,7 +1045,7 @@ impl ClairServerVerifier {
         let cnd = &conditions[0];
         println!("{cnd:?}");
         assert_eq!(
-            ConditionType::AdminPreJobDone,
+            condition::Type::AdminPreJobDone,
             cnd.type_,
             "unexpected Condition type"
         );

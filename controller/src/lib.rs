@@ -12,13 +12,9 @@ use std::{
 };
 
 use futures::Future;
-use k8s_openapi::{
-    apimachinery::pkg::apis::meta::{self, v1::Condition},
-    jiff::Timestamp,
-};
-use kube::{Resource, api::GroupVersionKind, runtime::events};
+use k8s_openapi::apimachinery::pkg::apis::meta::{self, v1::Condition};
+use kube::{api::GroupVersionKind, runtime::events};
 use regex::Regex;
-use strum::{EnumString, IntoStaticStr};
 use tokio::sync::RwLock;
 #[allow(unused_imports)]
 use tracing::{error, info, instrument, trace, warn};
@@ -55,7 +51,8 @@ pub(crate) mod prelude {
     pub use api::v1alpha1;
 
     pub use super::{CONTROLLER_NAME, CREATE_PARAMS, DEFAULT_REQUEUE, PATCH_PARAMS};
-    pub use super::{ConditionType, ControllerFuture, Error, Result, State, StatusConditions};
+    pub use super::{ControllerFuture, Error, Result, State};
+    pub use crate::condition::*;
     pub use crate::telemetry;
 }
 
@@ -63,6 +60,7 @@ pub mod clairs;
 pub mod indexers;
 pub mod matchers;
 //pub mod subresource;
+pub mod condition;
 mod util;
 
 pub mod updaters;
@@ -266,154 +264,6 @@ fn keyify<S: ToString, K: AsRef<str>>(space: S, key: K) -> String {
         })
         .for_each(|c| out.push(c));
     out
-}
-
-/// ...
-#[derive(Clone, Copy, Debug, PartialEq, IntoStaticStr, EnumString)]
-pub enum ConditionType {
-    /// ...
-    ConfigReady,
-    /// ...
-    ConfigMapCreated,
-    /// ...
-    SecretCreated,
-    /// ...
-    IndexerCreated,
-    /// ...
-    MatcherCreated,
-    /// ...
-    NotifierCreated,
-    /// ...
-    HorizontalPodAutoscalerCreated,
-    /// ...
-    ServiceCreated,
-    /// ...
-    DeploymentCreated,
-    /// ...
-    AdminPreJobDone,
-    /// ...
-    AdminPostJobDone,
-    /// ...
-    SpecOk,
-}
-
-impl std::fmt::Display for ConditionType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use api::GROUP;
-        let t: &'static str = self.into();
-        write!(f, "{GROUP}/{t}")
-    }
-}
-
-impl PartialEq<String> for ConditionType {
-    fn eq(&self, other: &String) -> bool {
-        self.to_string().eq(other)
-    }
-}
-
-/// ...
-pub trait ConditionTypeFor {
-    /// ...
-    const CONDITION_TYPE: ConditionType;
-}
-
-macro_rules! impl_conditiontypefor{
-    ($($kind:ident),+) => {
-        use ::with_builtin_macros::with_builtin;
-        use k8s_openapi::api::core::v1::*;
-        use k8s_openapi::api::apps::v1::Deployment;
-        use k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler;
-        use api::v1alpha1::*;
-        $(
-        with_builtin!(let $disc = concat_idents!($kind, Created) in {
-            impl ConditionTypeFor for $kind {
-                const CONDITION_TYPE: ConditionType = ConditionType::$disc;
-            }
-        });
-        )+
-    }
-}
-
-impl_conditiontypefor!(
-    ConfigMap,
-    Deployment,
-    Secret,
-    Service,
-    Indexer,
-    Matcher,
-    Notifier,
-    HorizontalPodAutoscaler
-);
-
-/// ...
-pub trait StatusConditions: Resource {
-    /// ...
-    fn get_conditions(&self) -> Option<&Vec<Condition>>;
-
-    /// ...
-    fn new_condition<R, M>(
-        &self,
-        type_: ConditionType,
-        status: ConditionStatus,
-        reason: R,
-        message: M,
-    ) -> Condition
-    where
-        R: ToString,
-        M: ToString,
-    {
-        let observed_generation = self.meta().generation;
-        let type_ = type_.to_string();
-        let status: &'static str = status.into();
-        let status = String::from(status);
-        let reason = reason.to_string();
-        let message = message.to_string();
-
-        Condition {
-            last_transition_time: meta::v1::Time(Timestamp::now()),
-            observed_generation,
-            type_,
-            status,
-            reason,
-            message,
-        }
-    }
-
-    /// ...
-    fn find_condition(&self, ty: ConditionType) -> Option<&Condition> {
-        self.get_conditions()
-            .and_then(|cs| cs.iter().find(|&c| ty == c.type_))
-    }
-}
-
-impl StatusConditions for Clair {
-    fn get_conditions(&self) -> Option<&Vec<Condition>> {
-        self.status.as_ref().and_then(|s| s.conditions.as_ref())
-    }
-}
-
-impl StatusConditions for Indexer {
-    fn get_conditions(&self) -> Option<&Vec<Condition>> {
-        self.status.as_ref().and_then(|s| s.conditions.as_ref())
-    }
-}
-
-impl StatusConditions for Matcher {
-    fn get_conditions(&self) -> Option<&Vec<Condition>> {
-        self.status.as_ref().and_then(|s| s.conditions.as_ref())
-    }
-}
-
-/// ...
-#[derive(Clone, Copy, Debug, Default, PartialEq, IntoStaticStr, EnumString)]
-pub enum ConditionStatus {
-    /// ...
-    #[default]
-    Unknown,
-    /// ...
-    True,
-    /// ...
-    False,
 }
 
 /// Clair_label returns the provided argument as a name in the clair-controller's space, sutable

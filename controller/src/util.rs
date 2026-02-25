@@ -14,7 +14,10 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
 use tracing::{Instrument, debug, debug_span, instrument, trace};
 
-use crate::{CREATE_PARAMS, ConditionTypeFor, Context, PATCH_PARAMS, Result, StatusConditions};
+use crate::{
+    CREATE_PARAMS, Context, PATCH_PARAMS, Result,
+    condition::{ConditionTypeFor, Conditions},
+};
 use clair_templates::{Build, Error as TemplateError};
 
 /// Check_owned_resource builds an owned resource (of type `R`) for T using the templater `B`.
@@ -29,7 +32,7 @@ where
     T: Resource<DynamicType = (), Scope = NamespaceResourceScope>
         + Serialize
         + DeserializeOwned
-        + StatusConditions
+        + Conditions
         + Clone
         + Debug,
     R: Resource<DynamicType = (), Scope = NamespaceResourceScope>
