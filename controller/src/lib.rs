@@ -12,8 +12,14 @@ use std::{
 };
 
 use futures::Future;
-use k8s_openapi::apimachinery::pkg::apis::meta::{self, v1::Condition};
-use kube::{api::GroupVersionKind, runtime::events};
+use k8s_openapi::{
+    api::core::v1::ObjectReference,
+    apimachinery::pkg::apis::meta::{self, v1::Condition},
+};
+use kube::{
+    api::GroupVersionKind,
+    runtime::events::{self, Event},
+};
 use regex::Regex;
 use tokio::sync::RwLock;
 #[allow(unused_imports)]
@@ -59,8 +65,9 @@ pub(crate) mod prelude {
 pub mod clairs;
 pub mod indexers;
 pub mod matchers;
-//pub mod subresource;
+
 pub mod condition;
+pub mod event;
 mod util;
 
 pub mod updaters;
@@ -158,7 +165,7 @@ pub struct State {
 
 impl std::fmt::Debug for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ctx")
+        f.debug_struct("State").finish_non_exhaustive()
     }
 }
 
@@ -239,6 +246,65 @@ impl From<Arc<State>> for Context {
         Self { client, recorder }
     }
 }
+
+impl Context {
+    async fn publish_event(&self, ev: &Event, objref: &ObjectReference) -> Result<()> {
+        use kube::runtime::events::EventType;
+
+        match ev.type_ {
+            EventType::Normal => {
+                info!(message = ev.note, reason = ev.reason, action = ev.action, secondary = ?ev.secondary)
+            }
+            EventType::Warning => {
+                warn!(message = ev.note, reason = ev.reason, action = ev.action, secondary = ?ev.secondary)
+            }
+        };
+        self.recorder.publish(ev, objref).await.map_err(Error::Kube)
+    }
+}
+
+macro_rules! impl_context_events {
+    ($($type:ident, $name:ident),+) => {
+        impl Context {
+        $(
+        ::with_builtin_macros::with_builtin!(let $note = concat_idents!($name, _note) in {
+            #[doc = concat!("Construct and publish a \"", stringify!($type), "\" kubernetes Event.")]
+            pub async fn $name<O, R, A>(&self, obj: &O, reason: R, action: A) -> Result<()>
+            where
+                O: ::kube::Resource<DynamicType = ()>,
+                R: event::Reason,
+                A: event::Action,
+            {
+                use kube::runtime::events::EventType::*;
+
+                self.publish_event(
+                    &event::new($type, reason, action),
+                    &obj.object_ref(&()),
+                )
+                .await
+            }
+
+            #[doc = concat!("Construct and publish a \"", stringify!($type), "\" kubernetes Event with a note.")]
+            pub async fn $note<O, R, A, N>(&self, obj: &O, reason: R, action: A, note: N) -> Result<()>
+            where
+                O: ::kube::Resource<DynamicType = ()>,
+                R: event::Reason,
+                A: event::Action,
+                N: ToString,
+            {
+                use kube::runtime::events::EventType::*;
+
+                let mut ev = event::new($type, reason, action);
+                ev.note = Some(note.to_string());
+                self.publish_event(&ev, &obj.object_ref(&())).await
+            }
+        });
+        )+
+        }
+    }
+}
+
+impl_context_events!(Warning, warn, Normal, info);
 
 /// ControllerFuture is the type the controller constructors should return.
 pub type ControllerFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;

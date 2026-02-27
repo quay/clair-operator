@@ -13,7 +13,6 @@ use kube::{
     core::GroupVersionKind,
     runtime::{
         controller::Error as CtrlErr,
-        events::{Event, EventType},
         finalizer::{Event as Finalizer, finalizer},
     },
 };
@@ -136,13 +135,8 @@ async fn reconcile(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
 }
 
 pub(crate) mod reason {
+    use crate::condition::Reason as ConditionReason;
     use strum::{Display, EnumString, IntoStaticStr};
-
-    #[derive(Debug, Display, IntoStaticStr, EnumString)]
-    pub enum Event {
-        MissingRequiredField,
-        DeleteRequested,
-    }
 
     #[derive(Debug, Display, IntoStaticStr, EnumString)]
     pub enum AdminPre {
@@ -154,10 +148,14 @@ pub(crate) mod reason {
         JobMissing,
     }
 
+    impl ConditionReason for AdminPre {}
+
     #[derive(Debug, Display, IntoStaticStr, EnumString)]
     pub enum Configuration {
         Reconciled,
     }
+
+    impl ConditionReason for Configuration {}
 
     macro_rules! eq_impl{
         ($($ty:ty),+) => {
@@ -170,14 +168,40 @@ pub(crate) mod reason {
             )+
         };
     }
-    eq_impl!(Event, AdminPre, Configuration);
+    eq_impl!(AdminPre, Configuration);
+}
+
+pub(crate) mod event {
+    use strum::{Display, EnumString, IntoStaticStr};
+
+    #[derive(Debug, Display, IntoStaticStr, EnumString)]
+    pub enum Reason {
+        MissingRequiredField,
+        DeleteRequested,
+        ImageRefNotVersioned,
+        AdminPostNotReady,
+    }
+
+    impl crate::event::Reason for Reason {}
+
+    #[derive(Debug, Display, IntoStaticStr, EnumString)]
+    pub enum Action {
+        CheckSpec,
+        Configuration,
+        AdminPre,
+        PromoteImage,
+        Indexer,
+        Matcher,
+        Notifier,
+        AdminPost,
+        Cleanup,
+    }
+
+    impl crate::event::Action for Action {}
 }
 
 #[instrument(name = "reconcile", skip(ctx, clair), ret)]
 async fn reconcile_one(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
-    use reason::Event as Reason;
-    let oref = clair.object_ref(&());
-
     let mut missing = false;
     for (field, present) in [
         ("$.spec.databases", clair.spec.databases.is_some()),
@@ -185,21 +209,13 @@ async fn reconcile_one(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
     ] {
         if !present {
             missing = true;
-            let reason = Reason::MissingRequiredField;
-            info!(field, %reason, "skipping reconciliation");
-            ctx.recorder
-                .publish(
-                    &Event {
-                        type_: EventType::Warning,
-                        reason: reason.to_string(),
-                        note: format!("Clair `{}` missing `{field}`", clair.name_any()).into(),
-                        action: "Reconcile".into(),
-                        secondary: None,
-                    },
-                    &oref,
-                )
-                .await
-                .map_err(Error::Kube)?;
+            ctx.warn_note(
+                clair.as_ref(),
+                event::Reason::MissingRequiredField,
+                event::Action::CheckSpec,
+                format!("Clair `{}` missing `{field}`", clair.name_any()),
+            )
+            .await?;
         }
     }
     if missing {
@@ -308,8 +324,13 @@ async fn admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
     let status_image = clair.status.as_ref().and_then(|s| s.image.as_ref());
 
     if spec_image.and_then(|img| image_version(img)).is_none() {
-        // TODO(hank): Event
-        info!(r#"container image ref is not versioned, skipping "admin" jobs"#);
+        ctx.info_note(
+            clair,
+            event::Reason::ImageRefNotVersioned,
+            event::Action::AdminPre,
+            r#"skipping "admin" jobs"#,
+        )
+        .await?;
         return Ok(());
     }
 
@@ -487,6 +508,21 @@ async fn admin_post(clair: &Clair, ctx: &Context) -> Result<()> {
     let name = clair.metadata.name.as_ref().expect("Clair has a name");
     let spec = &clair.spec;
 
+    if spec
+        .image
+        .as_ref()
+        .and_then(|img| image_version(img))
+        .is_none()
+    {
+        ctx.info(
+            clair,
+            event::Reason::ImageRefNotVersioned,
+            event::Action::AdminPost,
+        )
+        .await?;
+        return Ok(());
+    }
+
     // Check that the conditions on this object are in the correct state:
     let ok = [
         Some(Type::AdminPostJobDone),
@@ -504,7 +540,13 @@ async fn admin_post(clair: &Clair, ctx: &Context) -> Result<()> {
             .is_some_and(|cnd| Status::True == cnd.status)
     });
     if !ok {
-        // TODO(hank): Event/Condition
+        ctx.info_note(
+            clair,
+            event::Reason::AdminPostNotReady,
+            event::Action::AdminPost,
+            "conditions not met",
+        )
+        .await?;
         return Ok(());
     }
 
@@ -539,7 +581,13 @@ async fn admin_post(clair: &Clair, ctx: &Context) -> Result<()> {
     })
     .await?;
     if !ok {
-        // TODO(hank): Event/Condition
+        ctx.info_note(
+            clair,
+            event::Reason::AdminPostNotReady,
+            event::Action::AdminPost,
+            "Deployments not ready",
+        )
+        .await?;
         return Ok(());
     }
 
@@ -565,23 +613,15 @@ async fn admin_post(clair: &Clair, ctx: &Context) -> Result<()> {
 
 #[instrument(name = "cleanup", skip(ctx, clair))]
 async fn cleanup_one(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
-    use reason::Event as Reason;
+    use event::Reason;
 
-    let oref = clair.object_ref(&());
     // No real cleanup, so we just publish an event.
-    ctx.recorder
-        .publish(
-            &Event {
-                type_: EventType::Normal,
-                reason: Reason::DeleteRequested.to_string(),
-                note: Some(format!("Delete `{}`", clair.name_any())),
-                action: "Deleting".into(),
-                secondary: None,
-            },
-            &oref,
-        )
-        .await
-        .map_err(Error::Kube)?;
+    ctx.info(
+        clair.as_ref(),
+        Reason::DeleteRequested,
+        event::Action::Cleanup,
+    )
+    .await?;
     Ok(Action::await_change())
 }
 

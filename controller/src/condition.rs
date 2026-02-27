@@ -34,7 +34,7 @@ impl std::fmt::Display for Status {
     }
 }
 
-impl <T: AsRef<str>>PartialEq<T> for Status {
+impl<T: AsRef<str>> PartialEq<T> for Status {
     fn eq(&self, other: &T) -> bool {
         let other = Self::from_str(other.as_ref()).unwrap_or_default();
         self == &other
@@ -68,9 +68,10 @@ impl std::fmt::Display for Type {
     }
 }
 
-impl <T: AsRef<str>>PartialEq<T> for Type {
+impl<T: AsRef<str>> PartialEq<T> for Type {
     fn eq(&self, other: &T) -> bool {
-        other.as_ref()
+        other
+            .as_ref()
             .strip_prefix(PREFIX)
             .and_then(|s| Self::from_str(s).ok())
             .is_some_and(|t| self == &t)
@@ -117,11 +118,16 @@ impl_conditiontypefor!(
     HorizontalPodAutoscaler
 );
 
+/// Reason is a marker trait for types meant to be used as condition reasons.
+///
+/// It's useful to keep track of them because they're _kind of_ API.
+pub trait Reason: ToString {}
+
 /// ...
 pub fn new<O, R, M>(obj: &O, type_: Type, status: Status, reason: R, message: M) -> Condition
 where
     O: Resource,
-    R: ToString,
+    R: Reason,
     M: ToString,
 {
     let mut b = ConditionBuilder::new()
@@ -196,9 +202,9 @@ impl ConditionBuilder {
     /// Set the `reason`.
     ///
     /// Defaults to the empty string.
-    pub fn reason<S: ToString>(self, s: S) -> Self {
+    pub fn reason<R: Reason>(self, r: R) -> Self {
         Self {
-            reason_: Some(s.to_string()),
+            reason_: Some(r.to_string()),
             ..self
         }
     }
@@ -271,7 +277,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_eq(){
+    fn status_eq() {
         assert_eq!(Status::Unknown, "Unknown");
         assert_eq!(Status::Unknown, "other");
         assert_eq!(Status::True, "True");
@@ -279,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn type_eq(){
+    fn type_eq() {
         assert!(Type::SpecOk == "clairproject.org/SpecOk");
     }
 }

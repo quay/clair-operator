@@ -16,7 +16,7 @@ use kube::{
     runtime::events::Recorder,
 };
 use serde_json::{Value, from_value, json};
-use strum::EnumString;
+use strum::{EnumString, IntoStaticStr};
 use tower_test::mock::SendResponse;
 
 use super::*;
@@ -48,6 +48,14 @@ pub async fn timeout_after_1s(handle: tokio::task::JoinHandle<()>) {
 
 // We wrap tower_test::mock::Handle
 type ApiServerHandle = tower_test::mock::Handle<Request<Body>, Response<Body>>;
+
+#[derive(Debug, strum::Display, IntoStaticStr, EnumString)]
+pub enum TestReason {
+    Irrelevant,
+}
+
+impl crate::condition::Reason for TestReason {}
+impl crate::event::Reason for TestReason {}
 
 pub struct ClairServerVerifier {
     handle: ApiServerHandle,
@@ -226,14 +234,21 @@ impl ClairScenario {
                         c.spec.image = Some("example.com/clair:noversion".into());
                     }
                     SpecChanged => {
-                        let mut cnd = new_condition(&c, AdminPreJobDone, True, "Testing", "");
+                        let mut cnd =
+                            new_condition(&c, AdminPreJobDone, True, TestReason::Irrelevant, "");
                         cnd.observed_generation = Some(1);
                         let status = c.status.as_mut().expect("status exists");
                         status.image = Some("example.com/clair:1.0.0".into());
                         status.conditions = vec![cnd].into();
                     }
                     SpecUnchangedCheck | SpecUnchangedDone => {
-                        let cnd = new_condition(&c, AdminPreJobDone, False, "ImageUpdated", "");
+                        let cnd = new_condition(
+                            &c,
+                            AdminPreJobDone,
+                            False,
+                            clairs::reason::AdminPre::ImageUpdated,
+                            "",
+                        );
                         let status = c.status.as_mut().expect("status exists");
                         status.image = Some("example.com/clair:1.0.0".into());
                         status.conditions = vec![cnd].into();
@@ -281,7 +296,8 @@ impl ClairScenario {
                 match scenario {
                     NoCondition => (),
                     OldCondition => {
-                        let mut cnd = new_condition(&c, AdminPreJobDone, True, "Test", "");
+                        let mut cnd =
+                            new_condition(&c, AdminPreJobDone, True, TestReason::Irrelevant, "");
                         cnd.observed_generation = Some(1);
                         c.get_conditions_mut().expect("Clair has status").push(cnd);
                     }
@@ -290,11 +306,13 @@ impl ClairScenario {
                         status.image = c.spec.image.clone();
                     }
                     NotReady => {
-                        let cnd = new_condition(&c, AdminPreJobDone, False, "Test", "");
+                        let cnd =
+                            new_condition(&c, AdminPreJobDone, False, TestReason::Irrelevant, "");
                         c.get_conditions_mut().expect("Clair has status").push(cnd);
                     }
                     Ready => {
-                        let cnd = new_condition(&c, AdminPreJobDone, True, "Test", "");
+                        let cnd =
+                            new_condition(&c, AdminPreJobDone, True, TestReason::Irrelevant, "");
                         c.get_conditions_mut().expect("Clair has status").push(cnd);
                     }
                 };
@@ -343,7 +361,8 @@ impl ClairScenario {
                 match scenario {
                     Create => (),
                     Update => {
-                        let mut cnd = new_condition(&c, IndexerCreated, True, "Test", "");
+                        let mut cnd =
+                            new_condition(&c, IndexerCreated, True, TestReason::Irrelevant, "");
                         cnd.observed_generation = Some(1);
                         c.get_conditions_mut().expect("Clair has status").push(cnd);
                     }
@@ -461,7 +480,7 @@ impl ClairServerVerifier {
                         }),
                     );
                     match which {
-                        Unversioned => Ok(self), // do nothing, this should make no requests.
+                        Unversioned => self.admin_pre_unversioned(c).await,
                         New => self.admin_pre_new(c).await,
                         SpecChanged => self.admin_pre_spec_changed(c).await,
                         SpecUnchangedCheck => self.admin_pre_spec_unchanged_check(c).await,
@@ -927,6 +946,22 @@ impl ClairServerVerifier {
         Ok(srv)
     }
 
+    async fn admin_pre_unversioned(self, c: Clair) -> Result<Self> {
+        let (srv, _c) = self
+            .event(
+                c,
+                Event {
+                    type_: Some("Normal".into()),
+                    reason: Some("ImageRefNotVersioned".to_string()),
+                    action: Some("AdminPre".into()),
+                    note: Some("skipping \"admin\" jobs".into()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        Ok(srv)
+    }
+
     async fn admin_pre_new(self, c: Clair) -> Result<Self> {
         let (srv, c) = self.status_patch(c).await?;
         let status = c.status.as_ref().expect("have status");
@@ -1103,7 +1138,7 @@ impl ClairServerVerifier {
             })
             .await?;
         // Matcher
-        let (srv, _c) = srv
+        let (srv, c) = srv
             .check_resource::<Matcher, &str>(c, None)
             .and_then(|(srv, c)| srv.create_resource::<Matcher>(c))
             .and_then(|(srv, c)| srv.status_patch(c))
@@ -1119,7 +1154,20 @@ impl ClairServerVerifier {
                 )
             })
             .await?;
+        // AdminPost
+        let (srv, c) = srv
+            .event(
+                c,
+                Event {
+                    type_: Some("Normal".into()),
+                    action: Some("AdminPost".into()),
+                    reason: Some("AdminPostNotReady".into()),
+                    ..Default::default()
+                },
+            )
+            .await?;
 
+        let _ = c;
         Ok(srv)
     }
 
@@ -1130,7 +1178,7 @@ impl ClairServerVerifier {
                 Event {
                     type_: Some("Warning".into()),
                     reason: Some("MissingRequiredField".to_string()),
-                    action: Some("Reconcile".into()),
+                    action: Some("CheckSpec".into()),
                     ..Default::default()
                 },
             )
@@ -1141,7 +1189,7 @@ impl ClairServerVerifier {
                     Event {
                         type_: Some("Warning".into()),
                         reason: Some("MissingRequiredField".to_string()),
-                        action: Some("Reconcile".into()),
+                        action: Some("CheckSpec".into()),
                         ..Default::default()
                     },
                 )
