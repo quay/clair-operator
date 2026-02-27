@@ -505,6 +505,7 @@ dependencies = [
  "futures",
  "gateway_networking_k8s_io",
  "http",
+ "instrument_stub",
  "is-terminal",
  "json-patch",
  "jsonpath-rust",
@@ -1348,6 +1349,10 @@ dependencies = [
  "serde",
  "serde_core",
 ]
+
+[[package]]
+name = "instrument_stub"
+version = "0.1.0"
 
 [[package]]
 name = "ipnet"

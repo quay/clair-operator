@@ -572,7 +572,7 @@ impl From<&clap::ArgMatches> for CatalogOpts {
 }
 
 fn coverage(sh: Shell, opts: CoverageOpts) -> Result<()> {
-    cmd!(sh, "which grcov").ignore_stdout().run()?;
+    check::llvm_cov(&sh)?;
     run_test_coverage(&sh, &opts.pass)?;
 
     Ok(())

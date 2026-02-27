@@ -22,7 +22,6 @@ use tokio::{
     time::Duration,
 };
 use tokio_stream::wrappers::SignalStream;
-use tracing::*;
 
 use crate::{
     Context,

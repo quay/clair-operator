@@ -189,3 +189,21 @@ pub fn kopium(sh: &Shell) -> Result<()> {
     }
     Ok(())
 }
+
+pub fn llvm_cov(sh: &Shell) -> Result<()> {
+    if cmd!(sh, "which cargo-llvm-cov")
+        .quiet()
+        .ignore_stdout()
+        .ignore_stderr()
+        .run()
+        .is_err()
+    {
+        // Purposefully don't use the `CARGO` environment variable so that we can select the
+        // "stable" toolchain.
+        //
+        // This _does_ assume that the `cargo` in `PATH` is actually `rustup`-wrapped.
+        cmd!(sh, "cargo +stable install cargo-llvm-cov --locked").run()?;
+    }
+
+    Ok(())
+}

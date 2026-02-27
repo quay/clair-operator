@@ -50,9 +50,14 @@ pub(crate) mod prelude {
     };
     pub use tokio_util::sync::CancellationToken;
     pub use tracing::{
-        Instrument, Level, debug, debug_span, error, info, info_span, instrument, span, trace,
+        Instrument, Level, Span, debug, debug_span, error, field, info, info_span, span, trace,
         trace_span, warn,
     };
+
+    #[cfg(coverage)]
+    pub use instrument_stub::instrument;
+    #[cfg(not(coverage))]
+    pub use tracing::instrument;
 
     pub use api::v1alpha1;
 

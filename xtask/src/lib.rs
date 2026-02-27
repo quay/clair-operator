@@ -295,42 +295,30 @@ where
     I: IntoIterator<Item = V>,
 {
     let cargo: &Path = &CARGO;
-    let ws = WORKSPACE.to_path_buf();
-    let bin_dir = WORKSPACE.join("target/debug/deps");
-    let cov_dir = WORKSPACE.join("target/coverage");
+    sh.set_var("RUST_TEST_TIME_INTEGRATION", "30000,3000000");
+    sh.set_var("RUST_LOG_SPAN_EVENTS", "active");
+    sh.set_var(
+        "RUST_LOG",
+        "controller=trace,clair_config=trace,clair_templates=trace,webhook=trace",
+    );
 
-    let _ = sh.remove_path(&cov_dir);
-    sh.create_dir(&cov_dir)?;
+    cmd!(
+        sh,
+        "{cargo} llvm-cov test --remap-path-prefix --no-report {args...}"
+    )
+    .run()?;
 
-    cmd!(sh, "{cargo} test {args...}")
-        .envs([
-            ("CARGO_INCREMENTAL", "0"),
-            ("RUSTFLAGS", "-Cinstrument-coverage"),
-        ])
-        .env("LLVM_PROFILE_FILE", cov_dir.join("%p-%m.profraw"))
+    for fmt in ["text", "html"] {
+        cmd!(
+            sh,
+            "{cargo} llvm-cov report --remap-path-prefix --ignore-filename-regex xtask --output-dir=target/llvm-cov --{fmt}"
+        )
+        .ignore_stdout()
         .run()?;
+    }
 
-    let args = [
-        "--output-types",
-        "html,lcov,markdown",
-        "--branch",
-        "--ignore-not-existing",
-        "--source-dir",
-        ".",
-        "--ignore",
-        "../*",
-        "--ignore",
-        "/*",
-        "--ignore",
-        "xtask/*",
-        "--ignore",
-        "*/src/tests/*",
-    ];
-    cmd!(sh,
-            "grcov {cov_dir} --binary-path {bin_dir} --prefix-dir {ws} --output-path {cov_dir} {args...}").run()?;
-
-    let report = cov_dir.join("markdown.md");
-    let md = sh.read_file(&report)?;
+    // TODO(hank): Set up some sort of summary to print when in GitHub Actions.
+    /*
     let path = GITHUB_ACTIONS
         .then(|| sh.var_os("GITHUB_STEP_SUMMARY"))
         .flatten();
@@ -339,6 +327,7 @@ where
     } else {
         print!("$ cat {}\n{md}", rel(&report));
     }
+    */
 
     Ok(())
 }

@@ -6,6 +6,7 @@ members = [
 	"clair_templates",
 	"controller",
 	"gateway_networking_k8s_io",
+	"instrument_stub",
 	"xtask",
 ]
 default-members = [
@@ -23,6 +24,7 @@ publish = false
 [workspace.lints.rust]
 arithmetic_overflow = "deny" # Prevent operations that would cause integer overflow
 unnecessary_transmutes = "deny" # Prevent unneeded transmutation
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
 
 [workspace.lints.clippy]
 checked_conversions = "deny" # Suggest using checked conversions between numeric types

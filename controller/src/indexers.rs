@@ -23,7 +23,6 @@ use tokio::{
     try_join,
 };
 use tokio_stream::wrappers::SignalStream;
-use tracing::*;
 
 use crate::{Context, prelude::*, util::check_owned_resource};
 use clair_templates::{Build, ServiceBuilder, render_dropin};

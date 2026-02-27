@@ -17,6 +17,7 @@ telemetry = ["opentelemetry-otlp"]
 
 [dependencies]
 api = { path = "../api" }
+instrument_stub = { path = "../instrument_stub" }
 clair_config = { path = "../clair_config", features = ["k8s", "tokio"] }
 clair_templates = { path = "../clair_templates" }
 gateway_networking_k8s_io = { path = "../gateway_networking_k8s_io" }
