@@ -1,5 +1,5 @@
 [package]
-name = "instrument_stub"
+name = "controller_macros"
 license.workspace = true
 version.workspace = true
 authors.workspace = true
@@ -12,3 +12,8 @@ proc-macro = true
 
 [lints]
 workspace = true
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = "2.0"

@@ -134,10 +134,10 @@ async fn reconcile(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
 }
 
 pub(crate) mod reason {
-    use crate::condition::Reason as ConditionReason;
+    use controller_macros::ConditionReason;
     use strum::{Display, EnumString, IntoStaticStr};
 
-    #[derive(Debug, Display, IntoStaticStr, EnumString)]
+    #[derive(ConditionReason, Debug, Display, IntoStaticStr, EnumString)]
     pub enum AdminPre {
         NewClair,
         ImageUpdated,
@@ -147,27 +147,10 @@ pub(crate) mod reason {
         JobMissing,
     }
 
-    impl ConditionReason for AdminPre {}
-
-    #[derive(Debug, Display, IntoStaticStr, EnumString)]
+    #[derive(ConditionReason, Debug, Display, IntoStaticStr, EnumString)]
     pub enum Configuration {
         Reconciled,
     }
-
-    impl ConditionReason for Configuration {}
-
-    macro_rules! eq_impl{
-        ($($ty:ty),+) => {
-            $(
-            impl PartialEq<String> for $ty {
-                fn eq(&self, other: &String) -> bool {
-                    self.to_string().eq(other)
-                }
-            }
-            )+
-        };
-    }
-    eq_impl!(AdminPre, Configuration);
 }
 
 pub(crate) mod event {

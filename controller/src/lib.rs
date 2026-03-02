@@ -55,7 +55,7 @@ pub(crate) mod prelude {
     };
 
     #[cfg(coverage)]
-    pub use instrument_stub::instrument;
+    pub use controller_macros::instrument;
     #[cfg(not(coverage))]
     pub use tracing::instrument;
 

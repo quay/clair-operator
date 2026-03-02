@@ -14,6 +14,7 @@ use api::{
     GROUP,
     v1alpha1::{Clair, Indexer, Matcher},
 };
+use controller_macros::condition_types;
 
 const PREFIX: &str = concatcp!(GROUP, "/");
 
@@ -87,27 +88,7 @@ pub trait ConditionTypeFor {
     const CONDITION_TYPE: Type;
 }
 
-/// Implement `ConditionTypeFor` for a list of kubernetes objects.
-///
-/// This macro assumes a [`Type`] of `${KIND}Created` exists.
-macro_rules! impl_conditiontypefor{
-    ($($kind:ident),+) => {
-        use ::with_builtin_macros::with_builtin;
-        use k8s_openapi::api::core::v1::*;
-        use k8s_openapi::api::apps::v1::Deployment;
-        use k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler;
-        use api::v1alpha1::*;
-        $(
-        with_builtin!(let $disc = concat_idents!($kind, Created) in {
-            impl ConditionTypeFor for $kind {
-                const CONDITION_TYPE: Type = Type::$disc;
-            }
-        });
-        )+
-    }
-}
-
-impl_conditiontypefor!(
+condition_types!(
     ConfigMap,
     Deployment,
     Secret,

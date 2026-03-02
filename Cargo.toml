@@ -6,7 +6,7 @@ members = [
 	"clair_templates",
 	"controller",
 	"gateway_networking_k8s_io",
-	"instrument_stub",
+	"macros",
 	"xtask",
 ]
 default-members = [
