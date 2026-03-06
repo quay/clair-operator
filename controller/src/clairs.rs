@@ -36,12 +36,7 @@ use clair_templates::{
     NotifierBuilder,
 };
 
-pub(crate) static CLAIR_FINALIZER: &str = "clairs.clairproject.org";
-static SELF_GVK: LazyLock<GroupVersionKind> = LazyLock::new(|| GroupVersionKind {
-    group: Clair::group(&()).to_string(),
-    version: Clair::version(&()).to_string(),
-    kind: Clair::kind(&()).to_string(),
-});
+pub(crate) static FINALIZER: &str = "clairs.clairproject.org";
 
 /// Controller is the Clair controller.
 ///
@@ -55,7 +50,12 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<State>) -> Result<Controll
 
     Ok(async move {
         if let Err(e) = root.list(&ListParams::default().limit(1)).await {
-            error!("CRD ({SELF_GVK:?}) is not queryable ({e:?}); is the CRD installed?");
+            let gvk =  GroupVersionKind {
+                group: Clair::group(&()).to_string(),
+                version: Clair::version(&()).to_string(),
+                kind: Clair::kind(&()).to_string(),
+            };
+            error!("CRD ({gvk:?}) is not queryable ({e:?}); is the CRD installed?");
             return Err(Error::BadName("no CRD".into()));
         }
 
@@ -119,11 +119,11 @@ async fn reconcile(clair: Arc<Clair>, ctx: Arc<Context>) -> Result<Action> {
     if trace_id != opentelemetry::trace::TraceId::INVALID {
         Span::current().record("trace_id", field::display(&trace_id));
     }
-    let ns = clair.namespace().unwrap();
+    let ns = clair.namespace().expect("Clair is namespaced");
     let api: Api<Clair> = Api::namespaced(ctx.client.clone(), &ns);
 
     info!("reconciling");
-    finalizer(&api, CLAIR_FINALIZER, clair, |event| async {
+    finalizer(&api, FINALIZER, clair, |event| async {
         match event {
             Finalizer::Apply(clair) => reconcile_one(clair, ctx.clone()).await,
             Finalizer::Cleanup(clair) => cleanup_one(clair, ctx.clone()).await,
@@ -138,7 +138,7 @@ pub(crate) mod reason {
     use strum::{Display, EnumString, IntoStaticStr};
 
     #[derive(ConditionReason, Debug, Display, IntoStaticStr, EnumString)]
-    pub enum AdminPre {
+    pub enum Admin {
         NewClair,
         ImageUpdated,
         JobFailed,
@@ -293,7 +293,7 @@ async fn notifier(clair: &Clair, ctx: &Context) -> Result<()> {
 /// tracking its state.
 #[instrument(skip(clair, ctx), ret)]
 async fn admin_pre(clair: &Clair, ctx: &Context) -> Result<()> {
-    use reason::AdminPre as Reason;
+    use reason::Admin as Reason;
 
     let ns = clair.namespace().expect("Clair is namespaced");
     let name = clair.name_any();
@@ -575,20 +575,65 @@ async fn admin_post(clair: &Clair, ctx: &Context) -> Result<()> {
 
     // Now, do basically the same thing as the PreJob:
 
-    let post_job_type = Type::AdminPostJobDone;
-    let post_job_cnd = clair.find_condition(post_job_type);
-
-    match post_job_cnd {
-        Some(c) if c.status == "True" => (), // Continue
-        Some(c) => {
-            info!(type = %post_job_type, status = c.status, "condition not met");
-            return Ok(());
-        }
-        None => {
-            debug!(type = %post_job_type, "no condition");
-            return Ok(());
-        }
+    let job_type = Type::AdminPostJobDone;
+    let post_job_cnd = clair.find_condition(job_type);
+    let create = post_job_cnd.is_some_and(|cnd| {
+        clair.metadata.generation != cnd.observed_generation
+    });
+    let job = if create {
+        JobBuilder::admin_post(clair)?.build().into()
+    } else {
+        None
     };
+
+    use reason::Admin as Reason;
+    let clairs = Api::<Clair>::namespaced(ctx.client.clone(), ns);
+    let jobs = Api::<Job>::namespaced(ctx.client.clone(), ns);
+
+    let cnd = match (post_job_cnd, job) {
+        (None, Some(_)) => unreachable!(),
+        (None, None) => {
+            // Create "empty" condition":
+            let reason = Reason::NewClair;
+            info!(%reason, r#"skipping "admin post" job"#);
+            new_condition(
+                clair,
+                job_type,
+                True,
+                reason,
+                "post jobs are not needed on a fresh system",
+            )
+        }
+        (Some(_), Some(ref job)) => {
+            // Create the Job and report the update condition.
+            let reason = Reason::ImageUpdated;
+            info!(%reason, r#"creating "admin post" job"#);
+            jobs.create(&CREATE_PARAMS, job)
+                .instrument(debug_span!("create"))
+                .await?;
+            new_condition(
+                clair,
+                job_type,
+                False,
+                reason,
+                r#"spec changed, launching "admin post" job"#,
+            )
+        }
+        _ => todo!()
+    };
+
+    let update = Patch::Apply(json!({
+        "apiVersion": Clair::api_version(&()),
+        "kind": Clair::kind(&()),
+        "status": {
+            "conditions": [cnd],
+        },
+    }));
+    trace!("patching status");
+    clairs
+        .patch_status(name, &PATCH_PARAMS, &update)
+        .instrument(debug_span!("patch_status"))
+        .await?;
 
     Ok(())
 }
@@ -760,6 +805,31 @@ mod tests {
                     let c = tc.object();
                     let mocksrv = fakeserver.run(tc);
                     clairs::indexer(&c, &testctx).await.expect("reconciler");
+                    timeout_after_1s(mocksrv).await;
+                }
+            };
+        }
+
+        testcase!(create);
+        testcase!(update);
+    }
+
+    #[cfg(test)]
+    mod matcher {
+        use std::str::FromStr;
+
+        use crate::{clairs, testing::*, *};
+
+        macro_rules! testcase {
+            ($s:ident) => {
+                #[self::test(tokio::test(flavor = "multi_thread", worker_threads = 1))]
+                async fn $s() {
+                    let tc = MatcherScenario::from_str(stringify!($s)).unwrap();
+                    let tc = ClairScenario::Matcher(tc);
+                    let (testctx, fakeserver) = Context::clair_tests();
+                    let c = tc.object();
+                    let mocksrv = fakeserver.run(tc);
+                    clairs::matcher(&c, &testctx).await.expect("reconciler");
                     timeout_after_1s(mocksrv).await;
                 }
             };

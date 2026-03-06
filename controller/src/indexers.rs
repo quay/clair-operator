@@ -28,7 +28,7 @@ use crate::{Context, prelude::*, util::check_owned_resource};
 use clair_templates::{Build, ServiceBuilder, render_dropin};
 use v1alpha1::Indexer;
 
-pub(crate) static INDEXER_FINALIZER: &str = "indexers.clairproject.org";
+pub(crate) static FINALIZER: &str = "indexers.clairproject.org";
 //static COMPONENT: LazyLock<String> = LazyLock::new(|| Indexer::kind(&()).to_ascii_lowercase());
 static SELF_GVK: LazyLock<GroupVersionKind> = LazyLock::new(|| GroupVersionKind {
     group: Indexer::group(&()).to_string(),
@@ -130,7 +130,7 @@ async fn reconcile(indexer: Arc<Indexer>, ctx: Arc<Context>) -> Result<Action> {
     let api: Api<Indexer> = Api::namespaced(ctx.client.clone(), &ns);
 
     info!(r#"reconciling Indexer "{}" in {}"#, indexer.name_any(), ns);
-    finalizer(&api, INDEXER_FINALIZER, indexer, |event| async {
+    finalizer(&api, FINALIZER, indexer, |event| async {
         match event {
             Finalizer::Apply(indexer) => reconcile_one(indexer, ctx.clone()).await,
             Finalizer::Cleanup(indexer) => cleanup_one(indexer, ctx.clone()).await,

@@ -1,4 +1,6 @@
-use std::{any::type_name, fmt::Debug};
+#[cfg_attr(coverage, allow(unused_imports))] // Unused when instrumentation is disabled.
+use std::any::type_name;
+use std::fmt::Debug;
 
 use k8s_openapi::{
     NamespaceResourceScope,
@@ -12,11 +14,12 @@ use kube::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
-use tracing::{Instrument, debug, debug_span, instrument, trace};
+use tracing::{Instrument, debug, debug_span, trace};
 
 use crate::{
     CREATE_PARAMS, Context, PATCH_PARAMS, Result,
     condition::{ConditionTypeFor, Conditions},
+    prelude::instrument,
 };
 use clair_templates::{Build, Error as TemplateError};
 

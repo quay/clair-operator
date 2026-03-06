@@ -79,6 +79,8 @@ pub enum ClairScenario {
     PromoteImage(PromoteImageScenario),
     /// ...
     Indexer(IndexerScenario),
+    /// ...
+    Matcher(MatcherScenario),
 }
 
 impl ClairScenario {
@@ -119,7 +121,7 @@ impl ClairScenario {
                     "namespace": "default",
                     "name": "test",
                     "uid": "42",
-                    "finalizers": [ crate::clairs::CLAIR_FINALIZER ],
+                    "finalizers": [ crate::clairs::FINALIZER ],
                     "generation": 1,
                 },
                 "spec": { },
@@ -133,7 +135,7 @@ impl ClairScenario {
                     "namespace": "default",
                     "name": "test",
                     "uid": "42",
-                    "finalizers": [ crate::clairs::CLAIR_FINALIZER ],
+                    "finalizers": [ crate::clairs::FINALIZER ],
                     "generation": 1,
                 },
                 "spec": {
@@ -168,7 +170,7 @@ impl ClairScenario {
                         "namespace": "default",
                         "name": "test",
                         "uid": "42",
-                        "finalizers": [ crate::clairs::CLAIR_FINALIZER ],
+                        "finalizers": [ crate::clairs::FINALIZER ],
                         "generation": 2,
                     },
                     "spec": {
@@ -202,7 +204,7 @@ impl ClairScenario {
                         "namespace": "default",
                         "name": "test",
                         "uid": "42",
-                        "finalizers": [ crate::clairs::CLAIR_FINALIZER ],
+                        "finalizers": [ crate::clairs::FINALIZER ],
                         "generation": 2,
                     },
                     "spec": {
@@ -246,7 +248,7 @@ impl ClairScenario {
                             &c,
                             AdminPreJobDone,
                             False,
-                            clairs::reason::AdminPre::ImageUpdated,
+                            clairs::reason::Admin::ImageUpdated,
                             "",
                         );
                         let status = c.status.as_mut().expect("status exists");
@@ -265,7 +267,7 @@ impl ClairScenario {
                         "namespace": "default",
                         "name": "test",
                         "uid": "42",
-                        "finalizers": [ crate::clairs::CLAIR_FINALIZER ],
+                        "finalizers": [ crate::clairs::FINALIZER ],
                         "generation": 2,
                     },
                     "spec": {
@@ -330,7 +332,58 @@ impl ClairScenario {
                         "namespace": "default",
                         "name": "test",
                         "uid": "42",
-                        "finalizers": [ crate::clairs::CLAIR_FINALIZER ],
+                        "finalizers": [ crate::clairs::FINALIZER ],
+                        "generation": 2,
+                    },
+                    "spec": {
+                        "image": image,
+                        "databases": {
+                            "indexer": {
+                                "name": "test",
+                                "key": "database",
+                            },
+                            "matcher": {
+                                "name": "test",
+                                "key": "database",
+                            },
+                        },
+                    },
+                    "status": {
+                        "image": image,
+                        "config": {
+                            "root": {
+                                "name": "test",
+                                "key": "config.json",
+                            },
+                        },
+                    },
+                }))
+                .expect("static JSON");
+
+                match scenario {
+                    Create => (),
+                    Update => {
+                        let mut cnd =
+                            new_condition(&c, IndexerCreated, True, TestReason::Irrelevant, "");
+                        cnd.observed_generation = Some(1);
+                        c.get_conditions_mut().expect("Clair has status").push(cnd);
+                    }
+                };
+
+                c
+            }
+            Self::Matcher(scenario) => {
+                use MatcherScenario::*;
+
+                let image = "example.com/clair:1.2.3";
+                let mut c: Clair = from_value(json!({
+                    "version": Clair::api_version(&()),
+                    "kind": Clair::kind(&()),
+                    "metadata": {
+                        "namespace": "default",
+                        "name": "test",
+                        "uid": "42",
+                        "finalizers": [ crate::clairs::FINALIZER ],
                         "generation": 2,
                     },
                     "spec": {
@@ -404,6 +457,13 @@ pub enum PromoteImageScenario {
 #[derive(Clone, Copy, Debug, PartialEq, EnumString)]
 #[strum(serialize_all = "snake_case")]
 pub enum IndexerScenario {
+    Create,
+    Update,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, EnumString)]
+#[strum(serialize_all = "snake_case")]
+pub enum MatcherScenario {
     Create,
     Update,
 }
@@ -506,6 +566,14 @@ impl ClairServerVerifier {
                         Update => self.indexer_update(c).await,
                     }
                 }
+                Matcher(which) => {
+                    use MatcherScenario::*;
+                    let c = scenario.object();
+                    match which {
+                        Create => self.matcher_create(c).await,
+                        Update => self.matcher_update(c).await,
+                    }
+                }
             }
             .expect("scenario completed without errors");
         })
@@ -523,14 +591,14 @@ impl ClairServerVerifier {
         assert_eq!(uri, key + "?", "unexpected path: {uri}");
         let expected_patch = serde_json::json!([
             { "op": "test", "path": "/metadata/finalizers", "value": null },
-            { "op": "add", "path": "/metadata/finalizers", "value": vec![clairs::CLAIR_FINALIZER] }
+            { "op": "add", "path": "/metadata/finalizers", "value": vec![clairs::FINALIZER] }
         ]);
         let req_body = request.into_body().collect_bytes().await.unwrap();
         let runtime_patch: serde_json::Value =
             serde_json::from_slice(&req_body).expect("valid document from runtime");
         assert_json_include!(actual: runtime_patch, expected: expected_patch);
 
-        c.metadata.finalizers = vec![clairs::CLAIR_FINALIZER.into()].into();
+        c.metadata.finalizers = vec![clairs::FINALIZER.into()].into();
         let response = serde_json::to_vec(&c).unwrap(); // respond as the apiserver would have
         send.send_response(Response::builder().body(Body::from(response)).unwrap());
 
@@ -775,6 +843,63 @@ impl ClairServerVerifier {
         Ok((self, c))
     }
 
+    async fn matcher_create(self, c: Clair) -> Result<Self> {
+        let (srv, _c) = self
+            .check_resource::<Matcher, &str>(c, None)
+            .and_then(|(srv, c)| srv.create_resource::<Matcher>(c))
+            .and_then(|(srv, c)| srv.status_patch(c))
+            .and_then(|(srv, c)| {
+                let ev = Event {
+                    type_: Some("Normal".into()),
+                    action: Some("CreatedMatcher".into()),
+                    reason: Some("Clair requires Matcher \"test\"".into()),
+                    ..Default::default()
+                };
+                srv.event(c, ev)
+            })
+            .await?;
+
+        Ok(srv)
+    }
+
+    async fn matcher_update(mut self, c: Clair) -> Result<Self> {
+        let ns = c.meta().namespace.as_ref().expect("Clair is namespaced");
+        let name = c.meta().name.as_ref().expect("Clair has a name");
+        self.state.insert(
+            Self::expected_path::<Matcher, _, _>(ns, name),
+            json!({
+                "version": Matcher::api_version(&()),
+                "kind": Matcher::kind(&()),
+                "metadata": {
+                    "name": name,
+                    "namespace": ns,
+                        "uid": "420",
+                        "finalizers": [ crate::matchers::FINALIZER ],
+                        "generation": 2,
+                },
+                "spec": { },
+                "status": { },
+            }),
+        );
+
+        let (srv, _c) = self
+            .check_resource::<Matcher, &str>(c, None)
+            .and_then(|(srv, c)| srv.update_resource::<Matcher, &str>(c, None))
+            .and_then(|(srv, c)| srv.status_patch(c))
+            .and_then(|(srv, c)| {
+                let ev = Event {
+                    type_: Some("Normal".into()),
+                    action: Some("UpdatedMatcher".into()),
+                    reason: Some("Clair requires Matcher \"test\"".into()),
+                    ..Default::default()
+                };
+                srv.event(c, ev)
+            })
+            .await?;
+
+        Ok(srv)
+    }
+
     async fn indexer_create(self, c: Clair) -> Result<Self> {
         let (srv, _c) = self
             .check_resource::<Indexer, &str>(c, None)
@@ -806,7 +931,7 @@ impl ClairServerVerifier {
                     "name": name,
                     "namespace": ns,
                         "uid": "420",
-                        "finalizers": [ crate::indexers::INDEXER_FINALIZER ],
+                        "finalizers": [ crate::indexers::FINALIZER ],
                         "generation": 2,
                 },
                 "spec": { },
@@ -971,7 +1096,7 @@ impl ClairServerVerifier {
     }
 
     async fn admin_pre_spec_changed(self, c: Clair) -> Result<Self> {
-        use crate::clairs::reason::AdminPre as Reason;
+        use crate::clairs::reason::Admin as Reason;
 
         let (srv, c) = self
             .create_resource::<Job>(c)
@@ -1000,7 +1125,7 @@ impl ClairServerVerifier {
     }
 
     async fn admin_pre_spec_unchanged_check(mut self, c: Clair) -> Result<Self> {
-        use crate::clairs::reason::AdminPre as Reason;
+        use crate::clairs::reason::Admin as Reason;
 
         let ns = c.meta().namespace.as_ref().expect("Clair is namespaced");
         let name = c.meta().name.as_ref().expect("Clair has a name");
@@ -1047,7 +1172,7 @@ impl ClairServerVerifier {
     }
 
     async fn admin_pre_spec_unchanged_done(mut self, c: Clair) -> Result<Self> {
-        use crate::clairs::reason::AdminPre as Reason;
+        use crate::clairs::reason::Admin as Reason;
 
         let ns = c.meta().namespace.as_ref().expect("Clair is namespaced");
         let name = c.meta().name.as_ref().expect("Clair has a name");

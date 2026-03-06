@@ -22,6 +22,7 @@ use clair_templates::{
 };
 use v1alpha1::Matcher;
 
+pub(crate) static FINALIZER: &str = "matchers.clairproject.org";
 //static COMPONENT: LazyLock<String> = LazyLock::new(|| Matcher::kind(&()).to_ascii_lowercase());
 static SELF_GVK: LazyLock<GroupVersionKind> = LazyLock::new(|| GroupVersionKind {
     group: Matcher::group(&()).to_string(),
