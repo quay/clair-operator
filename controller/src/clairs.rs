@@ -1,6 +1,6 @@
 //! Clairs holds the controller for the "Clair" CRD.
 
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use futures::{
     future::FutureExt,
@@ -50,7 +50,7 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<State>) -> Result<Controll
 
     Ok(async move {
         if let Err(e) = root.list(&ListParams::default().limit(1)).await {
-            let gvk =  GroupVersionKind {
+            let gvk = GroupVersionKind {
                 group: Clair::group(&()).to_string(),
                 version: Clair::version(&()).to_string(),
                 kind: Clair::kind(&()).to_string(),
@@ -577,9 +577,8 @@ async fn admin_post(clair: &Clair, ctx: &Context) -> Result<()> {
 
     let job_type = Type::AdminPostJobDone;
     let post_job_cnd = clair.find_condition(job_type);
-    let create = post_job_cnd.is_some_and(|cnd| {
-        clair.metadata.generation != cnd.observed_generation
-    });
+    let create =
+        post_job_cnd.is_some_and(|cnd| clair.metadata.generation != cnd.observed_generation);
     let job = if create {
         JobBuilder::admin_post(clair)?.build().into()
     } else {
@@ -619,7 +618,7 @@ async fn admin_post(clair: &Clair, ctx: &Context) -> Result<()> {
                 r#"spec changed, launching "admin post" job"#,
             )
         }
-        _ => todo!()
+        _ => todo!(),
     };
 
     let update = Patch::Apply(json!({
@@ -660,9 +659,9 @@ mod tests {
     #[self::test(tokio::test(flavor = "multi_thread", worker_threads = 1))]
     async fn finalizer() {
         let (testctx, fakeserver) = Context::clair_tests();
-        let tc = ClairScenario::FinalizerCreation;
+        let tc = ClairScenario::Finalizer(FinalizerScenario::Create);
         let c = tc.object();
-        let mocksrv = fakeserver.run(ClairScenario::FinalizerCreation);
+        let mocksrv = fakeserver.run(tc);
         reconcile(Arc::new(c), testctx).await.expect("reconciler");
         timeout_after_1s(mocksrv).await;
     }
@@ -670,7 +669,17 @@ mod tests {
     #[self::test(tokio::test(flavor = "multi_thread", worker_threads = 1))]
     async fn finalized_clairs_causes_event() {
         let (testctx, fakeserver) = Context::clair_tests();
-        let tc = ClairScenario::Finalize;
+        let tc = ClairScenario::Finalizer(FinalizerScenario::Event);
+        let c = tc.object();
+        let mocksrv = fakeserver.run(tc);
+        reconcile(Arc::new(c), testctx).await.expect("reconciler");
+        timeout_after_1s(mocksrv).await;
+    }
+
+    #[self::test(tokio::test(flavor = "multi_thread", worker_threads = 1))]
+    async fn finalizer_cleanup() {
+        let (testctx, fakeserver) = Context::clair_tests();
+        let tc = ClairScenario::Finalizer(FinalizerScenario::Cleanup);
         let c = tc.object();
         let mocksrv = fakeserver.run(tc);
         reconcile(Arc::new(c), testctx).await.expect("reconciler");

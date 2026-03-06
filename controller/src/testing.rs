@@ -9,6 +9,8 @@ use json_patch::merge;
 use k8s_openapi::{
     DeepMerge,
     api::{batch::v1::Job, core::v1::ConfigMap, events::v1::Event},
+    apimachinery::pkg::apis::meta::v1::Time,
+    jiff::Timestamp,
 };
 use kube::{
     Resource, ResourceExt,
@@ -21,7 +23,7 @@ use tower_test::mock::SendResponse;
 
 use super::*;
 use crate::condition::{Conditions, new as new_condition};
-use api::v1alpha1::{Clair, ClairStatus, Indexer, Matcher};
+use api::v1alpha1::{Clair, ClairSpec, ClairStatus, Indexer, Matcher};
 
 pub use test_log::test;
 
@@ -66,9 +68,7 @@ pub struct ClairServerVerifier {
 #[derive(Debug)]
 pub enum ClairScenario {
     /// ...
-    FinalizerCreation,
-    /// ...
-    Finalize,
+    Finalizer(FinalizerScenario),
     /// ...
     Ready,
     /// ...
@@ -89,45 +89,48 @@ impl ClairScenario {
         use condition::Type::*;
 
         match self {
-            Self::FinalizerCreation => from_value(json!({
-                "version": Clair::api_version(&()),
-                "kind": Clair::kind(&()),
-                "metadata": {
-                    "namespace": "default",
-                    "name": "test",
-                    "uid": "42",
-                    "generation": 1,
-                },
-                "spec": {
-                    "image": "example.com/clair:1.2.3",
-                    "databases": {
-                        "indexer": {
-                            "name": "test",
-                            "key": "database",
-                        },
-                        "matcher": {
-                            "name": "test",
-                            "key": "database",
+            Self::Finalizer(scenario) => {
+                use FinalizerScenario::*;
+
+                let mut c: Clair = from_value(json!({
+                    "version": Clair::api_version(&()),
+                    "kind": Clair::kind(&()),
+                    "metadata": {
+                        "namespace": "default",
+                        "name": "test",
+                        "uid": "42",
+                        "generation": 1,
+                        "finalizers": [crate::clairs::FINALIZER],
+                    },
+                    "spec": {
+                        "image": "example.com/clair:1.2.3",
+                        "databases": {
+                            "indexer": {
+                                "name": "test",
+                                "key": "database",
+                            },
+                            "matcher": {
+                                "name": "test",
+                                "key": "database",
+                            },
                         },
                     },
-                },
-                "status": { },
-            }))
-            .expect("static JSON"),
-            Self::Finalize => from_value(json!({
-                "version": Clair::api_version(&()),
-                "kind": Clair::kind(&()),
-                "metadata": {
-                    "namespace": "default",
-                    "name": "test",
-                    "uid": "42",
-                    "finalizers": [ crate::clairs::FINALIZER ],
-                    "generation": 1,
-                },
-                "spec": { },
-                "status": { },
-            }))
-            .expect("static JSON"),
+                    "status": { },
+                }))
+                .expect("static JSON");
+                match scenario {
+                    Create => {
+                        c.metadata.finalizers = None;
+                    }
+                    Event => {
+                        c.spec = ClairSpec::default();
+                    }
+                    Cleanup => {
+                        c.metadata.deletion_timestamp = Time::from(Timestamp::now()).into();
+                    }
+                };
+                c
+            }
             Self::Ready => from_value(json!({
                 "version": Clair::api_version(&()),
                 "kind": Clair::kind(&()),
@@ -429,6 +432,14 @@ impl ClairScenario {
 
 #[derive(Clone, Copy, Debug, PartialEq, EnumString)]
 #[strum(serialize_all = "snake_case")]
+pub enum FinalizerScenario {
+    Create,
+    Event,
+    Cleanup,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, EnumString)]
+#[strum(serialize_all = "snake_case")]
 pub enum ConfigurationScenario {
     Create,
     Created,
@@ -499,13 +510,14 @@ impl ClairServerVerifier {
             use ClairScenario::*;
             // moving self => one scenario per test
             match scenario {
-                FinalizerCreation => {
+                Finalizer(which) => {
+                    use FinalizerScenario::*;
                     let c = scenario.object();
-                    self.handle_finalizer_creation(c).await
-                }
-                Finalize => {
-                    let c = scenario.object();
-                    self.handle_finalize(c).await
+                    match which {
+                        Create => self.handle_finalizer_creation(c).await,
+                        Event => self.handle_finalize(c).await,
+                        Cleanup => self.handle_finalize_cleanup(c).await,
+                    }
                 }
                 Ready => {
                     let c = scenario.object();
@@ -1318,6 +1330,47 @@ impl ClairServerVerifier {
                         ..Default::default()
                     },
                 )
+            })
+            .await?;
+
+        Ok(srv)
+    }
+
+    async fn handle_finalize_cleanup(self, c: Clair) -> Result<Self> {
+        let (srv, _c) = self
+            .event(
+                c,
+                Event {
+                    type_: Some("Normal".into()),
+                    reason: Some("DeleteRequested".to_string()),
+                    action: Some("Cleanup".into()),
+                    ..Default::default()
+                },
+            )
+            .and_then(|(mut srv, mut c)| async {
+                let name = c.metadata.name.as_ref().expect("Clair has name");
+                let ns = c.namespace().expect("Clair is namespaced");
+                let key = Self::expected_path::<Clair, _, _>(&ns, name);
+
+                let (request, send) = srv.next_request().await;
+                let uri = request.uri().to_string();
+                // We expect a json patch to the specified document adding our finalizer
+                assert_eq!(request.method(), http::Method::PATCH);
+                assert_eq!(uri, key + "?", "unexpected path: {uri}");
+                let expected_patch = serde_json::json!([
+                    { "op": "test", "path": "/metadata/finalizers/0", "value": clairs::FINALIZER },
+                    { "op": "remove", "path": "/metadata/finalizers/0" },
+                ]);
+                let req_body = request.into_body().collect_bytes().await.unwrap();
+                let runtime_patch: serde_json::Value =
+                    serde_json::from_slice(&req_body).expect("valid document from runtime");
+                assert_json_include!(actual: runtime_patch, expected: expected_patch);
+
+                c.metadata.finalizers = None;
+                let response = serde_json::to_vec(&c).unwrap(); // respond as the apiserver would have
+                send.send_response(Response::builder().body(Body::from(response)).unwrap());
+
+                Ok((srv, c))
             })
             .await?;
 
