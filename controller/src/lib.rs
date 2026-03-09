@@ -5,7 +5,7 @@
 //! themselves.
 
 use std::{
-    collections::HashMap,
+    collections::HashSet,
     env,
     pin::Pin,
     sync::{Arc, LazyLock},
@@ -17,11 +17,13 @@ use k8s_openapi::{
     apimachinery::pkg::apis::meta::{self, v1::Condition},
 };
 use kube::{
+    Resource,
     api::GroupVersionKind,
+    core::GroupVersion,
+    discovery::Discovery,
     runtime::events::{self, Event},
 };
 use regex::Regex;
-use tokio::sync::RwLock;
 #[allow(unused_imports)]
 use tracing::{error, info, instrument, trace, warn};
 
@@ -165,7 +167,7 @@ pub struct State {
     /// Image is the fallback container image to use.
     pub image: String,
     /// ...
-    kinds: RwLock<HashMap<GroupVersionKind, bool>>,
+    pub available: HashSet<GroupVersionKind>,
 }
 
 impl std::fmt::Debug for State {
@@ -176,57 +178,44 @@ impl std::fmt::Debug for State {
 
 impl State {
     /// New creates a [`State`] object.
-    pub fn new<S>(client: kube::Client, image: S) -> Self
+    pub async fn new<S>(client: kube::Client, image: S) -> Result<Self>
     where
         S: ToString,
     {
-        let image = image.to_string();
-        Self {
-            client,
-            image,
-            kinds: RwLock::new(HashMap::new()),
-        }
-    }
-
-    /// Gvk_exists reports if the supplied GroupVersionKind is known to exist in this cluster.
-    ///
-    /// This method may need to make requests to the API server.
-    /// This method assumes that a successful response never changes. If a resource is added or
-    /// removed from the cluster after this has returned, the process will need to be restarted to
-    /// see it.
-    pub async fn gvk_exists(&self, gvk: &GroupVersionKind) -> bool {
-        use kube::discovery::oneshot;
-        {
-            let kinds = self.kinds.read().await;
-            if let Some(&ok) = kinds.get(gvk) {
-                return ok;
-            }
-        }
-
-        // Do the lookup without locking the hashmap so that readers aren't blocked behind a
-        // network request. At worst, we'll end up with a few extra API calls. The context can get
-        // "pre-queried" if that's a concern.
-        let lookup = oneshot::pinned_kind(&self.client, gvk).await;
-        let exists = match lookup {
-            Ok((_, _)) => true,
-            Err(error) => {
-                match error {
-                    kube::Error::Discovery(error) => info!(%error, ?gvk, "GVK not available"),
-                    _ => {
-                        error!(%error, ?gvk, "api query error");
-                        // return early so that we'll retry on the next lookup
-                        return false;
-                    }
-                };
-                false
-            }
+        use api::{
+            GROUP,
+            v1alpha1::{Clair, Indexer, Matcher, Notifier, VERSION},
         };
 
-        {
-            let mut kinds = self.kinds.write().await;
-            kinds.insert(gvk.clone(), exists);
-        }
-        exists
+        let local = GroupVersion::gv(GROUP, VERSION);
+        let gw = GroupVersion::gv("gateway.networking.k8s.io", "v1");
+        let d = Discovery::new(client.clone())
+            .filter(&[&local.api_version(), &gw.api_version()])
+            .run_aggregated()
+            .await?;
+        let available = [
+            local.clone().with_kind(&Clair::kind(&())),
+            local.clone().with_kind(&Indexer::kind(&())),
+            local.clone().with_kind(&Matcher::kind(&())),
+            local.clone().with_kind(&Notifier::kind(&())),
+            gw.clone().with_kind("Gateway"),
+            gw.clone().with_kind("HTTPRoute"),
+            gw.clone().with_kind("GRPCRoute"),
+        ]
+        .into_iter()
+        .filter(|gvk| d.resolve_gvk(gvk).is_some())
+        .collect();
+        let image = image.to_string();
+        Ok(Self {
+            client,
+            image,
+            available,
+        })
+    }
+
+    /// Gvk_exists provides checking for a limited number of pre-known [`GroupVersionKind`] types
+    pub fn gvk_exists(&self, gvk: &GroupVersionKind) -> bool {
+        self.available.contains(gvk)
     }
 }
 

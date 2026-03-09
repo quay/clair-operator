@@ -3,7 +3,7 @@
 //! ```mermaid
 //! ```
 
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use kube::{
     ResourceExt,
@@ -29,28 +29,27 @@ use clair_templates::{Build, ServiceBuilder, render_dropin};
 use v1alpha1::Indexer;
 
 pub(crate) static FINALIZER: &str = "indexers.clairproject.org";
-//static COMPONENT: LazyLock<String> = LazyLock::new(|| Indexer::kind(&()).to_ascii_lowercase());
-static SELF_GVK: LazyLock<GroupVersionKind> = LazyLock::new(|| GroupVersionKind {
-    group: Indexer::group(&()).to_string(),
-    version: Indexer::version(&()).to_string(),
-    kind: Indexer::kind(&()).to_string(),
-});
 
 /// Controller is the Indexer controller.
 ///
 /// An error is returned if any setup fails.
 #[instrument(skip_all)]
-pub fn controller(cancel: CancellationToken, ctx: Arc<State>) -> Result<ControllerFuture> {
+pub fn controller(cancel: CancellationToken, state: Arc<State>) -> Result<ControllerFuture> {
     use gateway_networking_k8s_io::v1::{grpcroutes::GRPCRoute, httproutes::HTTPRoute};
 
-    let client = ctx.client.clone();
+    let client = state.client.clone();
     let ctlcfg = watcher::Config::default();
     let sig = SignalStream::new(signal(SignalKind::user_defined1())?);
+    let self_gvk = GroupVersionKind::gvk(
+        &Indexer::group(&()),
+        &Indexer::version(&()),
+        &Indexer::kind(&()),
+    );
 
     Ok(async move {
         // Bail if the Indexer GVK isn't installed in the cluster.
-        if !ctx.gvk_exists(&SELF_GVK).await {
-            error!("CRD is not queryable ({SELF_GVK:?}); is the CRD installed?");
+        if !state.gvk_exists(&self_gvk) {
+            error!("CRD is not queryable ({self_gvk:?}); is the CRD installed?");
             return Err(Error::BadName("no CRD".into()));
         }
         info!("spawning indexer controller");
@@ -70,10 +69,10 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<State>) -> Result<Controll
                 ctlcfg.clone(),
             );
         // Opportunisitically enable HTTP and gRPC support:
-        if ctx.gvk_exists(&crate::GATEWAY_NETWORKING_HTTPROUTE).await {
+        if state.gvk_exists(&crate::GATEWAY_NETWORKING_HTTPROUTE) {
             ctl = ctl.owns(Api::<HTTPRoute>::all(client.clone()), ctlcfg.clone());
         }
-        if ctx.gvk_exists(&crate::GATEWAY_NETWORKING_GRPCROUTE).await {
+        if state.gvk_exists(&crate::GATEWAY_NETWORKING_GRPCROUTE) {
             ctl = ctl.owns(Api::<GRPCRoute>::all(client.clone()), ctlcfg.clone());
         }
         // Finish set up.
@@ -82,7 +81,7 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<State>) -> Result<Controll
             .graceful_shutdown_on(cancel.cancelled_owned());
 
         // Run until the event stream closes.
-        ctl.run(reconcile, error_policy, Context::from(ctx).into())
+        ctl.run(reconcile, error_policy, Context::from(state).into())
             .for_each(|ret| {
                 match ret {
                     Ok(_) => (),

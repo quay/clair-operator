@@ -8,11 +8,14 @@ use controller::*;
 pub async fn test_context() -> Arc<State> {
     let config = kube::Config::infer()
         .await
-        .expect("unable to infer kubeconfig");
+        .expect("able to infer kubeconfig");
     let client = kube::client::ClientBuilder::try_from(config.clone())
-        .expect("unable to create client builder")
+        .expect("able to create client builder")
         .build();
-    Arc::new(State::new(client, DEFAULT_IMAGE.as_str()))
+    let state = State::new(client, DEFAULT_IMAGE.as_str())
+        .await
+        .expect("able to create State instance");
+    Arc::new(state)
 }
 
 pub async fn load_crds(client: &kube::Client) -> Result<()> {

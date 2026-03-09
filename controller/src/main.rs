@@ -115,12 +115,6 @@ impl TryFrom<&clap::ArgMatches> for Args {
     }
 }
 
-impl Args {
-    fn context(&self, client: kube::Client) -> Arc<State> {
-        Arc::new(State::new(client, &self.image))
-    }
-}
-
 fn startup(args: Args) -> controller::Result<()> {
     use metrics_exporter_prometheus::PrometheusBuilder;
     use tokio::{runtime, signal};
@@ -175,13 +169,14 @@ async fn run(args: Args, token: CancellationToken) -> controller::Result<()> {
     // sure the caches are used optimally.
 
     info!(image = args.image, "default image set");
+    let state = State::new(client, &args.image).await?;
     info!("setup done, starting controllers");
-    let ctx = args.context(client);
+    let state = Arc::new(state);
     let mut ctrls = task::JoinSet::new();
     for name in &args.controllers {
         let fut = match name.to_lowercase().as_str() {
-            "clair" | "clairs" => clairs::controller(token.clone(), ctx.clone())?,
-            "indexer" | "indexers" => indexers::controller(token.clone(), ctx.clone())?,
+            "clair" | "clairs" => clairs::controller(token.clone(), state.clone())?,
+            "indexer" | "indexers" => indexers::controller(token.clone(), state.clone())?,
             //"matcher" | "matchers" => matchers::controller(token.clone(), ctx.clone())?,
             //"notifier" | "notifiers" => todo!(),
             //"updater" | "updaters" => todo!(),

@@ -1,5 +1,5 @@
 //! Matchers holds the controller for the "Matcher" CRD.
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use k8s_openapi::merge_strategies;
 use kube::{
@@ -22,26 +22,32 @@ use clair_templates::{
 };
 use v1alpha1::Matcher;
 
+#[allow(dead_code)]
+// TODO(hank): Port this over to the "finalizer" flow.
 pub(crate) static FINALIZER: &str = "matchers.clairproject.org";
-//static COMPONENT: LazyLock<String> = LazyLock::new(|| Matcher::kind(&()).to_ascii_lowercase());
-static SELF_GVK: LazyLock<GroupVersionKind> = LazyLock::new(|| GroupVersionKind {
-    group: Matcher::group(&()).to_string(),
-    version: Matcher::version(&()).to_string(),
-    kind: Matcher::kind(&()).to_string(),
-});
 
 /// Controller is the Matcher controller.
 ///
 /// An error is returned if any setup fails.
 #[instrument(skip_all)]
-pub fn controller(cancel: CancellationToken, ctx: Arc<State>) -> Result<ControllerFuture> {
+pub fn controller(cancel: CancellationToken, state: Arc<State>) -> Result<ControllerFuture> {
     use gateway_networking_k8s_io::v1::{grpcroutes::GRPCRoute, httproutes::HTTPRoute};
 
-    let client = ctx.client.clone();
+    let client = state.client.clone();
     let ctlcfg = watcher::Config::default();
     let sig = SignalStream::new(signal(SignalKind::user_defined1())?);
+    let self_gvk = GroupVersionKind::gvk(
+        &Matcher::group(&()),
+        &Matcher::version(&()),
+        &Matcher::kind(&()),
+    );
 
     Ok(async move {
+        // Bail if the Matcher GVK isn't installed in the cluster.
+        if !state.gvk_exists(&self_gvk) {
+            error!("CRD is not queryable ({self_gvk:?}); is the CRD installed?");
+            return Err(Error::BadName("no CRD".into()));
+        }
         info!("spawning matcher controller");
 
         let mut ctl = Controller::new(Api::<Matcher>::all(client.clone()), ctlcfg.clone())
@@ -57,22 +63,17 @@ pub fn controller(cancel: CancellationToken, ctx: Arc<State>) -> Result<Controll
                 Api::<core::v1::Service>::all(client.clone()),
                 ctlcfg.clone(),
             );
-        if ctx.gvk_exists(&crate::GATEWAY_NETWORKING_HTTPROUTE).await {
+        if state.gvk_exists(&crate::GATEWAY_NETWORKING_HTTPROUTE) {
             ctl = ctl.owns(Api::<HTTPRoute>::all(client.clone()), ctlcfg.clone());
         }
-        if ctx.gvk_exists(&crate::GATEWAY_NETWORKING_GRPCROUTE).await {
+        if state.gvk_exists(&crate::GATEWAY_NETWORKING_GRPCROUTE) {
             ctl = ctl.owns(Api::<GRPCRoute>::all(client.clone()), ctlcfg.clone());
         }
         let ctl = ctl
             .reconcile_all_on(sig)
             .graceful_shutdown_on(cancel.cancelled_owned());
 
-        if !ctx.gvk_exists(&SELF_GVK).await {
-            error!("CRD is not queryable ({SELF_GVK:?}); is the CRD installed?");
-            return Err(Error::BadName("no CRD".into()));
-        }
-
-        ctl.run(reconcile, handle_error, ctx)
+        ctl.run(reconcile, handle_error, state)
             .for_each(|ret| {
                 match ret {
                     Ok(_) => (),
